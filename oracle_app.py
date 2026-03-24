@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import re
 from datetime import date
-from typing import Optional
+from typing import Optional, Union
 
 import pandas as pd
 import plotly.express as px
@@ -32,11 +32,16 @@ def _read_sheet_public(sheet_id: str, gid: int = 0) -> pd.DataFrame:
     return pd.read_csv(url)
 
 
-def _read_sheet_auth(sheet_id: str, service_account_bytes: bytes, worksheet_name: Optional[str] = None) -> pd.DataFrame:
+def _read_sheet_auth(sheet_id: str, service_account_data: Union[bytes, dict, str], worksheet_name: Optional[str] = None) -> pd.DataFrame:
     import gspread
     from google.oauth2.service_account import Credentials
 
-    creds_info = json.loads(service_account_bytes.decode("utf-8"))
+    if isinstance(service_account_data, bytes):
+        creds_info = json.loads(service_account_data.decode("utf-8"))
+    elif isinstance(service_account_data, str):
+        creds_info = json.loads(service_account_data)
+    else:
+        creds_info = service_account_data
     creds = Credentials.from_service_account_info(
         creds_info,
         scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"],
@@ -94,8 +99,16 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
 
 @st.cache_data(ttl=300)
 def load_marketing_data(sheet_id: str, gid: int, service_account_bytes: Optional[bytes], worksheet_name: Optional[str]) -> pd.DataFrame:
-    if service_account_bytes:
-        raw = _read_sheet_auth(sheet_id, service_account_bytes, worksheet_name)
+    secret_creds = None
+    try:
+        if "GCP_SERVICE_ACCOUNT" in st.secrets:
+            secret_creds = st.secrets["GCP_SERVICE_ACCOUNT"]
+    except Exception:
+        secret_creds = None
+
+    creds_to_use = service_account_bytes if service_account_bytes else secret_creds
+    if creds_to_use:
+        raw = _read_sheet_auth(sheet_id, creds_to_use, worksheet_name)
     else:
         raw = _read_sheet_public(sheet_id, gid)
     return _normalize(raw)
@@ -113,13 +126,77 @@ def card(col, title: str, value: str) -> None:
     )
 
 
-st.set_page_config(page_title="X-Ray Marketing Dashboard", page_icon="📊", layout="wide")
+st.set_page_config(page_title="X-Ray Dashboard", page_icon="📊", layout="wide")
 
-st.markdown("## X-Ray Marketing Dashboard")
-top_nav = "MARKETING"
+st.markdown(
+    """
+    <style>
+    .stApp { background: #f7f8fb; }
+    .topbar {
+        background: #070707;
+        color: #ffffff;
+        border-radius: 8px;
+        padding: 10px 16px;
+        margin-bottom: 12px;
+        border: 1px solid #101010;
+    }
+    .topbar-wrap {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+    }
+    .brand {
+        border: 2px solid #1dd35f;
+        color: #1dd35f;
+        font-size: 14px;
+        letter-spacing: 1px;
+        font-weight: 700;
+        border-radius: 3px;
+        padding: 2px 8px;
+    }
+    .navhint { color: #d5d5d5; font-size: 11px; }
+    .section-chip {
+        display: inline-block;
+        background: #eef1f7;
+        border: 1px solid #dde3ef;
+        border-radius: 8px;
+        padding: 4px 10px;
+        font-size: 11px;
+        margin-right: 6px;
+        color: #2c3e57;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
+st.markdown(
+    """
+    <div class="topbar">
+      <div class="topbar-wrap">
+        <div style="display:flex; align-items:center; gap:14px;">
+          <span class="brand">X-RAY</span>
+          <span class="navhint">RANKING · PIPELINE · BOB · REP · COUNTRY · EMAILS · MARKETING</span>
+        </div>
+        <div class="navhint">ME Dashboard</div>
+      </div>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+main_section = st.radio(
+    "Section",
+    ["Country", "Rep", "BoB", "Marketing"],
+    horizontal=True,
+    index=3,
+    label_visibility="collapsed",
+)
 
 with st.sidebar:
-    st.subheader("Data Source")
+    st.subheader("X-Ray Source")
     sheet_url_or_id = st.text_input("X-Ray Google Sheet URL or ID", value=DEFAULT_SHEET_ID)
     sheet_id = _extract_sheet_id(sheet_url_or_id)
     gid = st.number_input("gid", value=0, step=1)
@@ -128,7 +205,7 @@ with st.sidebar:
     st.caption("Leave service account empty only if sheet is publicly readable.")
 
     st.markdown("---")
-    st.subheader("Filters")
+    st.subheader("Global Filters")
     default_start = date(2025, 9, 1)
     default_end = date.today()
     start_date = st.date_input("Start date", value=default_start, max_value=default_end)
@@ -163,8 +240,24 @@ selected_countries = st.multiselect("Country", ["All Countries"] + country_opts,
 if "All Countries" not in selected_countries and selected_countries:
     df = df[df["country"].isin(selected_countries)]
 
-if top_nav == "MARKETING":
+platform_opts = sorted([x for x in df["platform"].dropna().unique().tolist() if x and x != "Unknown"])
+selected_platforms = st.multiselect("Platform", ["All Platforms"] + platform_opts, default=["All Platforms"])
+if "All Platforms" not in selected_platforms and selected_platforms:
+    df = df[df["platform"].isin(selected_platforms)]
+
+if main_section == "Marketing":
     st.markdown("### Marketing Dashboard")
+    st.markdown(
+        """
+        <span class="section-chip">Dashboard</span>
+        <span class="section-chip">Regional Analysis</span>
+        <span class="section-chip">TCV Analysis</span>
+        <span class="section-chip">Sales Funnel</span>
+        <span class="section-chip">Budgets</span>
+        <span class="section-chip">Lost Analysis</span>
+        """,
+        unsafe_allow_html=True,
+    )
 
     total_spend = float(df["cost"].sum())
     total_impr = int(df["impressions"].sum())
@@ -243,4 +336,75 @@ if top_nav == "MARKETING":
 
     with st.expander("Show raw rows"):
         st.dataframe(df, use_container_width=True)
+
+elif main_section == "Country":
+    st.markdown("### Country Quality Analysis")
+    by_country = (
+        df.groupby("country", as_index=False)
+        .agg(
+            spend=("cost", "sum"),
+            impressions=("impressions", "sum"),
+            clicks=("clicks", "sum"),
+            leads=("leads", "sum"),
+            qualified=("qualified", "sum"),
+            closed_won=("closed_won", "sum"),
+        )
+        .sort_values("spend", ascending=False)
+    )
+    if by_country.empty:
+        st.info("No country data for the current filters.")
+    else:
+        top_country = by_country.iloc[0]["country"]
+        c1, c2, c3, c4 = st.columns(4)
+        card(c1, "Top Country", str(top_country))
+        card(c2, "Markets", f"{len(by_country)}")
+        card(c3, "Total Spend", f"${by_country['spend'].sum():,.0f}")
+        card(c4, "Closed Won", f"{int(by_country['closed_won'].sum()):,}")
+        l1, l2 = st.columns(2)
+        with l1:
+            st.plotly_chart(px.bar(by_country, x="country", y="spend", title="Spend by Country"), use_container_width=True)
+        with l2:
+            st.plotly_chart(px.bar(by_country, x="country", y="closed_won", title="Closed Won by Country"), use_container_width=True)
+        st.dataframe(by_country, use_container_width=True)
+
+elif main_section == "Rep":
+    st.markdown("### Rep Quality Analysis")
+    rep_df = df.copy()
+    rep_df["rep"] = rep_df.get("rep_name", "Unassigned")
+    rep_agg = (
+        rep_df.groupby("rep", as_index=False)
+        .agg(
+            spend=("cost", "sum"),
+            leads=("leads", "sum"),
+            qualified=("qualified", "sum"),
+            closed_won=("closed_won", "sum"),
+        )
+        .sort_values("closed_won", ascending=False)
+    )
+    if rep_agg.empty:
+        st.info("No rep-level rows. Add a rep column in sheet (e.g., rep_name) to fully match the screenshot.")
+    else:
+        r1, r2, r3, r4 = st.columns(4)
+        card(r1, "Active Reps", f"{len(rep_agg)}")
+        card(r2, "Total Leads", f"{int(rep_agg['leads'].sum()):,}")
+        card(r3, "Qualified", f"{int(rep_agg['qualified'].sum()):,}")
+        card(r4, "Closed Won", f"{int(rep_agg['closed_won'].sum()):,}")
+        st.plotly_chart(px.bar(rep_agg.head(20), x="rep", y="closed_won", title="Rep Performance (Closed Won)"), use_container_width=True)
+        st.dataframe(rep_agg, use_container_width=True)
+
+elif main_section == "BoB":
+    st.markdown("### Book of Business")
+    bob_df = df.copy()
+    if "account" not in bob_df.columns:
+        bob_df["account"] = "Account not provided"
+    if "owner" not in bob_df.columns:
+        bob_df["owner"] = "Owner not provided"
+    bob_df["status"] = bob_df.get("status", "Unknown")
+    summary1, summary2, summary3, summary4 = st.columns(4)
+    card(summary1, "Filtered Accounts", f"{bob_df['account'].nunique():,}")
+    card(summary2, "Touched", f"{int((bob_df['clicks'] > 0).sum()):,}")
+    card(summary3, "With Open Opps", f"{int((bob_df['pitching'] > 0).sum()):,}")
+    card(summary4, "Untouched", f"{int((bob_df['clicks'] == 0).sum()):,}")
+    display_cols = [c for c in ["account", "country", "channel", "owner", "status", "clicks", "leads", "qualified", "pitching", "closed_won"] if c in bob_df.columns]
+    st.dataframe(bob_df[display_cols].head(500), use_container_width=True)
 
