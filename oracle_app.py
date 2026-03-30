@@ -196,49 +196,108 @@ def _read_sheet_auth(
     return pd.DataFrame(ws.get_all_records())
 
 
-def _normalize(df: pd.DataFrame) -> pd.DataFrame:
-    rename = {
-        "Date": "date",
-        "Country_Name": "country",
-        "Country_Code": "country_code",
-        "Channel_Gp": "channel",
-        "Channel_Name": "channel",
-        "Platform": "platform",
-        "UTM_Source_Gp": "utm_source",
-        "Utm_Source_L": "utm_source_l",
-        "Utm_Source_O": "utm_source_o",
-        "Cost": "cost",
-        "Ad_Spend": "cost",
-        "Spend": "cost",
-        "Clicks___Gp": "clicks",
-        "Impressions___Gp": "impressions",
-        "Qualified": "qualified",
-        "Leads": "leads",
-        "Pitching": "pitching",
-        "Closed_Won": "closed_won",
-    }
-    for old, new in rename.items():
-        if old in df.columns and new not in df.columns:
-            df = df.rename(columns={old: new})
+def _norm_header_key(name: str) -> str:
+    """Lowercase, collapse spaces/underscores so e.g. Clicks___Gp and clicks_gp match."""
+    s = str(name).strip().lower()
+    s = re.sub(r"[\s_]+", "_", s)
+    s = re.sub(r"_+", "_", s).strip("_")
+    return s
 
-    if "date" in df.columns:
-        df["date"] = pd.to_datetime(df["date"], errors="coerce")
+
+# Normalized header → canonical column (covers X-Ray export names + plain English headers)
+_NORM_TO_FIELD: dict[str, str] = {
+    "date": "date",
+    "day": "date",
+    "period": "date",
+    "week": "date",
+    "country_name": "country",
+    "country": "country",
+    "market": "country",
+    "geo": "country",
+    "country_code": "country_code",
+    "channel_gp": "channel",
+    "channel_name": "channel",
+    "channel": "channel",
+    "media_type": "channel",
+    "platform": "platform",
+    "cost": "cost",
+    "ad_spend": "cost",
+    "spend": "cost",
+    "cost_usd": "cost",
+    "adspend": "cost",
+    "clicks_gp": "clicks",
+    "clicks": "clicks",
+    "impressions_gp": "impressions",
+    "impressions": "impressions",
+    "impr": "impressions",
+    "leads": "leads",
+    "qualified": "qualified",
+    "pitching": "pitching",
+    "closed_won": "closed_won",
+    "closedwon": "closed_won",
+    "closed_won_deals": "closed_won",
+    "utm_source_gp": "utm_source",
+    "utm_source": "utm_source",
+    "utm_source_l": "utm_source_l",
+    "utm_source_o": "utm_source_o",
+}
+
+_NUM_FIELDS = frozenset({"cost", "clicks", "impressions", "leads", "qualified", "pitching", "closed_won"})
+
+
+def _normalize(df: pd.DataFrame) -> pd.DataFrame:
+    raw_cols = [str(c).strip() for c in df.columns]
+    attrs: dict[str, Any] = {"sheet_columns": raw_cols}
+
+    if df.empty:
+        out = pd.DataFrame()
+        attrs["fields_mapped"] = []
+        out.attrs.update(attrs)
+        return out
+
+    df = df.copy()
+    df.columns = raw_cols
+
+    # Map each sheet column to at most one canonical field (first wins for dims; sum for dup metrics)
+    field_to_sources: dict[str, list[str]] = {}
+    for col in df.columns:
+        nk = _norm_header_key(col)
+        field = _NORM_TO_FIELD.get(nk)
+        if field:
+            field_to_sources.setdefault(field, []).append(col)
+
+    out = pd.DataFrame(index=df.index)
+    for field, srcs in field_to_sources.items():
+        if len(srcs) == 1:
+            out[field] = df[srcs[0]]
+        elif field in _NUM_FIELDS:
+            acc = pd.to_numeric(df[srcs[0]], errors="coerce").fillna(0)
+            for c in srcs[1:]:
+                acc = acc + pd.to_numeric(df[c], errors="coerce").fillna(0)
+            out[field] = acc
+        else:
+            out[field] = df[srcs[0]]
+
+    if "date" in out.columns:
+        out["date"] = pd.to_datetime(out["date"], errors="coerce")
     else:
-        df["date"] = pd.NaT
+        out["date"] = pd.NaT
 
     for c in ["cost", "clicks", "impressions", "leads", "qualified", "pitching", "closed_won"]:
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0)
+        if c in out.columns:
+            out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0)
         else:
-            df[c] = 0
+            out[c] = 0
 
     for c in ["country", "country_code", "channel", "platform", "utm_source", "utm_source_l", "utm_source_o"]:
-        if c not in df.columns:
-            df[c] = "Unknown"
-        df[c] = df[c].astype(str).replace("nan", "Unknown")
+        if c not in out.columns:
+            out[c] = "Unknown"
+        out[c] = out[c].astype(str).replace("nan", "Unknown")
 
-    df["month"] = df["date"].dt.to_period("M").astype(str)
-    return df
+    out["month"] = out["date"].dt.to_period("M").astype(str)
+    attrs["fields_mapped"] = sorted(field_to_sources.keys())
+    out.attrs.update(attrs)
+    return out
 
 
 def _filter_by_date_range(df: pd.DataFrame, start: date, end: date) -> pd.DataFrame:
@@ -466,6 +525,30 @@ if len(_ds_ok):
 else:
     st.warning(
         "Rows loaded but **Date** did not parse — widen filters or fix the Date column so charts filter correctly."
+    )
+
+_sheet_cols = list(df_loaded.attrs.get("sheet_columns", []) or [])
+_mapped = list(df_loaded.attrs.get("fields_mapped", []) or [])
+with st.expander("Columns from your sheet (debug)", expanded=False):
+    st.caption("If you still see all **0** / **Unknown**, headers here must line up with spend/dimensions (see mapping below).")
+    if _sheet_cols:
+        st.code(", ".join(_sheet_cols))
+    else:
+        st.caption("_(Column list not available — refresh after redeploy.)_")
+    if _mapped:
+        st.caption(f"**Recognized fields:** {', '.join(_mapped)}")
+    else:
+        st.warning("No columns matched known names — check spelling and the first header row.")
+
+if (
+    len(df_loaded) > 0
+    and float(df_loaded["cost"].sum()) == 0
+    and float(df_loaded["clicks"].sum()) == 0
+    and _mapped
+):
+    st.info(
+        "Metrics are still **zero** but some fields were recognized. "
+        "Check that numeric cells are numbers (not text) and that **Cost**/**Spend** and delivery columns are populated in the sheet."
     )
 
 df_filtered = _filter_by_date_range(df_loaded, start_date, end_date)
