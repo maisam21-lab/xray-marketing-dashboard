@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from datetime import date
+from datetime import date, datetime, time
 from typing import Any, Optional, Union
 
 import pandas as pd
@@ -223,6 +223,23 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
 
     df["month"] = df["date"].dt.to_period("M").astype(str)
     return df
+
+
+def _filter_by_date_range(df: pd.DataFrame, start: date, end: date) -> pd.DataFrame:
+    """Inclusive calendar-day filter; avoids pandas dtype errors comparing dt.date vs Timestamp."""
+    if df.empty or "date" not in df.columns:
+        return df
+    s = pd.to_datetime(df["date"], errors="coerce")
+    # tz-aware → naive UTC (safe compare with date pickers)
+    try:
+        if getattr(s.dtype, "tz", None) is not None:
+            s = s.dt.tz_convert("UTC").dt.tz_localize(None)
+    except Exception:
+        pass
+    start_ts = pd.Timestamp(datetime.combine(start, time.min))
+    end_ts = pd.Timestamp(datetime.combine(end, time.max))
+    mask = (s >= start_ts) & (s <= end_ts)
+    return df.loc[mask].copy()
 
 
 @st.cache_data(ttl=300)
@@ -448,8 +465,7 @@ if df.empty:
     st.warning("No data loaded from this sheet/tab.")
     st.stop()
 
-mask = (df["date"].dt.date >= start_date) & (df["date"].dt.date <= end_date)
-df = df.loc[mask].copy()
+df = _filter_by_date_range(df, start_date, end_date)
 
 if df.empty:
     st.warning("No rows after date filter.")
