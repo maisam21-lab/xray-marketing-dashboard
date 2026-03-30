@@ -38,8 +38,22 @@ def _extract_sheet_id(url_or_id: str) -> str:
     return match.group(1) if match else value
 
 
+def _coerce_worksheet_gid(gid: Union[int, float, None]) -> Optional[int]:
+    """URL gid must be a positive integer. 0 or invalid → use first worksheet (index 0)."""
+    if gid is None:
+        return None
+    try:
+        g = int(gid)
+    except (TypeError, ValueError):
+        return None
+    if g <= 0:
+        return None
+    return g
+
+
 def _read_sheet_public(sheet_id: str, gid: int = 0) -> pd.DataFrame:
-    url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
+    gid_safe = max(0, int(gid))
+    url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid_safe}"
     try:
         return pd.read_csv(url)
     except Exception as e:
@@ -183,8 +197,15 @@ def _read_sheet_auth(
     sh = gc.open_by_key(sheet_id)
     if worksheet_name:
         ws = sh.worksheet(worksheet_name)
-    elif worksheet_gid is not None and worksheet_gid != 0:
-        ws = sh.get_worksheet_by_id(int(worksheet_gid))
+    elif worksheet_gid is not None:
+        try:
+            ws = sh.get_worksheet_by_id(int(worksheet_gid))
+        except Exception as e:
+            raise RuntimeError(
+                f"Could not open the tab with gid={worksheet_gid}. "
+                "In the sheet URL, copy the number after `gid=` (e.g. …#gid=8109573 → 8109573). "
+                "Set gid to 0 to use the first tab."
+            ) from e
     else:
         ws = sh.get_worksheet(0)
     return pd.DataFrame(ws.get_all_records())
@@ -265,7 +286,12 @@ def load_marketing_data(
 
     creds_to_use = service_account_bytes if service_account_bytes else secret_creds
     if creds_to_use:
-        raw = _read_sheet_auth(sheet_id, creds_to_use, worksheet_name, worksheet_gid=int(gid) if gid else None)
+        raw = _read_sheet_auth(
+            sheet_id,
+            creds_to_use,
+            worksheet_name,
+            worksheet_gid=_coerce_worksheet_gid(gid),
+        )
     else:
         raw = _read_sheet_public(sheet_id, gid)
     return _normalize(raw)
@@ -414,8 +440,9 @@ with st.expander("Data source & filters (KSA-style: controls in main area, sideb
         gid = st.number_input(
             "gid (tab ID from URL #gid=…)",
             value=0,
+            min_value=0,
             step=1,
-            help="Paste the number after gid= in the sheet URL. Used for the correct tab with service account and for CSV fallback.",
+            help="Paste the number after gid= in the sheet URL (e.g. 8109573). Use 0 for the first tab.",
         )
     with c3:
         worksheet_name = st.text_input("Worksheet name (optional)", value="", help="Leave empty for first sheet")
