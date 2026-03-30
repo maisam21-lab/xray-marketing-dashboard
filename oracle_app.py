@@ -164,7 +164,12 @@ def _secret_fingerprint(secret_dict: Optional[dict]) -> str:
     return f"{em.split('@')[0] if '@' in em else 'sa'}_{h}"
 
 
-def _read_sheet_auth(sheet_id: str, service_account_data: Union[bytes, dict, str], worksheet_name: Optional[str] = None) -> pd.DataFrame:
+def _read_sheet_auth(
+    sheet_id: str,
+    service_account_data: Union[bytes, dict, str],
+    worksheet_name: Optional[str] = None,
+    worksheet_gid: Optional[int] = None,
+) -> pd.DataFrame:
     import gspread
     from google.oauth2.service_account import Credentials
 
@@ -176,7 +181,12 @@ def _read_sheet_auth(sheet_id: str, service_account_data: Union[bytes, dict, str
     )
     gc = gspread.authorize(creds)
     sh = gc.open_by_key(sheet_id)
-    ws = sh.worksheet(worksheet_name) if worksheet_name else sh.get_worksheet(0)
+    if worksheet_name:
+        ws = sh.worksheet(worksheet_name)
+    elif worksheet_gid is not None and worksheet_gid != 0:
+        ws = sh.get_worksheet_by_id(int(worksheet_gid))
+    else:
+        ws = sh.get_worksheet(0)
     return pd.DataFrame(ws.get_all_records())
 
 
@@ -255,7 +265,7 @@ def load_marketing_data(
 
     creds_to_use = service_account_bytes if service_account_bytes else secret_creds
     if creds_to_use:
-        raw = _read_sheet_auth(sheet_id, creds_to_use, worksheet_name)
+        raw = _read_sheet_auth(sheet_id, creds_to_use, worksheet_name, worksheet_gid=int(gid) if gid else None)
     else:
         raw = _read_sheet_public(sheet_id, gid)
     return _normalize(raw)
@@ -401,7 +411,12 @@ with st.expander("Data source & filters (KSA-style: controls in main area, sideb
             help="Paste full URL or just the ID from /spreadsheets/d/<ID>/",
         )
     with c2:
-        gid = st.number_input("gid (tab)", value=0, step=1, help="Only used for anonymous CSV export fallback")
+        gid = st.number_input(
+            "gid (tab ID from URL #gid=…)",
+            value=0,
+            step=1,
+            help="Paste the number after gid= in the sheet URL. Used for the correct tab with service account and for CSV fallback.",
+        )
     with c3:
         worksheet_name = st.text_input("Worksheet name (optional)", value="", help="Leave empty for first sheet")
 
