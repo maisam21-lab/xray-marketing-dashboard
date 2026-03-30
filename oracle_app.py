@@ -20,6 +20,16 @@ import streamlit as st
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 
 
+def _default_sheet_id_from_secrets() -> str:
+    """Optional Streamlit secret XRAY_SHEET_ID overrides default workbook."""
+    try:
+        s = st.secrets
+        v = (s.get("XRAY_SHEET_ID") or s.get("xray_sheet_id") or "").strip()
+        return v if v else DEFAULT_SHEET_ID
+    except Exception:
+        return DEFAULT_SHEET_ID
+
+
 def _extract_sheet_id(url_or_id: str) -> str:
     value = (url_or_id or "").strip()
     if "/spreadsheets/d/" not in value:
@@ -246,16 +256,22 @@ def card(col, title: str, value: str) -> None:
     )
 
 
-st.set_page_config(page_title="X-Ray Dashboard", page_icon="📊", layout="wide")
+st.set_page_config(
+    page_title="X-Ray Dashboard",
+    page_icon="📊",
+    layout="wide",
+    initial_sidebar_state="collapsed",
+)
 
 st.markdown(
     """
     <style>
+    /* KSA-style: no left sidebar chrome — controls live in main area */
+    section[data-testid="stSidebar"] { display: none !important; }
+    [data-testid="collapsedControl"] { display: none !important; }
     .stApp { background: #FAFBFC; font-family: sans-serif; font-size: 0.8125rem !important; }
     header[data-testid="stHeader"] { background: #F1F3F4 !important; border-bottom: 1px solid #E2E8F0; }
     header[data-testid="stHeader"] * { color: #1E293B !important; }
-    section[data-testid="stSidebar"] { background: #FFFFFF; border-right: 4px solid #0F766E; }
-    section[data-testid="stSidebar"] .stMarkdown, section[data-testid="stSidebar"] .stCaption { color: #1E293B !important; font-weight: 600 !important; }
     .topbar {
         background: #0F766E;
         color: #ffffff;
@@ -355,6 +371,59 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+with st.expander("Data source & filters (KSA-style: controls in main area, sidebar hidden)", expanded=False):
+    st.caption(
+        "The **service account JSON** (or Streamlit Secrets) only proves **who** is calling Google. "
+        "The **spreadsheet URL or ID** below chooses **which workbook** to read — same as pointing the KSA tracker at a sheet ID."
+    )
+    c1, c2, c3 = st.columns([2, 1, 1])
+    with c1:
+        sheet_url_or_id = st.text_input(
+            "Google Sheet URL or ID",
+            value=_default_sheet_id_from_secrets(),
+            help="Paste full URL or just the ID from /spreadsheets/d/<ID>/",
+        )
+    with c2:
+        gid = st.number_input("gid (tab)", value=0, step=1, help="Only used for anonymous CSV export fallback")
+    with c3:
+        worksheet_name = st.text_input("Worksheet name (optional)", value="", help="Leave empty for first sheet")
+
+    creds_file = st.file_uploader(
+        "Service account JSON (optional — or use Streamlit Secrets)",
+        type=["json"],
+        help="Upload only if not using Cloud Secrets. Does not select which sheet; use the field above.",
+    )
+    default_start = date(2025, 9, 1)
+    default_end = date.today()
+    d1, d2 = st.columns(2)
+    with d1:
+        start_date = st.date_input("Start date", value=default_start, max_value=default_end)
+    with d2:
+        end_date = st.date_input("End date", value=default_end, min_value=start_date, max_value=default_end)
+
+    sheet_id = _extract_sheet_id(sheet_url_or_id)
+    service_account_bytes = creds_file.read() if creds_file else None
+    _preload_secret = _service_account_from_streamlit_secrets()
+    _secret_fp = _secret_fingerprint(_preload_secret)
+    if service_account_bytes:
+        _secret_fp = f"upload_{hashlib.sha256(service_account_bytes).hexdigest()[:16]}"
+
+    st.markdown("**Auth**")
+    if service_account_bytes:
+        st.success("Using uploaded service account JSON (identity only — workbook is chosen above).")
+    elif _preload_secret:
+        st.success(
+            f"Using Streamlit Secrets: `{_preload_secret.get('client_email', '?')}` "
+            f"(fingerprint `{_secret_fp}`)"
+        )
+    else:
+        st.warning(
+            "No valid service account in **this** app's Streamlit Secrets. "
+            "Anonymous export only works if the sheet is public."
+        )
+        if st.session_state.get("_last_sa_secret_error"):
+            st.caption(f"Last parse error: {st.session_state['_last_sa_secret_error']}")
+
 main_section = st.radio(
     "Section",
     ["Country", "Rep", "BoB", "Marketing"],
@@ -362,44 +431,6 @@ main_section = st.radio(
     index=3,
     label_visibility="collapsed",
 )
-
-with st.sidebar:
-    st.subheader("X-Ray Source")
-    sheet_url_or_id = st.text_input("X-Ray Google Sheet URL or ID", value=DEFAULT_SHEET_ID)
-    sheet_id = _extract_sheet_id(sheet_url_or_id)
-    gid = st.number_input("gid", value=0, step=1)
-    worksheet_name = st.text_input("Worksheet name (optional)", value="")
-    creds_file = st.file_uploader("Service account JSON (optional)", type=["json"])
-    st.caption("Leave service account empty only if sheet is publicly readable.")
-
-    st.markdown("---")
-    st.subheader("Global Filters")
-    default_start = date(2025, 9, 1)
-    default_end = date.today()
-    start_date = st.date_input("Start date", value=default_start, max_value=default_end)
-    end_date = st.date_input("End date", value=default_end, min_value=start_date, max_value=default_end)
-
-    service_account_bytes = creds_file.read() if creds_file else None
-    _preload_secret = _service_account_from_streamlit_secrets()
-    _secret_fp = _secret_fingerprint(_preload_secret)
-    if service_account_bytes:
-        _secret_fp = f"upload_{hashlib.sha256(service_account_bytes).hexdigest()[:16]}"
-
-    with st.expander("Auth status (no secrets shown)"):
-        if service_account_bytes:
-            st.success("Using uploaded service account JSON.")
-        elif _preload_secret:
-            st.success(
-                f"Using Streamlit Secrets: `{_preload_secret.get('client_email', '?')}` "
-                f"(fingerprint `{_secret_fp}`)"
-            )
-        else:
-            st.warning(
-                "No valid service account in **this** app's Streamlit Secrets. "
-                "Anonymous export only works if the sheet is public."
-            )
-            if st.session_state.get("_last_sa_secret_error"):
-                st.caption(f"Last parse error: {st.session_state['_last_sa_secret_error']}")
 
 try:
     df = load_marketing_data(
