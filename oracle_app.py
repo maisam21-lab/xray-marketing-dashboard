@@ -251,19 +251,19 @@ st.set_page_config(page_title="X-Ray Dashboard", page_icon="📊", layout="wide"
 st.markdown(
     """
     <style>
-    .stApp { background: linear-gradient(180deg, #f3f6fb 0%, #f7f9fd 100%); }
-    div[data-testid="stSidebar"] {
-        background: #eef2f8;
-        border-right: 1px solid #dbe4f2;
-    }
+    .stApp { background: #FAFBFC; font-family: sans-serif; font-size: 0.8125rem !important; }
+    header[data-testid="stHeader"] { background: #F1F3F4 !important; border-bottom: 1px solid #E2E8F0; }
+    header[data-testid="stHeader"] * { color: #1E293B !important; }
+    section[data-testid="stSidebar"] { background: #FFFFFF; border-right: 4px solid #0F766E; }
+    section[data-testid="stSidebar"] .stMarkdown, section[data-testid="stSidebar"] .stCaption { color: #1E293B !important; font-weight: 600 !important; }
     .topbar {
-        background: linear-gradient(90deg, #0a0d14 0%, #111827 100%);
+        background: #0F766E;
         color: #ffffff;
-        border-radius: 12px;
+        border-radius: 0 10px 10px 0;
         padding: 14px 18px;
         margin-bottom: 14px;
-        border: 1px solid #1f2937;
-        box-shadow: 0 10px 22px rgba(17, 24, 39, 0.2);
+        border: none;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.08);
     }
     .topbar-wrap {
         display: flex;
@@ -273,57 +273,64 @@ st.markdown(
         flex-wrap: wrap;
     }
     .brand {
-        border: 2px solid #1dd35f;
-        color: #1dd35f;
+        border: 2px solid #ffffff;
+        color: #ffffff;
         font-size: 13px;
         letter-spacing: 1px;
         font-weight: 700;
         border-radius: 5px;
         padding: 4px 9px;
     }
-    .navhint { color: #d5d5d5; font-size: 11px; }
-    .title-main { font-size: 20px; font-weight: 700; margin-top: 2px; }
-    .title-sub { font-size: 12px; color: #96a3b8; margin-top: 2px; }
+    .navhint { color: #D1FAE5; font-size: 11px; }
+    .title-main { font-size: 1.35rem; font-weight: 700; margin-top: 4px; }
+    .title-sub { font-size: 12px; color: #CCFBF1; margin-top: 2px; }
     .section-chip {
         display: inline-block;
-        background: #eaf0fb;
-        border: 1px solid #d2def3;
-        border-radius: 999px;
-        padding: 5px 11px;
+        background: #F1F5F9;
+        border: 1px solid #E2E8F0;
+        border-radius: 8px;
+        padding: 4px 10px;
         font-size: 11px;
         margin: 0 6px 8px 0;
-        color: #334155;
+        color: #475569;
         font-weight: 600;
     }
     .metric-card {
-        border: 1px solid #e2e8f0;
+        border: 1px solid #E2E8F0;
         padding: 14px 16px;
-        border-radius: 12px;
-        background: #ffffff;
-        box-shadow: 0 2px 10px rgba(15, 23, 42, 0.04);
+        border-radius: 10px;
+        background: linear-gradient(145deg, #f0fdf4 0%, #e0f2fe 100%);
+        border-left: 4px solid #0F766E;
+        box-shadow: 0 1px 3px rgba(0,0,0,.08);
         min-height: 92px;
     }
-    .metric-title { font-size: 12px; color: #64748b; margin-bottom: 8px; }
-    .metric-value { font-size: 28px; font-weight: 700; line-height: 1.1; color: #0f172a; }
+    .metric-title { font-size: 12px; color: #374151; margin-bottom: 8px; font-weight: 600; }
+    .metric-value { font-size: 28px; font-weight: 700; line-height: 1.1; color: #111827; }
     .block-title { font-size: 18px; font-weight: 700; color: #0f172a; margin: 8px 0 4px 0; }
     .block-subtitle { font-size: 12px; color: #64748b; margin-bottom: 12px; }
-    div[data-baseweb="tab-list"] { gap: 10px; }
-    button[data-baseweb="tab"] {
-        border-radius: 9px !important;
-        border: 1px solid #dbe4f2 !important;
-        background: #f8fafc !important;
-        padding: 8px 12px !important;
-    }
-    button[data-baseweb="tab"][aria-selected="true"] {
-        background: #dff4e8 !important;
-        border-color: #1dd35f !important;
-    }
-    div[data-testid="stMetric"] {
-        background: #ffffff;
-        border: 1px solid #e2e8f0;
-        border-radius: 12px;
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+        background: #F1F5F9;
         padding: 8px;
+        border-radius: 10px;
+        overflow-x: auto !important;
+        overflow-y: hidden !important;
+        flex-wrap: nowrap !important;
     }
+    .stTabs [data-baseweb="tab"] { padding: 10px 18px; border-radius: 8px; font-weight: 500; color: #475569; flex-shrink: 0; }
+    .stTabs [aria-selected="true"] { background: #0F766E !important; color: white !important; }
+    .stTabs [aria-selected="true"] span { color: white !important; }
+    .streamlit-expanderHeader { background: #F8FAFC; border-radius: 8px; border-left: 4px solid #0F766E; }
+    .stTextInput input, .stSelectbox > div, .stDateInput input {
+        border-radius: 6px !important;
+        background: #F8FAFC !important;
+        border: 1px solid #E2E8F0 !important;
+    }
+    .stDataFrame { border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); border: 1px solid #E2E8F0; }
+    [data-testid="stMetricValue"] { color: #1E293B !important; }
+    [data-testid="stMetricLabel"] { color: #64748B !important; }
+    .stCaption { color: #64748B !important; }
+    .stAlert { border-radius: 8px; border-left: 4px solid #0F766E; }
     </style>
     """,
     unsafe_allow_html=True,
