@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 from typing import Any, Optional, Union
 
 import pandas as pd
@@ -418,19 +418,19 @@ st.markdown(
         <div>
           <div style="display:flex; align-items:center; gap:14px;">
             <span class="brand">X-RAY</span>
-            <span class="navhint">RANKING · PIPELINE · BOB · REP · COUNTRY · EMAILS · MARKETING</span>
+            <span class="navhint">Marketing performance</span>
           </div>
-          <div class="title-main">Middle East Revenue & Marketing Cockpit</div>
-          <div class="title-sub">Executive view for paid media efficiency and commercial outcomes</div>
+          <div class="title-main">Marketing dashboard</div>
+          <div class="title-sub">Scorecards and trends from your connected Google Sheet</div>
         </div>
-        <div class="navhint">ME Dashboard</div>
+        <div class="navhint">ME</div>
       </div>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
-with st.expander("Data source & filters (KSA-style: controls in main area, sidebar hidden)", expanded=False):
+with st.expander("Data source & filters", expanded=False):
     st.caption(
         "The **service account JSON** (or Streamlit Secrets) only proves **who** is calling Google. "
         "The **spreadsheet URL or ID** below chooses **which workbook** to read — same as pointing the KSA tracker at a sheet ID."
@@ -461,8 +461,8 @@ with st.expander("Data source & filters (KSA-style: controls in main area, sideb
         type=["json"],
         help="Upload only if not using Cloud Secrets. Does not select which sheet; use the field above.",
     )
-    default_start = date(2025, 9, 1)
     default_end = date.today()
+    default_start = default_end - timedelta(days=730)
     d1, d2 = st.columns(2)
     with d1:
         start_date = st.date_input("Start date", value=default_start, max_value=default_end)
@@ -492,16 +492,8 @@ with st.expander("Data source & filters (KSA-style: controls in main area, sideb
         if st.session_state.get("_last_sa_secret_error"):
             st.caption(f"Last parse error: {st.session_state['_last_sa_secret_error']}")
 
-main_section = st.radio(
-    "Section",
-    ["Country", "Rep", "BoB", "Marketing"],
-    horizontal=True,
-    index=3,
-    label_visibility="collapsed",
-)
-
 try:
-    df = load_marketing_data(
+    df_loaded = load_marketing_data(
         sheet_id=sheet_id,
         gid=int(gid),
         service_account_bytes=service_account_bytes,
@@ -512,15 +504,29 @@ except Exception as exc:
     st.error(f"Failed to load sheet data: {exc}")
     st.stop()
 
-if df.empty:
+if df_loaded.empty:
     st.warning("No data loaded from this sheet/tab.")
     st.stop()
 
-df = _filter_by_date_range(df, start_date, end_date)
-
+df_filtered = _filter_by_date_range(df_loaded, start_date, end_date)
+date_filter_bypass = False
+if df_filtered.empty and not df_loaded.empty:
+    ds = pd.to_datetime(df_loaded["date"], errors="coerce")
+    dmin, dmax = ds.min().date(), ds.max().date()
+    st.warning(
+        f"No rows between **{start_date}** and **{end_date}**. "
+        f"Loaded data spans **{dmin}** → **{dmax}**. Widen dates in *Data source & filters* or use all rows below."
+    )
+    date_filter_bypass = st.checkbox("Show metrics for all loaded rows (ignore date filter)", value=True)
+df = df_loaded if date_filter_bypass else df_filtered
 if df.empty:
-    st.warning("No rows after date filter.")
     st.stop()
+
+st.markdown('<div class="block-title">Marketing dashboard</div>', unsafe_allow_html=True)
+st.markdown(
+    '<div class="block-subtitle">Scorecards and breakdowns from the sheet columns (spend, delivery, funnel).</div>',
+    unsafe_allow_html=True,
+)
 
 country_opts = sorted([x for x in df["country"].dropna().unique().tolist() if x and x != "Unknown"])
 selected_countries = st.multiselect("Country", ["All Countries"] + country_opts, default=["All Countries"])
@@ -532,180 +538,100 @@ selected_platforms = st.multiselect("Platform", ["All Platforms"] + platform_opt
 if "All Platforms" not in selected_platforms and selected_platforms:
     df = df[df["platform"].isin(selected_platforms)]
 
-if main_section == "Marketing":
-    st.markdown('<div class="block-title">Marketing Command Center</div>', unsafe_allow_html=True)
-    st.markdown(
-        '<div class="block-subtitle">Track media efficiency, lead quality, and funnel progression in one view.</div>',
-        unsafe_allow_html=True,
+total_spend = float(df["cost"].sum())
+total_impr = int(df["impressions"].sum())
+total_clicks = int(df["clicks"].sum())
+total_leads = int(df["leads"].sum())
+total_qualified = int(df["qualified"].sum())
+total_pitching = int(df["pitching"].sum())
+total_cw = int(df["closed_won"].sum())
+ctr = (total_clicks / total_impr * 100) if total_impr else 0
+cpc = (total_spend / total_clicks) if total_clicks else 0.0
+cpm = (total_spend / total_impr * 1000) if total_impr else 0.0
+cpl = (total_spend / total_leads) if total_leads else 0.0
+cpsql = (total_spend / total_qualified) if total_qualified else 0.0
+
+st.markdown("#### Scorecards")
+r1 = st.columns(4)
+card(r1[0], "Total spend", f"${total_spend:,.2f}")
+card(r1[1], "Impressions", f"{total_impr:,}")
+card(r1[2], "Clicks", f"{total_clicks:,}")
+card(r1[3], "CTR", f"{ctr:.2f}%")
+
+r2 = st.columns(4)
+card(r2[0], "CPC", f"${cpc:,.2f}")
+card(r2[1], "CPM", f"${cpm:,.2f}")
+card(r2[2], "CPL (cost / lead)", f"${cpl:,.2f}")
+card(r2[3], "Cost / qualified", f"${cpsql:,.2f}")
+
+r3 = st.columns(4)
+card(r3[0], "Leads", f"{total_leads:,}")
+card(r3[1], "Qualified", f"{total_qualified:,}")
+card(r3[2], "Pitching", f"{total_pitching:,}")
+card(r3[3], "Closed won", f"{total_cw:,}")
+
+tab_overview, tab_region, tab_funnel, tab_raw = st.tabs(
+    ["Overview", "Regional", "Funnel", "Raw data"],
+)
+
+with tab_overview:
+    st.markdown("#### Trends")
+    monthly = (
+        df.groupby("month", as_index=False)
+        .agg(cost=("cost", "sum"), clicks=("clicks", "sum"), impressions=("impressions", "sum"))
+        .sort_values("month")
     )
-    st.markdown(
-        """
-        <span class="section-chip">Dashboard</span>
-        <span class="section-chip">Regional Analysis</span>
-        <span class="section-chip">TCV Analysis</span>
-        <span class="section-chip">Sales Funnel</span>
-        <span class="section-chip">Budgets</span>
-        <span class="section-chip">Lost Analysis</span>
-        """,
-        unsafe_allow_html=True,
+    m1, m2 = st.columns(2)
+    with m1:
+        fig_cost = px.line(monthly, x="month", y="cost", markers=True, title="Cost by month")
+        fig_cost.update_traces(line_color="#2563eb", marker_color="#2563eb")
+        fig_cost.update_layout(plot_bgcolor="white", paper_bgcolor="white", margin=dict(l=8, r=8, t=45, b=8))
+        st.plotly_chart(fig_cost, use_container_width=True)
+    with m2:
+        fig_clicks = px.line(monthly, x="month", y="clicks", markers=True, title="Clicks by month")
+        fig_clicks.update_traces(line_color="#0f766e", marker_color="#0f766e")
+        fig_clicks.update_layout(plot_bgcolor="white", paper_bgcolor="white", margin=dict(l=8, r=8, t=45, b=8))
+        st.plotly_chart(fig_clicks, use_container_width=True)
+
+    st.markdown("#### Spend breakdown")
+    b1, b2 = st.columns(2)
+    with b1:
+        by_country = (
+            df.groupby("country", as_index=False)["cost"].sum().sort_values("cost", ascending=False).head(15)
+        )
+        fig_country = px.bar(by_country, x="country", y="cost", title="Spend by country")
+        fig_country.update_traces(marker_color="#334155")
+        fig_country.update_layout(plot_bgcolor="white", paper_bgcolor="white", margin=dict(l=8, r=8, t=45, b=8))
+        st.plotly_chart(fig_country, use_container_width=True)
+    with b2:
+        by_channel = (
+            df.groupby("channel", as_index=False)["cost"].sum().sort_values("cost", ascending=False).head(15)
+        )
+        fig_channel = px.bar(by_channel, x="channel", y="cost", title="Spend by channel")
+        fig_channel.update_traces(marker_color="#16a34a")
+        fig_channel.update_layout(plot_bgcolor="white", paper_bgcolor="white", margin=dict(l=8, r=8, t=45, b=8))
+        st.plotly_chart(fig_channel, use_container_width=True)
+
+with tab_region:
+    by_region = (
+        df.groupby(["country", "month"], as_index=False)
+        .agg(cost=("cost", "sum"), leads=("leads", "sum"))
+        .sort_values(["month", "cost"], ascending=[True, False])
     )
+    st.dataframe(by_region, use_container_width=True)
 
-    total_spend = float(df["cost"].sum())
-    total_impr = int(df["impressions"].sum())
-    total_clicks = int(df["clicks"].sum())
-    total_leads = int(df["leads"].sum())
-    total_qualified = int(df["qualified"].sum())
-    total_pitching = int(df["pitching"].sum())
-    total_cw = int(df["closed_won"].sum())
-    ctr = (total_clicks / total_impr * 100) if total_impr else 0
-
-    r1 = st.columns(4)
-    card(r1[0], "Total Spend", f"${total_spend:,.2f}")
-    card(r1[1], "Total Impressions", f"{total_impr:,}")
-    card(r1[2], "Total Clicks", f"{total_clicks:,}")
-    card(r1[3], "Click-Through Rate", f"{ctr:.2f}%")
-
-    r2 = st.columns(4)
-    card(r2[0], "Leads", f"{total_leads:,}")
-    card(r2[1], "Qualified Leads", f"{total_qualified:,}")
-    card(r2[2], "Pitching", f"{total_pitching:,}")
-    card(r2[3], "Closed Wons", f"{total_cw:,}")
-
-    tab_dash, tab_region, tab_tcv, tab_funnel, tab_budgets, tab_lost = st.tabs(
-        ["Dashboard", "Regional Analysis", "TCV Analysis", "Sales Funnel", "Budgets", "Lost Analysis"]
+with tab_funnel:
+    funnel_df = pd.DataFrame(
+        [
+            {"stage": "Impressions", "value": total_impr},
+            {"stage": "Clicks", "value": total_clicks},
+            {"stage": "Leads", "value": total_leads},
+            {"stage": "Qualified", "value": total_qualified},
+            {"stage": "Pitching", "value": total_pitching},
+            {"stage": "Closed won", "value": total_cw},
+        ]
     )
+    st.plotly_chart(px.funnel(funnel_df, x="value", y="stage", title="Funnel"), use_container_width=True)
 
-    with tab_dash:
-        st.markdown("#### Performance Trends")
-        monthly = (
-            df.groupby("month", as_index=False)
-            .agg(cost=("cost", "sum"), clicks=("clicks", "sum"), impressions=("impressions", "sum"))
-            .sort_values("month")
-        )
-        m1, m2 = st.columns(2)
-        with m1:
-            fig_cost = px.line(monthly, x="month", y="cost", markers=True, title="Monthly Cost")
-            fig_cost.update_traces(line_color="#2563eb", marker_color="#2563eb")
-            fig_cost.update_layout(plot_bgcolor="white", paper_bgcolor="white", margin=dict(l=8, r=8, t=45, b=8))
-            st.plotly_chart(fig_cost, use_container_width=True)
-        with m2:
-            fig_clicks = px.line(monthly, x="month", y="clicks", markers=True, title="Monthly Clicks")
-            fig_clicks.update_traces(line_color="#0f766e", marker_color="#0f766e")
-            fig_clicks.update_layout(plot_bgcolor="white", paper_bgcolor="white", margin=dict(l=8, r=8, t=45, b=8))
-            st.plotly_chart(fig_clicks, use_container_width=True)
-
-        st.markdown("#### Breakdown")
-        b1, b2 = st.columns(2)
-        with b1:
-            by_country = df.groupby("country", as_index=False)["cost"].sum().sort_values("cost", ascending=False).head(15)
-            fig_country = px.bar(by_country, x="country", y="cost", title="Spend by Country")
-            fig_country.update_traces(marker_color="#334155")
-            fig_country.update_layout(plot_bgcolor="white", paper_bgcolor="white", margin=dict(l=8, r=8, t=45, b=8))
-            st.plotly_chart(fig_country, use_container_width=True)
-        with b2:
-            by_channel = df.groupby("channel", as_index=False)["cost"].sum().sort_values("cost", ascending=False).head(15)
-            fig_channel = px.bar(by_channel, x="channel", y="cost", title="Spend by Channel")
-            fig_channel.update_traces(marker_color="#16a34a")
-            fig_channel.update_layout(plot_bgcolor="white", paper_bgcolor="white", margin=dict(l=8, r=8, t=45, b=8))
-            st.plotly_chart(fig_channel, use_container_width=True)
-
-    with tab_region:
-        by_region = (
-            df.groupby(["country", "month"], as_index=False)
-            .agg(cost=("cost", "sum"), leads=("leads", "sum"))
-            .sort_values(["month", "cost"], ascending=[True, False])
-        )
-        st.dataframe(by_region, use_container_width=True)
-    with tab_tcv:
-        st.info("TCV analysis wiring can be connected once opportunity/TCV columns are added to this source.")
-    with tab_funnel:
-        funnel_df = pd.DataFrame(
-            [
-                {"stage": "Impressions", "value": total_impr},
-                {"stage": "Clicks", "value": total_clicks},
-                {"stage": "Leads", "value": total_leads},
-                {"stage": "Qualified", "value": total_qualified},
-                {"stage": "Pitching", "value": total_pitching},
-                {"stage": "Closed Wons", "value": total_cw},
-            ]
-        )
-        st.plotly_chart(px.funnel(funnel_df, x="value", y="stage", title="Funnel Overview"), use_container_width=True)
-    with tab_budgets:
-        st.info("Budget tracking can be enabled once budget target columns/tabs are shared.")
-    with tab_lost:
-        st.info("Lost analysis needs lost-opportunity fields from CRM source.")
-
-    with st.expander("Show raw rows"):
-        st.dataframe(df, use_container_width=True)
-
-elif main_section == "Country":
-    st.markdown('<div class="block-title">Country Quality Analysis</div>', unsafe_allow_html=True)
-    by_country = (
-        df.groupby("country", as_index=False)
-        .agg(
-            spend=("cost", "sum"),
-            impressions=("impressions", "sum"),
-            clicks=("clicks", "sum"),
-            leads=("leads", "sum"),
-            qualified=("qualified", "sum"),
-            closed_won=("closed_won", "sum"),
-        )
-        .sort_values("spend", ascending=False)
-    )
-    if by_country.empty:
-        st.info("No country data for the current filters.")
-    else:
-        top_country = by_country.iloc[0]["country"]
-        c1, c2, c3, c4 = st.columns(4)
-        card(c1, "Top Country", str(top_country))
-        card(c2, "Markets", f"{len(by_country)}")
-        card(c3, "Total Spend", f"${by_country['spend'].sum():,.0f}")
-        card(c4, "Closed Won", f"{int(by_country['closed_won'].sum()):,}")
-        l1, l2 = st.columns(2)
-        with l1:
-            st.plotly_chart(px.bar(by_country, x="country", y="spend", title="Spend by Country"), use_container_width=True)
-        with l2:
-            st.plotly_chart(px.bar(by_country, x="country", y="closed_won", title="Closed Won by Country"), use_container_width=True)
-        st.dataframe(by_country, use_container_width=True)
-
-elif main_section == "Rep":
-    st.markdown('<div class="block-title">Rep Quality Analysis</div>', unsafe_allow_html=True)
-    rep_df = df.copy()
-    rep_df["rep"] = rep_df.get("rep_name", "Unassigned")
-    rep_agg = (
-        rep_df.groupby("rep", as_index=False)
-        .agg(
-            spend=("cost", "sum"),
-            leads=("leads", "sum"),
-            qualified=("qualified", "sum"),
-            closed_won=("closed_won", "sum"),
-        )
-        .sort_values("closed_won", ascending=False)
-    )
-    if rep_agg.empty:
-        st.info("No rep-level rows. Add a rep column in sheet (e.g., rep_name) to fully match the screenshot.")
-    else:
-        r1, r2, r3, r4 = st.columns(4)
-        card(r1, "Active Reps", f"{len(rep_agg)}")
-        card(r2, "Total Leads", f"{int(rep_agg['leads'].sum()):,}")
-        card(r3, "Qualified", f"{int(rep_agg['qualified'].sum()):,}")
-        card(r4, "Closed Won", f"{int(rep_agg['closed_won'].sum()):,}")
-        st.plotly_chart(px.bar(rep_agg.head(20), x="rep", y="closed_won", title="Rep Performance (Closed Won)"), use_container_width=True)
-        st.dataframe(rep_agg, use_container_width=True)
-
-elif main_section == "BoB":
-    st.markdown('<div class="block-title">Book of Business</div>', unsafe_allow_html=True)
-    bob_df = df.copy()
-    if "account" not in bob_df.columns:
-        bob_df["account"] = "Account not provided"
-    if "owner" not in bob_df.columns:
-        bob_df["owner"] = "Owner not provided"
-    bob_df["status"] = bob_df.get("status", "Unknown")
-    summary1, summary2, summary3, summary4 = st.columns(4)
-    card(summary1, "Filtered Accounts", f"{bob_df['account'].nunique():,}")
-    card(summary2, "Touched", f"{int((bob_df['clicks'] > 0).sum()):,}")
-    card(summary3, "With Open Opps", f"{int((bob_df['pitching'] > 0).sum()):,}")
-    card(summary4, "Untouched", f"{int((bob_df['clicks'] == 0).sum()):,}")
-    display_cols = [c for c in ["account", "country", "channel", "owner", "status", "clicks", "leads", "qualified", "pitching", "closed_won"] if c in bob_df.columns]
-    st.dataframe(bob_df[display_cols].head(500), use_container_width=True)
-
+with tab_raw:
+    st.dataframe(df, use_container_width=True)
