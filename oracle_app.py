@@ -201,10 +201,16 @@ def _read_sheet_auth(
         try:
             ws = sh.get_worksheet_by_id(int(worksheet_gid))
         except Exception as e:
+            try:
+                tab_lines = [f"  • \"{w.title}\" → gid **{w.id}**" for w in sh.worksheets()]
+                tab_help = "\n".join(tab_lines) if tab_lines else "  (none)"
+            except Exception:
+                tab_help = "  (could not list tabs)"
             raise RuntimeError(
-                f"Could not open the tab with gid={worksheet_gid}. "
-                "In the sheet URL, copy the number after `gid=` (e.g. …#gid=8109573 → 8109573). "
-                "Set gid to 0 to use the first tab."
+                f"Could not open a tab with gid={worksheet_gid}. "
+                "**gid is not tab order (1,2,3).** It must match the number after `gid=` in the URL when that tab is open, "
+                "or use **0** for the **first (leftmost) tab**.\n\n"
+                f"Tabs in this file:\n{tab_help}"
             ) from e
     else:
         ws = sh.get_worksheet(0)
@@ -442,7 +448,10 @@ with st.expander("Data source & filters (KSA-style: controls in main area, sideb
             value=0,
             min_value=0,
             step=1,
-            help="Paste the number after gid= in the sheet URL (e.g. 8109573). Use 0 for the first tab.",
+            help=(
+                "Use **0** for the first (leftmost) tab. For any other tab, open it in Google Sheets and copy "
+                "the long number after `gid=` in the URL (e.g. 8109573). **Do not use 1, 2, 3** unless the URL actually shows that."
+            ),
         )
     with c3:
         worksheet_name = st.text_input("Worksheet name (optional)", value="", help="Leave empty for first sheet")
