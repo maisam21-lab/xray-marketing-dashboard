@@ -408,8 +408,11 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-with st.expander("Filters", expanded=False):
-    st.caption("Sheet + tab below. Access uses **Streamlit Secrets** only (`[gsheet_service_account]`). Share the sheet with that service account.")
+with st.expander("Filters — connect your real sheet here", expanded=True):
+    st.caption(
+        "**1)** Paste your spreadsheet **URL or ID** below. **2)** In Google Sheets → **Share** → add the service account email from Secrets as **Viewer**. "
+        "**3)** Optional: set **gid** if the data is not on the first tab."
+    )
     c1, c2, c3 = st.columns([2, 1, 1])
     with c1:
         sheet_url_or_id = st.text_input(
@@ -454,15 +457,29 @@ if df_loaded.empty:
     st.warning("No data loaded from this sheet/tab.")
     st.stop()
 
+_ds = pd.to_datetime(df_loaded["date"], errors="coerce")
+_ds_ok = _ds.dropna()
+if len(_ds_ok):
+    st.success(
+        f"**{len(df_loaded):,}** rows loaded · dates in sheet: **{_ds_ok.min().date()}** → **{_ds_ok.max().date()}**"
+    )
+else:
+    st.warning(
+        "Rows loaded but **Date** did not parse — widen filters or fix the Date column so charts filter correctly."
+    )
+
 df_filtered = _filter_by_date_range(df_loaded, start_date, end_date)
 date_filter_bypass = False
 if df_filtered.empty and not df_loaded.empty:
-    ds = pd.to_datetime(df_loaded["date"], errors="coerce")
-    dmin, dmax = ds.min().date(), ds.max().date()
-    st.warning(
-        f"No rows between **{start_date}** and **{end_date}**. "
-        f"Loaded data spans **{dmin}** → **{dmax}**. Widen dates in *Filters* or use all rows below."
-    )
+    _dr = pd.to_datetime(df_loaded["date"], errors="coerce").dropna()
+    if len(_dr):
+        dmin, dmax = _dr.min().date(), _dr.max().date()
+        st.warning(
+            f"No rows between **{start_date}** and **{end_date}**. "
+            f"Loaded data spans **{dmin}** → **{dmax}**. Widen dates in *Filters* or use all rows below."
+        )
+    else:
+        st.warning("No rows in the selected date range and no valid **Date** values to compare.")
     date_filter_bypass = st.checkbox("Show metrics for all loaded rows (ignore date filter)", value=True)
 df = df_loaded if date_filter_bypass else df_filtered
 if df.empty:
