@@ -529,12 +529,12 @@ def render_marketing_tab_for_worksheet(
                 fig_cost = px.line(monthly, x="month", y="cost", markers=True, title="Cost by month")
                 fig_cost.update_traces(line_color="#2563eb", marker_color="#2563eb")
                 fig_cost.update_layout(plot_bgcolor="white", paper_bgcolor="white", margin=dict(l=8, r=8, t=45, b=8))
-                st.plotly_chart(fig_cost, use_container_width=True)
+                st.plotly_chart(fig_cost, use_container_width=True, key=f"{key_suffix}_pl_cost_mo")
             with m2:
                 fig_clicks = px.line(monthly, x="month", y="clicks", markers=True, title="Clicks by month")
                 fig_clicks.update_traces(line_color="#0f766e", marker_color="#0f766e")
                 fig_clicks.update_layout(plot_bgcolor="white", paper_bgcolor="white", margin=dict(l=8, r=8, t=45, b=8))
-                st.plotly_chart(fig_clicks, use_container_width=True)
+                st.plotly_chart(fig_clicks, use_container_width=True, key=f"{key_suffix}_pl_clicks_mo")
 
             st.markdown("#### Spend breakdown")
             b1, b2 = st.columns(2)
@@ -545,7 +545,7 @@ def render_marketing_tab_for_worksheet(
                 fig_country = px.bar(by_country, x="country", y="cost", title="Spend by country")
                 fig_country.update_traces(marker_color="#334155")
                 fig_country.update_layout(plot_bgcolor="white", paper_bgcolor="white", margin=dict(l=8, r=8, t=45, b=8))
-                st.plotly_chart(fig_country, use_container_width=True)
+                st.plotly_chart(fig_country, use_container_width=True, key=f"{key_suffix}_pl_country")
             with b2:
                 by_channel = (
                     df.groupby("channel", as_index=False)["cost"].sum().sort_values("cost", ascending=False).head(15)
@@ -553,7 +553,7 @@ def render_marketing_tab_for_worksheet(
                 fig_channel = px.bar(by_channel, x="channel", y="cost", title="Spend by channel")
                 fig_channel.update_traces(marker_color="#16a34a")
                 fig_channel.update_layout(plot_bgcolor="white", paper_bgcolor="white", margin=dict(l=8, r=8, t=45, b=8))
-                st.plotly_chart(fig_channel, use_container_width=True)
+                st.plotly_chart(fig_channel, use_container_width=True, key=f"{key_suffix}_pl_channel")
 
         with tab_region:
             by_region = (
@@ -561,7 +561,7 @@ def render_marketing_tab_for_worksheet(
                 .agg(cost=("cost", "sum"), leads=("leads", "sum"))
                 .sort_values(["month", "cost"], ascending=[True, False])
             )
-            st.dataframe(by_region, use_container_width=True)
+            st.dataframe(by_region, use_container_width=True, key=f"{key_suffix}_df_region")
 
         with tab_funnel:
             funnel_df = pd.DataFrame(
@@ -574,7 +574,11 @@ def render_marketing_tab_for_worksheet(
                     {"stage": "Closed won", "value": total_cw},
                 ]
             )
-            st.plotly_chart(px.funnel(funnel_df, x="value", y="stage", title="Funnel"), use_container_width=True)
+            st.plotly_chart(
+                px.funnel(funnel_df, x="value", y="stage", title="Funnel"),
+                use_container_width=True,
+                key=f"{key_suffix}_pl_funnel",
+            )
 
     with tab_data:
         st.markdown("### Data")
@@ -583,7 +587,7 @@ def render_marketing_tab_for_worksheet(
             f"**Sheet** `{sheet_id}` · **{len(df_date):,}** rows after the date range in *Filters*. "
             "Country and Platform slicers apply only on **Dashboard**."
         )
-        st.dataframe(df_date, use_container_width=True, height=420)
+        st.dataframe(df_date, use_container_width=True, height=420, key=f"{key_suffix}_df_date")
         st.download_button(
             "Download CSV (date-filtered)",
             data=df_date.to_csv(index=False).encode("utf-8"),
@@ -593,7 +597,7 @@ def render_marketing_tab_for_worksheet(
         )
         with st.expander("Full sheet load (ignore date filter)", expanded=False):
             st.caption(f"**{len(df_loaded):,}** rows as loaded from this tab — QA vs. date-filtered slice.")
-            st.dataframe(df_loaded, use_container_width=True, height=320)
+            st.dataframe(df_loaded, use_container_width=True, height=320, key=f"{key_suffix}_df_loaded")
 
 
 st.set_page_config(
