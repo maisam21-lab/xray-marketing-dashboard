@@ -327,16 +327,39 @@ def list_worksheet_meta(sheet_id: str, _secret_fp: str) -> list[tuple[str, int]]
     return [(w.title, int(w.id)) for w in sh.worksheets()]
 
 
-def _unique_tab_labels(meta: list[tuple[str, int]]) -> list[str]:
-    """Stable labels for Streamlit tabs; disambiguate duplicate worksheet titles."""
-    counts: dict[str, int] = {}
-    labels: list[str] = []
-    for title, _wid in meta:
-        base = title.strip() if title.strip() else "Sheet"
-        n = counts.get(base, 0) + 1
-        counts[base] = n
-        labels.append(base if n == 1 else f"{base} ({n})")
-    return labels
+@st.cache_data(ttl=300)
+def load_all_worksheets_combined(sheet_id: str, _secret_fp: str) -> pd.DataFrame:
+    """Read every worksheet in the spreadsheet (backend) and stack rows with `source_tab` set to the tab title."""
+    meta = list_worksheet_meta(sheet_id, _secret_fp)
+    frames: list[pd.DataFrame] = []
+    tab_stats: list[tuple[str, int]] = []
+    for title, ws_gid in meta:
+        try:
+            df = load_marketing_data(sheet_id, ws_gid, _secret_fp)
+        except Exception:
+            tab_stats.append((title, -1))
+            continue
+        if df.empty:
+            tab_stats.append((title, 0))
+            continue
+        df = df.copy()
+        df["source_tab"] = (title.strip() if title.strip() else "Sheet")
+        frames.append(df)
+        tab_stats.append((title, len(df)))
+    if not frames:
+        out = pd.DataFrame()
+        out.attrs["tab_stats"] = tab_stats
+        out.attrs["worksheet_order"] = [t for t, _ in meta]
+        return out
+    combined = pd.concat(frames, ignore_index=True)
+    combined.attrs["tab_stats"] = tab_stats
+    combined.attrs["worksheet_order"] = [t for t, _ in meta]
+    try:
+        combined.attrs["fields_mapped"] = list(frames[0].attrs.get("fields_mapped", []) or [])
+    except Exception:
+        combined.attrs["fields_mapped"] = []
+    combined.attrs["sheet_columns"] = list(combined.columns)
+    return combined
 
 
 @st.cache_data(ttl=300)
@@ -373,33 +396,39 @@ def card(col, title: str, value: str) -> None:
     )
 
 
-def render_marketing_tab_for_worksheet(
+def render_main_dashboard(
+    df_loaded: pd.DataFrame,
     sheet_id: str,
-    worksheet_title: str,
-    worksheet_gid: int,
     start_date: date,
     end_date: date,
-    _secret_fp: str,
-    key_suffix: str,
 ) -> None:
-    """Dashboard + Data for one Google worksheet; `key_suffix` keeps Streamlit widgets unique per tab."""
-    try:
-        df_loaded = load_marketing_data(sheet_id, worksheet_gid, _secret_fp)
-    except Exception as exc:
-        st.error(f"Failed to load **{worksheet_title}**: {exc}")
-        return
-
+    """Single main dashboard: metrics from all worksheets combined (backend reads every tab)."""
+    key_suffix = "main"
     if df_loaded.empty:
-        st.warning(f"No data in **{worksheet_title}**.")
+        st.warning("No rows loaded from any worksheet.")
         return
 
-    st.caption(f"Worksheet **{worksheet_title}** · `gid={worksheet_gid}`")
+    st.caption(
+        "All workbook tabs are read in the **backend** and combined into one dataset (`source_tab` = worksheet name)."
+    )
+    _tab_stats = list(df_loaded.attrs.get("tab_stats", []) or [])
+    if _tab_stats:
+        with st.expander("Rows loaded per worksheet (backend)", expanded=False):
+            for tname, n in _tab_stats:
+                if n < 0:
+                    st.caption(f"• **{tname}** — error loading")
+                elif n == 0:
+                    st.caption(f"• **{tname}** — 0 rows")
+                else:
+                    st.caption(f"• **{tname}** — {n:,} rows")
 
     _ds = pd.to_datetime(df_loaded["date"], errors="coerce")
     _ds_ok = _ds.dropna()
     if len(_ds_ok):
+        nws = int(df_loaded["source_tab"].nunique()) if "source_tab" in df_loaded.columns else 1
         st.success(
-            f"**{len(df_loaded):,}** rows · dates: **{_ds_ok.min().date()}** → **{_ds_ok.max().date()}**"
+            f"**{len(df_loaded):,}** rows · **{nws}** worksheet(s) with data · dates: "
+            f"**{_ds_ok.min().date()}** → **{_ds_ok.max().date()}**"
         )
     else:
         st.warning(
@@ -480,6 +509,18 @@ def render_marketing_tab_for_worksheet(
         )
         if "All Platforms" not in selected_platforms and selected_platforms:
             df = df[df["platform"].isin(selected_platforms)]
+
+        if "source_tab" in df.columns:
+            st_opts = sorted([x for x in df["source_tab"].dropna().unique().tolist() if x])
+            selected_tabs = st.multiselect(
+                "Source tab",
+                ["All tabs"] + st_opts,
+                default=["All tabs"],
+                key=f"{key_suffix}_source_tab",
+                help="Filter to one or more Google Sheet tabs (backend still loads all tabs).",
+            )
+            if "All tabs" not in selected_tabs and selected_tabs:
+                df = df[df["source_tab"].isin(selected_tabs)]
 
         total_spend = float(df["cost"].sum())
         total_impr = int(df["impressions"].sum())
@@ -582,21 +623,20 @@ def render_marketing_tab_for_worksheet(
 
     with tab_data:
         st.markdown("### Data")
-        safe_name = re.sub(r"[^\w\-]+", "_", worksheet_title)[:80] or "sheet"
         st.caption(
-            f"**Sheet** `{sheet_id}` · **{len(df_date):,}** rows after the date range in *Filters*. "
-            "Country and Platform slicers apply only on **Dashboard**."
+            f"**Spreadsheet** `{sheet_id}` · **{len(df_date):,}** rows after the date range in *Filters*. "
+            "Includes **source_tab** (worksheet name). Slicers on Dashboard apply here."
         )
         st.dataframe(df_date, use_container_width=True, height=420, key=f"{key_suffix}_df_date")
         st.download_button(
             "Download CSV (date-filtered)",
             data=df_date.to_csv(index=False).encode("utf-8"),
-            file_name=f"xray_{safe_name}_{worksheet_gid}.csv",
+            file_name="xray_marketing_combined.csv",
             mime="text/csv",
             key=f"{key_suffix}_dl",
         )
-        with st.expander("Full sheet load (ignore date filter)", expanded=False):
-            st.caption(f"**{len(df_loaded):,}** rows as loaded from this tab — QA vs. date-filtered slice.")
+        with st.expander("Full combined load (ignore date filter)", expanded=False):
+            st.caption(f"**{len(df_loaded):,}** rows — all tabs stacked — QA vs. date-filtered slice.")
             st.dataframe(df_loaded, use_container_width=True, height=320, key=f"{key_suffix}_df_loaded")
 
 
@@ -718,8 +758,7 @@ st.markdown(
 with st.expander("Filters — connect your real sheet here", expanded=True):
     st.caption(
         "Paste your spreadsheet **URL or ID** and share it with the service account (**Viewer**). "
-        "**Tabs below mirror the workbook** (same tabs, same order as Google Sheets). "
-        "Each tab has **Dashboard** and **Data** like before."
+        "**Every worksheet tab is read in the backend** and combined for the main dashboard below."
     )
     sheet_url_or_id = st.text_input(
         "Google Sheet URL or ID",
@@ -739,30 +778,9 @@ with st.expander("Filters — connect your real sheet here", expanded=True):
     _secret_fp = _secret_fingerprint(_service_account_from_streamlit_secrets())
 
 try:
-    ws_meta = list_worksheet_meta(sheet_id, _secret_fp)
+    df_loaded = load_all_worksheets_combined(sheet_id, _secret_fp)
 except Exception as exc:
-    st.error(f"Failed to open spreadsheet or list tabs: {exc}")
+    st.error(f"Failed to load spreadsheet: {exc}")
     st.stop()
 
-if not ws_meta:
-    st.warning("This spreadsheet has no worksheets.")
-    st.stop()
-
-st.markdown(
-    "**Workbook tabs** (same order as the Google Sheet — left to right). "
-    "Open each tab for **Dashboard** / **Data** for that worksheet."
-)
-_tab_labels = _unique_tab_labels(ws_meta)
-_sheet_tabs = st.tabs(_tab_labels)
-
-for tab_ctx, (ws_title, ws_gid) in zip(_sheet_tabs, ws_meta):
-    with tab_ctx:
-        render_marketing_tab_for_worksheet(
-            sheet_id,
-            ws_title,
-            ws_gid,
-            start_date,
-            end_date,
-            _secret_fp,
-            key_suffix=f"g{ws_gid}",
-        )
+render_main_dashboard(df_loaded, sheet_id, start_date, end_date)
