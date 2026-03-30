@@ -413,7 +413,8 @@ def render_main_dashboard(
 
     st.markdown('<div class="block-title">Marketing dashboard</div>', unsafe_allow_html=True)
     st.markdown(
-        '<div class="block-subtitle">Scorecards and breakdowns from the sheet columns (spend, delivery, funnel).</div>',
+        '<div class="block-subtitle">Data is read from <strong>every worksheet tab</strong> in the spreadsheet, '
+        "combined with a <code>source_tab</code> label. Filters below shape the scorecards and charts.</div>",
         unsafe_allow_html=True,
     )
 
@@ -438,6 +439,9 @@ def render_main_dashboard(
     if "All Platforms" not in selected_platforms and selected_platforms:
         df = df[df["platform"].isin(selected_platforms)]
 
+    # Before optional source_tab filter: use for tab-level breakdown (mirrors Google tabs)
+    df_for_tabs = df.copy()
+
     if "source_tab" in df.columns:
         st_opts = sorted([x for x in df["source_tab"].dropna().unique().tolist() if x])
         selected_tabs = st.multiselect(
@@ -448,6 +452,42 @@ def render_main_dashboard(
         )
         if "All tabs" not in selected_tabs and selected_tabs:
             df = df[df["source_tab"].isin(selected_tabs)]
+
+    # --- Shape: workbook tabs (what we read in the backend) ---
+    if "source_tab" in df_for_tabs.columns and df_for_tabs["source_tab"].nunique() > 0:
+        st.markdown("#### Workbook tabs (read in backend)")
+        by_tab = (
+            df_for_tabs.groupby("source_tab", as_index=False)
+            .agg(
+                rows=("cost", "count"),
+                spend=("cost", "sum"),
+                clicks=("clicks", "sum"),
+                impressions=("impressions", "sum"),
+                leads=("leads", "sum"),
+            )
+            .sort_values("spend", ascending=False)
+        )
+        t1, t2 = st.columns((1, 1))
+        with t1:
+            fig_tab_spend = px.bar(
+                by_tab,
+                x="spend",
+                y="source_tab",
+                orientation="h",
+                title="Spend by worksheet tab",
+                labels={"spend": "Spend (USD)", "source_tab": "Tab"},
+            )
+            fig_tab_spend.update_traces(marker_color="#0F766E")
+            fig_tab_spend.update_layout(
+                plot_bgcolor="white",
+                paper_bgcolor="white",
+                margin=dict(l=8, r=8, t=45, b=8),
+                yaxis={"categoryorder": "total ascending"},
+            )
+            st.plotly_chart(fig_tab_spend, use_container_width=True, key=f"{key_suffix}_pl_tab_spend")
+        with t2:
+            st.caption("Per-tab totals (same Country / Platform filters; ignores *Source tab* filter).")
+            st.dataframe(by_tab, use_container_width=True, hide_index=True, key=f"{key_suffix}_df_by_tab")
 
     total_spend = float(df["cost"].sum())
     total_impr = int(df["impressions"].sum())
@@ -487,22 +527,63 @@ def render_main_dashboard(
 
     with tab_overview:
         st.markdown("#### Trends")
-        monthly = (
-            df.groupby("month", as_index=False)
-            .agg(cost=("cost", "sum"), clicks=("clicks", "sum"), impressions=("impressions", "sum"))
-            .sort_values("month")
-        )
-        m1, m2 = st.columns(2)
-        with m1:
-            fig_cost = px.line(monthly, x="month", y="cost", markers=True, title="Cost by month")
-            fig_cost.update_traces(line_color="#2563eb", marker_color="#2563eb")
-            fig_cost.update_layout(plot_bgcolor="white", paper_bgcolor="white", margin=dict(l=8, r=8, t=45, b=8))
-            st.plotly_chart(fig_cost, use_container_width=True, key=f"{key_suffix}_pl_cost_mo")
-        with m2:
-            fig_clicks = px.line(monthly, x="month", y="clicks", markers=True, title="Clicks by month")
-            fig_clicks.update_traces(line_color="#0f766e", marker_color="#0f766e")
-            fig_clicks.update_layout(plot_bgcolor="white", paper_bgcolor="white", margin=dict(l=8, r=8, t=45, b=8))
-            st.plotly_chart(fig_clicks, use_container_width=True, key=f"{key_suffix}_pl_clicks_mo")
+        _nt = int(df["source_tab"].nunique()) if "source_tab" in df.columns else 0
+        if _nt > 1:
+            monthly_by_tab = (
+                df.groupby(["month", "source_tab"], as_index=False)
+                .agg(cost=("cost", "sum"), clicks=("clicks", "sum"), impressions=("impressions", "sum"))
+                .sort_values(["month", "source_tab"])
+            )
+            m1, m2 = st.columns(2)
+            with m1:
+                fig_cost = px.line(
+                    monthly_by_tab,
+                    x="month",
+                    y="cost",
+                    color="source_tab",
+                    markers=True,
+                    title="Cost by month (by worksheet tab)",
+                )
+                fig_cost.update_layout(
+                    plot_bgcolor="white",
+                    paper_bgcolor="white",
+                    margin=dict(l=8, r=8, t=45, b=8),
+                    legend_title_text="Tab",
+                )
+                st.plotly_chart(fig_cost, use_container_width=True, key=f"{key_suffix}_pl_cost_mo")
+            with m2:
+                fig_clicks = px.line(
+                    monthly_by_tab,
+                    x="month",
+                    y="clicks",
+                    color="source_tab",
+                    markers=True,
+                    title="Clicks by month (by worksheet tab)",
+                )
+                fig_clicks.update_layout(
+                    plot_bgcolor="white",
+                    paper_bgcolor="white",
+                    margin=dict(l=8, r=8, t=45, b=8),
+                    legend_title_text="Tab",
+                )
+                st.plotly_chart(fig_clicks, use_container_width=True, key=f"{key_suffix}_pl_clicks_mo")
+        else:
+            monthly = (
+                df.groupby("month", as_index=False)
+                .agg(cost=("cost", "sum"), clicks=("clicks", "sum"), impressions=("impressions", "sum"))
+                .sort_values("month")
+            )
+            m1, m2 = st.columns(2)
+            with m1:
+                fig_cost = px.line(monthly, x="month", y="cost", markers=True, title="Cost by month")
+                fig_cost.update_traces(line_color="#2563eb", marker_color="#2563eb")
+                fig_cost.update_layout(plot_bgcolor="white", paper_bgcolor="white", margin=dict(l=8, r=8, t=45, b=8))
+                st.plotly_chart(fig_cost, use_container_width=True, key=f"{key_suffix}_pl_cost_mo")
+            with m2:
+                fig_clicks = px.line(monthly, x="month", y="clicks", markers=True, title="Clicks by month")
+                fig_clicks.update_traces(line_color="#0f766e", marker_color="#0f766e")
+                fig_clicks.update_layout(plot_bgcolor="white", paper_bgcolor="white", margin=dict(l=8, r=8, t=45, b=8))
+                st.plotly_chart(fig_clicks, use_container_width=True, key=f"{key_suffix}_pl_clicks_mo")
 
         st.markdown("#### Spend breakdown")
         b1, b2 = st.columns(2)
@@ -524,12 +605,21 @@ def render_main_dashboard(
             st.plotly_chart(fig_channel, use_container_width=True, key=f"{key_suffix}_pl_channel")
 
     with tab_region:
+        st.markdown("#### Country × month")
         by_region = (
             df.groupby(["country", "month"], as_index=False)
             .agg(cost=("cost", "sum"), leads=("leads", "sum"))
             .sort_values(["month", "cost"], ascending=[True, False])
         )
         st.dataframe(by_region, use_container_width=True, key=f"{key_suffix}_df_region")
+        if "source_tab" in df.columns and df["source_tab"].nunique() > 1:
+            st.markdown("#### Worksheet tab × month")
+            by_tab_m = (
+                df.groupby(["source_tab", "month"], as_index=False)
+                .agg(cost=("cost", "sum"), leads=("leads", "sum"))
+                .sort_values(["month", "source_tab"])
+            )
+            st.dataframe(by_tab_m, use_container_width=True, key=f"{key_suffix}_df_tab_month")
 
     with tab_funnel:
         funnel_df = pd.DataFrame(
