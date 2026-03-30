@@ -8,9 +8,11 @@ Run:
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import re
 from datetime import date, datetime, time, timedelta
+from pathlib import Path
 from typing import Any, Optional, Union
 
 import pandas as pd
@@ -18,6 +20,7 @@ import plotly.express as px
 import streamlit as st
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
+DEFAULT_LOCAL_EXCEL_PATH = r"C:\Users\MaysamAbuKashabeh\Downloads\ME X-ray Data Aug 2025 - 27th Jan 2026.xlsx"
 
 
 def _default_sheet_id_from_secrets() -> str:
@@ -28,6 +31,16 @@ def _default_sheet_id_from_secrets() -> str:
         return v if v else DEFAULT_SHEET_ID
     except Exception:
         return DEFAULT_SHEET_ID
+
+
+def _default_excel_path_from_secrets() -> str:
+    """Optional Streamlit secret XRAY_EXCEL_PATH overrides default local workbook path."""
+    try:
+        s = st.secrets
+        v = (s.get("XRAY_EXCEL_PATH") or s.get("xray_excel_path") or "").strip()
+        return v if v else DEFAULT_LOCAL_EXCEL_PATH
+    except Exception:
+        return DEFAULT_LOCAL_EXCEL_PATH
 
 
 def _extract_sheet_id(url_or_id: str) -> str:
@@ -184,29 +197,33 @@ def _read_sheet_auth(
 
 
 def _norm_header_key(name: str) -> str:
-    """Lowercase, collapse spaces/underscores so e.g. Clicks___Gp and clicks_gp match."""
+    """Lowercase; non-alphanumeric → underscores (matches ME X-Ray Excel headers like `CPCW:LF`, `Cost/TCV%`)."""
     s = str(name).strip().lower()
-    s = re.sub(r"[\s_]+", "_", s)
+    s = re.sub(r"[^a-z0-9]+", "_", s)
     s = re.sub(r"_+", "_", s).strip("_")
     return s
 
 
-# Normalized header → canonical column (covers X-Ray export names + plain English headers)
+# Normalized header → canonical column (covers X-Ray export names + ME X-Ray Excel template)
 _NORM_TO_FIELD: dict[str, str] = {
     "date": "date",
     "day": "date",
     "period": "date",
     "week": "date",
+    "create_date": "date",
+    "date_formatted": "date",
+    "close_date": "date",
     "country_name": "country",
     "country": "country",
     "market": "country",
     "geo": "country",
+    "kitchen_country": "country",
     "country_code": "country_code",
     "channel_gp": "channel",
     "channel_name": "channel",
     "channel": "channel",
     "media_type": "channel",
-    "platform": "platform",
+    "lead_source": "channel",
     "cost": "cost",
     "ad_spend": "cost",
     "spend": "cost",
@@ -223,13 +240,112 @@ _NORM_TO_FIELD: dict[str, str] = {
     "closed_won": "closed_won",
     "closedwon": "closed_won",
     "closed_won_deals": "closed_won",
+    "cw_including_approved": "closed_won",
     "utm_source_gp": "utm_source",
     "utm_source": "utm_source",
     "utm_source_l": "utm_source_l",
     "utm_source_o": "utm_source_o",
+    "month": "report_month",
+    "tcv": "tcv",
+    "tcv_usd": "tcv",
+    "tcv_converted": "tcv",
+    "1st_month_lf": "first_month_lf",
+    "monthly_lf_usd": "first_month_lf",
+    "cpcw": "cpcw",
+    "cpcw_lf": "cpcw_lf",
+    "cost_tcv": "cost_tcv_pct",
+    "sql": "sql_pct",
+    "q_win_rate": "q_win_rate",
 }
 
-_NUM_FIELDS = frozenset({"cost", "clicks", "impressions", "leads", "qualified", "pitching", "closed_won"})
+_NUM_FIELDS = frozenset(
+    {
+        "cost",
+        "clicks",
+        "impressions",
+        "leads",
+        "qualified",
+        "pitching",
+        "closed_won",
+        "tcv",
+        "first_month_lf",
+        "cpcw",
+        "cpcw_lf",
+        "cost_tcv_pct",
+        "sql_pct",
+        "q_win_rate",
+    }
+)
+
+
+def _parse_report_month_series(s: pd.Series) -> pd.Series:
+    """Parse Excel `Month` cells: datetimes, `Sept`, `December`, etc."""
+    raw = s.copy()
+    out = pd.to_datetime(raw, errors="coerce")
+    mask = out.isna() & raw.notna()
+    if not mask.any():
+        return out
+    for idx in raw.index[mask]:
+        v = raw.loc[idx]
+        val = str(v).strip()
+        parsed: Optional[pd.Timestamp] = None
+        vl = val.lower()
+        # Ambiguous month-only labels: prefer FY order (Sep–Dec 2025, then Jan 2026, …).
+        if vl.startswith("jan"):
+            years = (2026, 2025, 2024)
+        else:
+            years = (2025, 2026, 2024)
+        for y in years:
+            t = pd.to_datetime(f"{val} 1, {y}", errors="coerce")
+            if pd.notna(t):
+                parsed = t
+                break
+        out.loc[idx] = parsed if parsed is not None else pd.NaT
+    return out
+
+
+def _preprocess_excel_sheet(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
+    """ME X-Ray template: forward-fill month blocks on CW Summary; drop regional subtotals."""
+    df = df.copy()
+    t = tab_name.strip().lower()
+    if "Month" in df.columns and "cw summary" in t:
+        df["Month"] = df["Month"].ffill()
+    if "Market" in df.columns:
+        m = df["Market"].astype(str)
+        df = df[~m.str.contains("TOTAL", case=False, na=False)]
+    if t == "raw leads":
+        # Convert lead rows into additive metrics so they can be combined with spend.
+        if "Leads" not in df.columns:
+            df["Leads"] = 1
+        status = df.get("Lead Status", pd.Series(index=df.index, dtype=str)).astype(str).str.lower()
+        if "Qualified" not in df.columns:
+            df["Qualified"] = status.str.contains("qualified", na=False).astype(int)
+        if "Date Formatted" in df.columns and "Date" not in df.columns:
+            df["Date"] = pd.to_datetime(df["Date Formatted"], errors="coerce")
+    if t == "raw post qualification":
+        # Stage rows become pipeline counters (post-lead funnel).
+        stage = df.get("Stage", pd.Series(index=df.index, dtype=str)).astype(str).str.lower().str.strip()
+        if "Qualified" not in df.columns:
+            df["Qualified"] = 1
+        if "Pitching" not in df.columns:
+            df["Pitching"] = stage.str.contains("pitch", na=False).astype(int)
+        if "Closed Won" not in df.columns:
+            df["Closed Won"] = stage.str.contains("closed won", na=False).astype(int)
+        if "Date" not in df.columns:
+            if "Formatted Date" in df.columns:
+                df["Date"] = pd.to_datetime(df["Formatted Date"], errors="coerce")
+            elif "Created Date" in df.columns:
+                df["Date"] = pd.to_datetime(df["Created Date"], errors="coerce")
+    if t == "raw cw":
+        stage = df.get("Stage", pd.Series(index=df.index, dtype=str)).astype(str).str.lower().str.strip()
+        if "Closed Won" not in df.columns:
+            df["Closed Won"] = stage.str.contains("closed won", na=False).astype(int)
+        if "Date" not in df.columns:
+            if "Close Date" in df.columns:
+                df["Date"] = pd.to_datetime(df["Close Date"], errors="coerce", dayfirst=True)
+            elif "Created Date" in df.columns:
+                df["Date"] = pd.to_datetime(df["Created Date"], errors="coerce")
+    return df
 
 
 def _normalize(df: pd.DataFrame) -> pd.DataFrame:
@@ -270,7 +386,12 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
     else:
         out["date"] = pd.NaT
 
-    for c in ["cost", "clicks", "impressions", "leads", "qualified", "pitching", "closed_won"]:
+    if "report_month" in out.columns:
+        rm = _parse_report_month_series(out["report_month"])
+        rm = rm.ffill()
+        out["date"] = out["date"].fillna(rm)
+
+    for c in _NUM_FIELDS:
         if c in out.columns:
             out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0)
         else:
@@ -384,43 +505,98 @@ def load_marketing_data(
     return _normalize(raw)
 
 
-def card(col, title: str, value: str) -> None:
-    col.markdown(
-        f"""
-        <div class="metric-card">
-            <div class="metric-title">{title}</div>
-            <div class="metric-value">{value}</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
+@st.cache_data(ttl=300)
+def load_excel_all_sheets(_content_hash: str, xlsx_bytes: bytes) -> pd.DataFrame:
+    """Load and combine core ME X-Ray tabs (spend, leads, post-leads) into one dataset."""
+    bio = io.BytesIO(xlsx_bytes)
+    xl = pd.ExcelFile(bio)
+    preferred_tabs = ["Raw Spend", "Raw Leads", "Raw Post Qualification", "RAW CW"]
+    selected_tabs = [t for t in preferred_tabs if t in xl.sheet_names]
+    if not selected_tabs:
+        selected_tabs = [t for t in xl.sheet_names if str(t).strip()]
+    frames: list[pd.DataFrame] = []
+    tab_stats: list[tuple[str, int]] = []
+    for title in selected_tabs:
+        raw = pd.read_excel(xl, sheet_name=title)
+        if raw.empty or len(raw.columns) == 0:
+            tab_stats.append((title, 0))
+            continue
+        raw = _preprocess_excel_sheet(raw, title)
+        norm = _normalize(raw)
+        if norm.empty:
+            tab_stats.append((title, 0))
+            continue
+        df = norm.copy()
+        df["source_tab"] = title.strip() if str(title).strip() else "Sheet"
+        frames.append(df)
+        tab_stats.append((title, len(df)))
+    if not frames:
+        out = pd.DataFrame()
+        out.attrs["tab_stats"] = tab_stats
+        out.attrs["worksheet_order"] = selected_tabs
+        return out
+    combined = pd.concat(frames, ignore_index=True)
+    combined.attrs["tab_stats"] = tab_stats
+    combined.attrs["worksheet_order"] = selected_tabs
+    try:
+        combined.attrs["fields_mapped"] = list(frames[0].attrs.get("fields_mapped", []) or [])
+    except Exception:
+        combined.attrs["fields_mapped"] = []
+    combined.attrs["sheet_columns"] = list(combined.columns)
+    return combined
 
 
-def render_main_dashboard(
-    df_loaded: pd.DataFrame,
-    start_date: date,
-    end_date: date,
-) -> None:
-    """Metrics from all worksheets combined; no filter banners — date slice falls back to all rows silently."""
-    key_suffix = "main"
-    if df_loaded.empty:
-        return
+LOOKER_PAGES: tuple[str, ...] = (
+    "Marketing Performance Overview",
+    "Market MoM View",
+    "Performance Marketing Channels Overview",
+    "All Inbound Channels Overview",
+)
 
-    df_filtered = _filter_by_date_range(df_loaded, start_date, end_date)
-    df_date = df_loaded if df_filtered.empty else df_filtered
-    if df_date.empty:
-        return
 
-    st.markdown('<div class="block-title">Marketing dashboard</div>', unsafe_allow_html=True)
-    st.markdown(
-        '<div class="block-subtitle">Data is read from <strong>every worksheet tab</strong> in the spreadsheet, '
-        "combined with a <code>source_tab</code> label. Filters below shape the scorecards and charts.</div>",
-        unsafe_allow_html=True,
-    )
+def _format_currency(v: float) -> str:
+    if v >= 1_000_000:
+        return f"${v / 1_000_000:.2f}M"
+    if v >= 1_000:
+        return f"${v:,.0f}"
+    return f"${v:,.2f}"
 
+
+def _heatmap_bg(series: pd.Series, *, good_low: bool = True) -> list[str]:
+    """Return rgba background strings for column (min=green-ish, max=red-ish or inverse)."""
+    s = pd.to_numeric(series, errors="coerce")
+    lo, hi = float(s.min(skipna=True)), float(s.max(skipna=True))
+    if pd.isna(lo) or pd.isna(hi) or hi <= lo:
+        return ["background-color: #ffffff"] * len(s)
+    out: list[str] = []
+    for x in s:
+        if pd.isna(x):
+            out.append("background-color: #f8fafc")
+            continue
+        t = (float(x) - lo) / (hi - lo)
+        if not good_low:
+            t = 1.0 - t
+        # green #dcfce7 -> yellow #fef9c3 -> rose #fecaca
+        if t <= 0.5:
+            g = 0.85 + 0.15 * (t * 2)
+            r = 0.86 - 0.1 * (t * 2)
+        else:
+            u = (t - 0.5) * 2
+            r = 0.76 + 0.2 * u
+            g = 0.85 - 0.35 * u
+        out.append(f"background-color: rgba({int(r * 255)},{int(g * 255)},{int(0.75 * 255)},0.65)")
+    return out
+
+
+def _apply_sheet_filters(
+    df_date: pd.DataFrame,
+    *,
+    key_suffix: str,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Returns (filtered for metrics/charts, df_for_tabs before source_tab filter)."""
     country_opts = sorted([x for x in df_date["country"].dropna().unique().tolist() if x and x != "Unknown"])
     selected_countries = st.multiselect(
-        "Country",
+        "Country / market",
         ["All Countries"] + country_opts,
         default=["All Countries"],
         key=f"{key_suffix}_country",
@@ -439,7 +615,6 @@ def render_main_dashboard(
     if "All Platforms" not in selected_platforms and selected_platforms:
         df = df[df["platform"].isin(selected_platforms)]
 
-    # Before optional source_tab filter: use for tab-level breakdown (mirrors Google tabs)
     df_for_tabs = df.copy()
 
     if "source_tab" in df.columns:
@@ -453,9 +628,182 @@ def render_main_dashboard(
         if "All tabs" not in selected_tabs and selected_tabs:
             df = df[df["source_tab"].isin(selected_tabs)]
 
-    # --- Shape: workbook tabs (what we read in the backend) ---
+    return df, df_for_tabs
+
+
+def _kpi_block(
+    *,
+    total_spend: float,
+    total_impr: int,
+    total_clicks: int,
+    ctr: float,
+    total_leads: int,
+    total_qualified: int,
+    total_cw: int,
+    cpc: float,
+    cpl: float,
+    cpsql: float,
+) -> None:
+    """Looker-style two-row scorecards (dark teal tiles + pill row)."""
+    r1 = st.columns(6)
+    vals = [
+        _format_currency(total_spend),
+        f"{total_impr:,}",
+        f"{total_clicks:,}",
+        f"{ctr:.2f}%",
+        f"{total_qualified:,}",
+        f"{total_leads:,}",
+    ]
+    titles = ["Spend", "Impressions", "Clicks", "CTR", "Qualified", "Leads"]
+    for i, c in enumerate(r1):
+        c.markdown(
+            f"""
+            <div class="looker-kpi-big">
+                <div class="looker-kpi-big-val">{vals[i]}</div>
+                <div class="looker-kpi-big-lbl">{titles[i]}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    q_rate = (total_cw / total_qualified * 100) if total_qualified else 0.0
+    cpcw = (total_spend / total_cw) if total_cw else 0.0
+    pills = [
+        ("CPCW (Spend/CW)", f"${cpcw:,.2f}" if total_cw else "—"),
+        ("CPC", f"${cpc:,.2f}"),
+        ("CPL", f"${cpl:,.2f}" if total_leads else "—"),
+        ("CPSQL", f"${cpsql:,.2f}" if total_qualified else "—"),
+        ("Q → Win %", f"{q_rate:.2f}%"),
+    ]
+    r2 = st.columns(5)
+    for i, c in enumerate(r2):
+        lbl, val = pills[i]
+        c.markdown(
+            f'<div class="looker-kpi-pill"><span class="looker-pill-lbl">{lbl}</span> '
+            f'<span class="looker-pill-val">{val}</span></div>',
+            unsafe_allow_html=True,
+        )
+
+
+def _master_performance_table(
+    df: pd.DataFrame,
+    *,
+    key_suffix: str,
+    section_title: Optional[str] = "Marketing Performance Master View",
+) -> None:
+    """Month × market pivot; ME X-Ray columns (TCV, LF, CPCW:LF, Cost/TCV%) when present in the data."""
+    if section_title:
+        st.markdown(f'<div class="looker-table-title">{section_title}</div>', unsafe_allow_html=True)
+    agg: dict[str, tuple[str, str]] = {
+        "spend": ("cost", "sum"),
+        "cw": ("closed_won", "sum"),
+        "clicks": ("clicks", "sum"),
+        "leads": ("leads", "sum"),
+        "qualified": ("qualified", "sum"),
+    }
+    if "tcv" in df.columns and float(df["tcv"].sum()) > 0:
+        agg["tcv"] = ("tcv", "sum")
+    if "first_month_lf" in df.columns and float(df["first_month_lf"].sum()) > 0:
+        agg["lf"] = ("first_month_lf", "sum")
+
+    g = df.groupby(["month", "country"], as_index=False).agg(**agg).sort_values(
+        ["month", "country"], ascending=[False, True]
+    )
+    g["Unified Date"] = g["month"].apply(lambda m: pd.Period(m, freq="M").strftime("%b %Y") if pd.notna(m) else "")
+    g["Market"] = g["country"]
+    g["Spend"] = g["spend"]
+    g["CW (Inc Approved)"] = g["cw"].astype(int)
+    g["CPCW"] = g.apply(
+        lambda r: (r["spend"] / r["cw"]) if r["cw"] and r["cw"] > 0 else float("nan"),
+        axis=1,
+    )
+    if "lf" in g.columns:
+        g["1st Month LF"] = g["lf"]
+        g["CPCW:LF"] = g.apply(
+            lambda r: (r["spend"] / r["lf"]) if r["lf"] and r["lf"] > 0 else float("nan"),
+            axis=1,
+        )
+    if "tcv" in g.columns:
+        g["Actual TCV"] = g["tcv"]
+        g["Cost/TCV%"] = g.apply(
+            lambda r: (r["spend"] / r["tcv"] * 100) if r["tcv"] and r["tcv"] > 0 else float("nan"),
+            axis=1,
+        )
+    g["CPL"] = g.apply(
+        lambda r: (r["spend"] / r["leads"]) if r["leads"] and r["leads"] > 0 else float("nan"),
+        axis=1,
+    )
+    g["SQL %"] = g.apply(
+        lambda r: (r["qualified"] / r["leads"] * 100) if r["leads"] and r["leads"] > 0 else float("nan"),
+        axis=1,
+    )
+    g["Total Leads"] = g["leads"]
+
+    cols = [
+        "Unified Date",
+        "Market",
+        "Spend",
+        "CW (Inc Approved)",
+        "CPCW",
+    ]
+    if "1st Month LF" in g.columns:
+        cols.append("1st Month LF")
+    if "Actual TCV" in g.columns:
+        cols.append("Actual TCV")
+    if "CPCW:LF" in g.columns:
+        cols.append("CPCW:LF")
+    if "Cost/TCV%" in g.columns:
+        cols.append("Cost/TCV%")
+    cols.extend(["CPL", "SQL %", "Total Leads"])
+
+    show = g[cols].copy()
+    fmt: dict[str, Any] = {
+        "Spend": "${:,.2f}",
+        "CW (Inc Approved)": "{:,.0f}",
+        "CPCW": lambda x: f"${x:,.2f}" if pd.notna(x) else "—",
+        "CPL": lambda x: f"${x:,.2f}" if pd.notna(x) else "—",
+        "SQL %": lambda x: f"{x:.2f}%" if pd.notna(x) else "—",
+        "Total Leads": "{:,.0f}",
+    }
+    if "1st Month LF" in show.columns:
+        fmt["1st Month LF"] = "${:,.2f}"
+    if "Actual TCV" in show.columns:
+        fmt["Actual TCV"] = "${:,.2f}"
+    if "CPCW:LF" in show.columns:
+        fmt["CPCW:LF"] = lambda x: f"{x:,.2f}" if pd.notna(x) else "—"
+    if "Cost/TCV%" in show.columns:
+        fmt["Cost/TCV%"] = lambda x: f"{x:.2f}%" if pd.notna(x) else "—"
+
+    styler = show.style.format(fmt)
+    heat_cols = [c for c in ("CPCW", "CPCW:LF", "Cost/TCV%", "CPL") if c in show.columns]
+    for hc in heat_cols:
+        styler = styler.apply(lambda s, col=hc: _heatmap_bg(show[col], good_low=True), subset=[col])
+    st.dataframe(styler, use_container_width=True, hide_index=True, key=f"{key_suffix}_df_master")
+
+
+def render_page_marketing_performance(
+    df_loaded: pd.DataFrame,
+    start_date: date,
+    end_date: date,
+) -> None:
+    key_suffix = "mpo"
+    df_filtered = _filter_by_date_range(df_loaded, start_date, end_date)
+    df_date = df_loaded if df_filtered.empty else df_filtered
+    if df_date.empty:
+        st.info("No rows in the selected date range.")
+        return
+
+    st.markdown('<h1 class="looker-page-h1">Marketing Performance Overview</h1>', unsafe_allow_html=True)
+    df, df_for_tabs = _apply_sheet_filters(df_date, key_suffix=key_suffix)
+
+    c1, c2 = st.columns([3, 1])
+    with c1:
+        st.caption("Filters apply to scorecards, master table, and charts below.")
+    with c2:
+        with st.expander("Applied filters", expanded=False):
+            st.caption("Country, platform, and source tab mirror Looker’s control strip.")
+
     if "source_tab" in df_for_tabs.columns and df_for_tabs["source_tab"].nunique() > 0:
-        st.markdown("#### Workbook tabs (read in backend)")
+        st.markdown("#### Workbook tabs")
         by_tab = (
             df_for_tabs.groupby("source_tab", as_index=False)
             .agg(
@@ -486,7 +834,7 @@ def render_main_dashboard(
             )
             st.plotly_chart(fig_tab_spend, use_container_width=True, key=f"{key_suffix}_pl_tab_spend")
         with t2:
-            st.caption("Per-tab totals (same Country / Platform filters; ignores *Source tab* filter).")
+            st.caption("Per-tab totals (ignores *Source tab* filter).")
             st.dataframe(by_tab, use_container_width=True, hide_index=True, key=f"{key_suffix}_df_by_tab")
 
     total_spend = float(df["cost"].sum())
@@ -498,33 +846,25 @@ def render_main_dashboard(
     total_cw = int(df["closed_won"].sum())
     ctr = (total_clicks / total_impr * 100) if total_impr else 0
     cpc = (total_spend / total_clicks) if total_clicks else 0.0
-    cpm = (total_spend / total_impr * 1000) if total_impr else 0.0
     cpl = (total_spend / total_leads) if total_leads else 0.0
     cpsql = (total_spend / total_qualified) if total_qualified else 0.0
 
-    st.markdown("#### Scorecards")
-    r1 = st.columns(4)
-    card(r1[0], "Total spend", f"${total_spend:,.2f}")
-    card(r1[1], "Impressions", f"{total_impr:,}")
-    card(r1[2], "Clicks", f"{total_clicks:,}")
-    card(r1[3], "CTR", f"{ctr:.2f}%")
-
-    r2 = st.columns(4)
-    card(r2[0], "CPC", f"${cpc:,.2f}")
-    card(r2[1], "CPM", f"${cpm:,.2f}")
-    card(r2[2], "CPL (cost / lead)", f"${cpl:,.2f}")
-    card(r2[3], "Cost / qualified", f"${cpsql:,.2f}")
-
-    r3 = st.columns(4)
-    card(r3[0], "Leads", f"{total_leads:,}")
-    card(r3[1], "Qualified", f"{total_qualified:,}")
-    card(r3[2], "Pitching", f"{total_pitching:,}")
-    card(r3[3], "Closed won", f"{total_cw:,}")
-
-    tab_overview, tab_region, tab_funnel = st.tabs(
-        ["Overview", "Regional", "Funnel"],
+    _kpi_block(
+        total_spend=total_spend,
+        total_impr=total_impr,
+        total_clicks=total_clicks,
+        ctr=ctr,
+        total_leads=total_leads,
+        total_qualified=total_qualified,
+        total_cw=total_cw,
+        cpc=cpc,
+        cpl=cpl,
+        cpsql=cpsql,
     )
 
+    _master_performance_table(df, key_suffix=key_suffix)
+
+    tab_overview, tab_region, tab_funnel = st.tabs(["Overview", "Regional", "Funnel"])
     with tab_overview:
         st.markdown("#### Trends")
         _nt = int(df["source_tab"].nunique()) if "source_tab" in df.columns else 0
@@ -639,50 +979,247 @@ def render_main_dashboard(
         )
 
 
-st.set_page_config(
-    page_title="X-Ray Dashboard",
-    page_icon="📊",
-    layout="wide",
-    initial_sidebar_state="collapsed",
-)
+def render_page_market_mom(
+    df_loaded: pd.DataFrame,
+    start_date: date,
+    end_date: date,
+) -> None:
+    key_suffix = "mom"
+    df_filtered = _filter_by_date_range(df_loaded, start_date, end_date)
+    df_date = df_loaded if df_filtered.empty else df_filtered
+    if df_date.empty:
+        st.info("No rows in the selected date range.")
+        return
 
-st.markdown(
-    """
+    st.markdown('<h1 class="looker-page-h1">Market MoM View</h1>', unsafe_allow_html=True)
+    df, _ = _apply_sheet_filters(df_date, key_suffix=key_suffix)
+
+    mk_opts = sorted([x for x in df_date["country"].dropna().unique().tolist() if x and x != "Unknown"])
+    pick = st.selectbox(
+        "Market",
+        ["All markets"] + mk_opts,
+        key=f"{key_suffix}_market",
+    )
+    if pick != "All markets":
+        df = df[df["country"] == pick]
+
+    _master_performance_table(df, key_suffix=f"{key_suffix}_mom", section_title="")
+
+    grand = pd.DataFrame(
+        [
+            {
+                "Unified Date": "Grand total",
+                "Market": "—",
+                "Spend": float(df["cost"].sum()),
+                "CW (Inc Approved)": int(df["closed_won"].sum()),
+                "Total Leads": int(df["leads"].sum()),
+            }
+        ]
+    )
+    st.caption("Grand total (filtered)")
+    st.dataframe(grand, use_container_width=True, hide_index=True, key=f"{key_suffix}_df_grand")
+
+    monthly = (
+        df.groupby("month", as_index=False)
+        .agg(
+            cw=("closed_won", "sum"),
+            leads=("leads", "sum"),
+            qualified=("qualified", "sum"),
+        )
+        .sort_values("month")
+    )
+    monthly["sql_pct"] = monthly.apply(
+        lambda r: (r["qualified"] / r["leads"] * 100) if r["leads"] else 0.0,
+        axis=1,
+    )
+    monthly["q_win_pct"] = monthly.apply(
+        lambda r: (r["cw"] / r["qualified"] * 100) if r["qualified"] else 0.0,
+        axis=1,
+    )
+
+    ch1, ch2 = st.columns(2)
+    with ch1:
+        fig = px.bar(
+            monthly,
+            x="month",
+            y=["cw", "leads", "qualified"],
+            barmode="group",
+            title="CW vs leads vs qualified (by month)",
+        )
+        fig.update_layout(plot_bgcolor="white", paper_bgcolor="white", margin=dict(l=8, r=8, t=45, b=8))
+        st.plotly_chart(fig, use_container_width=True, key=f"{key_suffix}_pl_combo")
+    with ch2:
+        fig2 = px.line(
+            monthly,
+            x="month",
+            y=["sql_pct", "q_win_pct"],
+            markers=True,
+            title="SQL % and Q → Win % (by month)",
+        )
+        fig2.update_layout(plot_bgcolor="white", paper_bgcolor="white", margin=dict(l=8, r=8, t=45, b=8))
+        st.plotly_chart(fig2, use_container_width=True, key=f"{key_suffix}_pl_lines")
+
+
+def render_page_channels(df_loaded: pd.DataFrame, start_date: date, end_date: date, *, inbound: bool) -> None:
+    key_suffix = "inb" if inbound else "pmc"
+    df_filtered = _filter_by_date_range(df_loaded, start_date, end_date)
+    df_date = df_loaded if df_filtered.empty else df_filtered
+    if df_date.empty:
+        st.info("No rows in the selected date range.")
+        return
+
+    title = "All Inbound Channels Overview" if inbound else "Performance Marketing Channels Overview"
+    st.markdown(f'<h1 class="looker-page-h1">{title}</h1>', unsafe_allow_html=True)
+    df, _ = _apply_sheet_filters(df_date, key_suffix=key_suffix)
+
+    group_col = "utm_source" if inbound else "channel"
+    if group_col not in df.columns:
+        st.warning(f"Column `{group_col}` missing; showing channel breakdown instead.")
+        group_col = "channel"
+
+    st.markdown("#### Spend & efficiency by channel / source")
+    agg = (
+        df.groupby(group_col, as_index=False)
+        .agg(spend=("cost", "sum"), clicks=("clicks", "sum"), leads=("leads", "sum"), cw=("closed_won", "sum"))
+        .sort_values("spend", ascending=False)
+    )
+    agg["CPL"] = agg.apply(lambda r: (r["spend"] / r["leads"]) if r["leads"] else float("nan"), axis=1)
+    st.dataframe(agg, use_container_width=True, hide_index=True, key=f"{key_suffix}_df_ch")
+
+    m1, m2 = st.columns(2)
+    with m1:
+        fig = px.bar(agg.head(20), x=group_col, y="spend", title="Spend")
+        fig.update_traces(marker_color="#0F766E")
+        fig.update_layout(plot_bgcolor="white", paper_bgcolor="white", margin=dict(l=8, r=8, t=45, b=8))
+        st.plotly_chart(fig, use_container_width=True, key=f"{key_suffix}_pl_spend")
+    with m2:
+        trend = (
+            df.groupby(["month", group_col], as_index=False)
+            .agg(spend=("cost", "sum"))
+            .sort_values(["month", group_col])
+        )
+        top = trend.groupby(group_col)["spend"].sum().nlargest(8).index.tolist()
+        trend = trend[trend[group_col].isin(top)]
+        fig2 = px.line(trend, x="month", y="spend", color=group_col, markers=True, title="Spend trend (top groups)")
+        fig2.update_layout(plot_bgcolor="white", paper_bgcolor="white", margin=dict(l=8, r=8, t=45, b=8))
+        st.plotly_chart(fig2, use_container_width=True, key=f"{key_suffix}_pl_trend")
+
+
+def render_main_dashboard(
+    start_date: date,
+    end_date: date,
+) -> None:
+    """Load Google Sheets or ME X-Ray Excel template, then route to Looker-named report pages."""
+    st.sidebar.markdown("### Data")
+    src = st.sidebar.radio(
+        "Source",
+        ["Google Sheets", "Excel (.xlsx)"],
+        key="data_src",
+        help="Use the ME X-Ray Excel template (same columns as your workbook) or the live Google Sheet.",
+    )
+    df_loaded: pd.DataFrame
+    if src == "Excel (.xlsx)":
+        excel_path = st.sidebar.text_input(
+            "Workbook path",
+            value=_default_excel_path_from_secrets(),
+            key="xlsx_path",
+            help="Local .xlsx path. No upload needed.",
+        )
+        p = Path(excel_path).expanduser()
+        if not p.exists():
+            st.error(f"Excel file not found: {p}")
+            return
+        if p.suffix.lower() != ".xlsx":
+            st.error("Excel source must be a .xlsx file.")
+            return
+        xbytes = p.read_bytes()
+        fp = hashlib.md5(xbytes).hexdigest()
+        df_loaded = load_excel_all_sheets(fp, xbytes)
+    else:
+        sheet_id = _extract_sheet_id(_default_sheet_id_from_secrets())
+        _fp = _secret_fingerprint(_service_account_from_streamlit_secrets())
+        try:
+            df_loaded = load_all_worksheets_combined(sheet_id, _fp)
+        except Exception as exc:
+            st.error(f"Failed to load spreadsheet: {exc}")
+            return
+
+    if df_loaded.empty:
+        st.warning("No data rows were returned. Check tabs and column headers against the ME X-Ray template.")
+        return
+
+    st.sidebar.markdown("---")
+    st.sidebar.markdown("### KitchenPark")
+    st.sidebar.caption("Marketing Dashboard")
+    page = st.sidebar.radio("Pages", LOOKER_PAGES, key="looker_page")
+    if page == "Marketing Performance Overview":
+        render_page_marketing_performance(df_loaded, start_date, end_date)
+    elif page == "Market MoM View":
+        render_page_market_mom(df_loaded, start_date, end_date)
+    elif page == "Performance Marketing Channels Overview":
+        render_page_channels(df_loaded, start_date, end_date, inbound=False)
+    else:
+        render_page_channels(df_loaded, start_date, end_date, inbound=True)
+
+
+def main() -> None:
+    st.set_page_config(
+        page_title="KitchenPark Marketing Dashboard",
+        page_icon="📊",
+        layout="wide",
+        initial_sidebar_state="expanded",
+    )
+
+    st.markdown(
+        """
     <style>
-    /* KSA-style: no left sidebar chrome — controls live in main area */
-    section[data-testid="stSidebar"] { display: none !important; }
-    [data-testid="collapsedControl"] { display: none !important; }
-    .stApp { background: #FAFBFC; font-family: sans-serif; font-size: 0.8125rem !important; }
-    header[data-testid="stHeader"] { background: #F1F3F4 !important; border-bottom: 1px solid #E2E8F0; }
+    .stApp { background: #ECEFF1; font-family: 'Segoe UI', system-ui, sans-serif; font-size: 0.8125rem !important; }
+    section[data-testid="stSidebar"] { background: #FAFAFA !important; border-right: 1px solid #E0E0E0 !important; }
+    section[data-testid="stSidebar"] .block-container { padding-top: 1rem; }
+    header[data-testid="stHeader"] { background: #FFFFFF !important; border-bottom: 1px solid #E2E8F0; }
     header[data-testid="stHeader"] * { color: #1E293B !important; }
-    .topbar {
-        background: #0F766E;
-        color: #ffffff;
-        border-radius: 0 10px 10px 0;
-        padding: 14px 18px;
-        margin-bottom: 14px;
-        border: none;
-        box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-    }
-    .topbar-wrap {
+    .looker-header {
+        background: #FFFFFF;
+        border-bottom: 1px solid #E0E0E0;
+        padding: 12px 20px 14px 20px;
+        margin: -1rem -1rem 12px -1rem;
         display: flex;
         align-items: center;
         justify-content: space-between;
-        gap: 12px;
         flex-wrap: wrap;
+        gap: 8px;
     }
-    .brand {
-        border: 2px solid #ffffff;
-        color: #ffffff;
-        font-size: 13px;
-        letter-spacing: 1px;
-        font-weight: 700;
-        border-radius: 5px;
-        padding: 4px 9px;
+    .looker-header-title { font-size: 1.05rem; font-weight: 600; color: #202124; margin: 0; }
+    .looker-header-badge {
+        width: 28px; height: 28px; border-radius: 50%;
+        background: #1A73E8; color: #fff; display: inline-flex; align-items: center; justify-content: center;
+        font-size: 14px; font-weight: 700; margin-right: 10px; vertical-align: middle;
     }
-    .navhint { color: #D1FAE5; font-size: 11px; }
-    .title-main { font-size: 1.35rem; font-weight: 700; margin-top: 4px; }
-    .title-sub { font-size: 12px; color: #CCFBF1; margin-top: 2px; }
+    .looker-header-actions { font-size: 12px; color: #5F6368; }
+    .looker-page-h1 { font-size: 1.5rem; font-weight: 400; color: #202124; margin: 8px 0 16px 0; }
+    .looker-table-title { font-size: 1rem; font-weight: 600; color: #202124; margin: 20px 0 8px 0; }
+    .looker-kpi-big {
+        background: linear-gradient(180deg, #0D9488 0%, #0F766E 100%);
+        color: #fff;
+        border-radius: 8px;
+        padding: 14px 12px;
+        text-align: center;
+        min-height: 76px;
+        box-shadow: 0 1px 2px rgba(0,0,0,.12);
+    }
+    .looker-kpi-big-val { font-size: 1.35rem; font-weight: 600; line-height: 1.2; }
+    .looker-kpi-big-lbl { font-size: 11px; opacity: 0.92; margin-top: 6px; font-weight: 500; }
+    .looker-kpi-pill {
+        border: 1px solid #0F766E;
+        background: #F0FDFA;
+        border-radius: 999px;
+        padding: 8px 12px;
+        text-align: center;
+        font-size: 12px;
+        margin-top: 10px;
+    }
+    .looker-pill-lbl { color: #115E59; display: block; font-weight: 600; }
+    .looker-pill-val { color: #134E4A; font-weight: 700; font-size: 13px; }
     .section-chip {
         display: inline-block;
         background: #F1F5F9;
@@ -732,38 +1269,27 @@ st.markdown(
     .stAlert { border-radius: 8px; border-left: 4px solid #0F766E; }
     </style>
     """,
-    unsafe_allow_html=True,
-)
+        unsafe_allow_html=True,
+    )
 
-st.markdown(
-    """
-    <div class="topbar">
-      <div class="topbar-wrap">
-        <div>
-          <div style="display:flex; align-items:center; gap:14px;">
-            <span class="brand">X-RAY</span>
-            <span class="navhint">Marketing performance</span>
-          </div>
-          <div class="title-main">Marketing dashboard</div>
-          <div class="title-sub">Scorecards and trends from your connected Google Sheet</div>
-        </div>
-        <div class="navhint">ME</div>
+    st.markdown(
+        """
+    <div class="looker-header">
+      <div style="display:flex;align-items:center;">
+        <span class="looker-header-badge">K</span>
+        <h1 class="looker-header-title">KitchenPark Marketing Dashboard</h1>
       </div>
+      <div class="looker-header-actions">Streamlit · Google Sheets or Excel</div>
     </div>
     """,
-    unsafe_allow_html=True,
-)
+        unsafe_allow_html=True,
+    )
 
-# Backend-only: spreadsheet from secrets (`XRAY_SHEET_ID` / default), last ~24 months date window, no filter UI.
-_end = date.today()
-_start = _end - timedelta(days=730)
-sheet_id = _extract_sheet_id(_default_sheet_id_from_secrets())
-_secret_fp = _secret_fingerprint(_service_account_from_streamlit_secrets())
+    _end = date.today()
+    _start = _end - timedelta(days=730)
 
-try:
-    df_loaded = load_all_worksheets_combined(sheet_id, _secret_fp)
-except Exception as exc:
-    st.error(f"Failed to load spreadsheet: {exc}")
-    st.stop()
+    render_main_dashboard(_start, _end)
 
-render_main_dashboard(df_loaded, _start, _end)
+
+if __name__ == "__main__":
+    main()
