@@ -776,7 +776,7 @@ def _master_performance_table(
     styler = show.style.format(fmt)
     heat_cols = [c for c in ("CPCW", "CPCW:LF", "Cost/TCV%", "CPL") if c in show.columns]
     for hc in heat_cols:
-        styler = styler.apply(lambda s, col=hc: _heatmap_bg(show[col], good_low=True), subset=[col])
+        styler = styler.apply(lambda s, col=hc: _heatmap_bg(show[col], good_low=True), subset=[hc])
     st.dataframe(styler, use_container_width=True, hide_index=True, key=f"{key_suffix}_df_master")
 
 
@@ -1173,7 +1173,7 @@ def main() -> None:
     st.markdown(
         """
     <style>
-    .stApp { background: #ECEFF1; font-family: 'Segoe UI', system-ui, sans-serif; font-size: 0.8125rem !important; }
+    .stApp { background: #ECEFF1; font-family: 'Segoe UI', system-ui, sans-serif; font-size: 0.772rem !important; }
     section[data-testid="stSidebar"] { background: #FAFAFA !important; border-right: 1px solid #E0E0E0 !important; }
     section[data-testid="stSidebar"] .block-container { padding-top: 1rem; }
     header[data-testid="stHeader"] { background: #FFFFFF !important; border-bottom: 1px solid #E2E8F0; }
