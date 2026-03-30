@@ -7,10 +7,11 @@ Run:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from datetime import date
-from typing import Optional, Union
+from typing import Any, Optional, Union
 
 import pandas as pd
 import plotly.express as px
@@ -29,19 +30,136 @@ def _extract_sheet_id(url_or_id: str) -> str:
 
 def _read_sheet_public(sheet_id: str, gid: int = 0) -> pd.DataFrame:
     url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv&gid={gid}"
-    return pd.read_csv(url)
+    try:
+        return pd.read_csv(url)
+    except Exception as e:
+        err = str(e)
+        if "401" in err or "Unauthorized" in err:
+            raise RuntimeError(
+                "Anonymous Google Sheet export returned 401 (sheet is private). "
+                "This Streamlit app is not using a service account yet.\n\n"
+                "Fix: In Streamlit Cloud → this app → Settings → Secrets, add the same "
+                "`[gsheet_service_account]` block as your KSA tracker (full `private_key` PEM), "
+                "OR add `[GCP_SERVICE_ACCOUNT]` with the same fields. "
+                "Then share the spreadsheet with the service account `client_email` (Viewer). "
+                "Enable Google Sheets API on that GCP project.\n\n"
+                f"Technical detail: {e}"
+            ) from e
+        raise
+
+
+def _coerce_service_account_dict(service_account_data: Union[bytes, dict, str]) -> dict:
+    if isinstance(service_account_data, bytes):
+        return json.loads(service_account_data.decode("utf-8"))
+    if isinstance(service_account_data, str):
+        return json.loads(service_account_data)
+    if isinstance(service_account_data, dict):
+        return dict(service_account_data)
+    # Streamlit secrets (nested TOML) — try several shapes
+    try:
+        return dict(service_account_data.items())
+    except Exception:
+        pass
+    out: dict[str, Any] = {}
+    for attr in (
+        "type",
+        "project_id",
+        "private_key_id",
+        "private_key",
+        "client_email",
+        "client_id",
+        "auth_uri",
+        "token_uri",
+        "auth_provider_x509_cert_url",
+        "client_x509_cert_url",
+        "universe_domain",
+    ):
+        try:
+            if hasattr(service_account_data, attr):
+                v = getattr(service_account_data, attr)
+                if v is not None and v != "":
+                    out[attr] = v
+        except Exception:
+            continue
+    if out.get("private_key") and out.get("client_email"):
+        return out
+    raise TypeError(f"Cannot convert service account secrets: {type(service_account_data)!r}")
+
+
+def _validate_service_account_dict(d: dict) -> None:
+    pk = (d.get("private_key") or "").strip()
+    if not pk:
+        raise ValueError("service account is missing private_key")
+    if "BEGIN PRIVATE KEY" not in pk or "END PRIVATE KEY" not in pk:
+        raise ValueError(
+            "private_key must include a full PEM (lines between BEGIN PRIVATE KEY and END PRIVATE KEY)"
+        )
+    # Real RSA keys are much longer than a placeholder header-only string
+    if len(pk) < 400:
+        raise ValueError(
+            "private_key looks truncated (too short). Paste the full key from the JSON downloaded in GCP."
+        )
+    if not (d.get("client_email") or "").strip():
+        raise ValueError("service account is missing client_email")
+
+
+def _service_account_from_streamlit_secrets() -> Optional[dict]:
+    """Support GCP_SERVICE_ACCOUNT, gsheet_service_account, and any top-level key *service_account*."""
+    try:
+        s = st.secrets
+    except Exception:
+        return None
+
+    keys_to_try: list[str] = []
+    for k in ("GCP_SERVICE_ACCOUNT", "gsheet_service_account", "GSHEET_SERVICE_ACCOUNT"):
+        if k not in keys_to_try:
+            keys_to_try.append(k)
+    try:
+        for k in s:
+            kl = str(k).lower().replace("-", "_")
+            if kl in ("gcp_service_account", "gsheet_service_account"):
+                if k not in keys_to_try:
+                    keys_to_try.insert(0, k)
+            elif "service_account" in kl and k not in keys_to_try:
+                keys_to_try.append(k)
+    except Exception:
+        pass
+
+    last_err: Optional[Exception] = None
+    for key in keys_to_try:
+        try:
+            if key not in s:
+                continue
+            block = s[key]
+            if block is None or block == "":
+                continue
+            d = _coerce_service_account_dict(block)
+            _validate_service_account_dict(d)
+            return d
+        except Exception as e:
+            last_err = e
+            continue
+
+    if last_err:
+        st.session_state["_last_sa_secret_error"] = str(last_err)
+    return None
+
+
+def _secret_fingerprint(secret_dict: Optional[dict]) -> str:
+    if not secret_dict:
+        return "none"
+    em = (secret_dict.get("client_email") or "").strip()
+    pk = secret_dict.get("private_key") or ""
+    h = hashlib.sha256(f"{em}|{len(pk)}".encode()).hexdigest()[:20]
+    return f"{em.split('@')[0] if '@' in em else 'sa'}_{h}"
 
 
 def _read_sheet_auth(sheet_id: str, service_account_data: Union[bytes, dict, str], worksheet_name: Optional[str] = None) -> pd.DataFrame:
     import gspread
     from google.oauth2.service_account import Credentials
 
-    if isinstance(service_account_data, bytes):
-        creds_info = json.loads(service_account_data.decode("utf-8"))
-    elif isinstance(service_account_data, str):
-        creds_info = json.loads(service_account_data)
-    else:
-        creds_info = service_account_data
+    creds_info = _coerce_service_account_dict(service_account_data)
+    _validate_service_account_dict(creds_info)
     creds = Credentials.from_service_account_info(
         creds_info,
         scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"],
@@ -98,13 +216,15 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300)
-def load_marketing_data(sheet_id: str, gid: int, service_account_bytes: Optional[bytes], worksheet_name: Optional[str]) -> pd.DataFrame:
-    secret_creds = None
-    try:
-        if "GCP_SERVICE_ACCOUNT" in st.secrets:
-            secret_creds = st.secrets["GCP_SERVICE_ACCOUNT"]
-    except Exception:
-        secret_creds = None
+def load_marketing_data(
+    sheet_id: str,
+    gid: int,
+    service_account_bytes: Optional[bytes],
+    worksheet_name: Optional[str],
+    _secret_fp: str,
+) -> pd.DataFrame:
+    """_secret_fp must change when Streamlit Secrets change, or cache keeps stale auth behavior."""
+    secret_creds = _service_account_from_streamlit_secrets()
 
     creds_to_use = service_account_bytes if service_account_bytes else secret_creds
     if creds_to_use:
@@ -117,9 +237,9 @@ def load_marketing_data(sheet_id: str, gid: int, service_account_bytes: Optional
 def card(col, title: str, value: str) -> None:
     col.markdown(
         f"""
-        <div style="border:1px solid #E6E6E6;padding:14px;border-radius:8px;background:#fff;">
-            <div style="font-size:12px;color:#777;">{title}</div>
-            <div style="font-size:30px;font-weight:700;line-height:1.2;">{value}</div>
+        <div class="metric-card">
+            <div class="metric-title">{title}</div>
+            <div class="metric-value">{value}</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -131,14 +251,19 @@ st.set_page_config(page_title="X-Ray Dashboard", page_icon="📊", layout="wide"
 st.markdown(
     """
     <style>
-    .stApp { background: #f7f8fb; }
+    .stApp { background: linear-gradient(180deg, #f3f6fb 0%, #f7f9fd 100%); }
+    div[data-testid="stSidebar"] {
+        background: #eef2f8;
+        border-right: 1px solid #dbe4f2;
+    }
     .topbar {
-        background: #070707;
+        background: linear-gradient(90deg, #0a0d14 0%, #111827 100%);
         color: #ffffff;
-        border-radius: 8px;
-        padding: 10px 16px;
-        margin-bottom: 12px;
-        border: 1px solid #101010;
+        border-radius: 12px;
+        padding: 14px 18px;
+        margin-bottom: 14px;
+        border: 1px solid #1f2937;
+        box-shadow: 0 10px 22px rgba(17, 24, 39, 0.2);
     }
     .topbar-wrap {
         display: flex;
@@ -150,22 +275,54 @@ st.markdown(
     .brand {
         border: 2px solid #1dd35f;
         color: #1dd35f;
-        font-size: 14px;
+        font-size: 13px;
         letter-spacing: 1px;
         font-weight: 700;
-        border-radius: 3px;
-        padding: 2px 8px;
+        border-radius: 5px;
+        padding: 4px 9px;
     }
     .navhint { color: #d5d5d5; font-size: 11px; }
+    .title-main { font-size: 20px; font-weight: 700; margin-top: 2px; }
+    .title-sub { font-size: 12px; color: #96a3b8; margin-top: 2px; }
     .section-chip {
         display: inline-block;
-        background: #eef1f7;
-        border: 1px solid #dde3ef;
-        border-radius: 8px;
-        padding: 4px 10px;
+        background: #eaf0fb;
+        border: 1px solid #d2def3;
+        border-radius: 999px;
+        padding: 5px 11px;
         font-size: 11px;
-        margin-right: 6px;
-        color: #2c3e57;
+        margin: 0 6px 8px 0;
+        color: #334155;
+        font-weight: 600;
+    }
+    .metric-card {
+        border: 1px solid #e2e8f0;
+        padding: 14px 16px;
+        border-radius: 12px;
+        background: #ffffff;
+        box-shadow: 0 2px 10px rgba(15, 23, 42, 0.04);
+        min-height: 92px;
+    }
+    .metric-title { font-size: 12px; color: #64748b; margin-bottom: 8px; }
+    .metric-value { font-size: 28px; font-weight: 700; line-height: 1.1; color: #0f172a; }
+    .block-title { font-size: 18px; font-weight: 700; color: #0f172a; margin: 8px 0 4px 0; }
+    .block-subtitle { font-size: 12px; color: #64748b; margin-bottom: 12px; }
+    div[data-baseweb="tab-list"] { gap: 10px; }
+    button[data-baseweb="tab"] {
+        border-radius: 9px !important;
+        border: 1px solid #dbe4f2 !important;
+        background: #f8fafc !important;
+        padding: 8px 12px !important;
+    }
+    button[data-baseweb="tab"][aria-selected="true"] {
+        background: #dff4e8 !important;
+        border-color: #1dd35f !important;
+    }
+    div[data-testid="stMetric"] {
+        background: #ffffff;
+        border: 1px solid #e2e8f0;
+        border-radius: 12px;
+        padding: 8px;
     }
     </style>
     """,
@@ -176,9 +333,13 @@ st.markdown(
     """
     <div class="topbar">
       <div class="topbar-wrap">
-        <div style="display:flex; align-items:center; gap:14px;">
-          <span class="brand">X-RAY</span>
-          <span class="navhint">RANKING · PIPELINE · BOB · REP · COUNTRY · EMAILS · MARKETING</span>
+        <div>
+          <div style="display:flex; align-items:center; gap:14px;">
+            <span class="brand">X-RAY</span>
+            <span class="navhint">RANKING · PIPELINE · BOB · REP · COUNTRY · EMAILS · MARKETING</span>
+          </div>
+          <div class="title-main">Middle East Revenue & Marketing Cockpit</div>
+          <div class="title-sub">Executive view for paid media efficiency and commercial outcomes</div>
         </div>
         <div class="navhint">ME Dashboard</div>
       </div>
@@ -211,7 +372,27 @@ with st.sidebar:
     start_date = st.date_input("Start date", value=default_start, max_value=default_end)
     end_date = st.date_input("End date", value=default_end, min_value=start_date, max_value=default_end)
 
-service_account_bytes = creds_file.read() if creds_file else None
+    service_account_bytes = creds_file.read() if creds_file else None
+    _preload_secret = _service_account_from_streamlit_secrets()
+    _secret_fp = _secret_fingerprint(_preload_secret)
+    if service_account_bytes:
+        _secret_fp = f"upload_{hashlib.sha256(service_account_bytes).hexdigest()[:16]}"
+
+    with st.expander("Auth status (no secrets shown)"):
+        if service_account_bytes:
+            st.success("Using uploaded service account JSON.")
+        elif _preload_secret:
+            st.success(
+                f"Using Streamlit Secrets: `{_preload_secret.get('client_email', '?')}` "
+                f"(fingerprint `{_secret_fp}`)"
+            )
+        else:
+            st.warning(
+                "No valid service account in **this** app's Streamlit Secrets. "
+                "Anonymous export only works if the sheet is public."
+            )
+            if st.session_state.get("_last_sa_secret_error"):
+                st.caption(f"Last parse error: {st.session_state['_last_sa_secret_error']}")
 
 try:
     df = load_marketing_data(
@@ -219,6 +400,7 @@ try:
         gid=int(gid),
         service_account_bytes=service_account_bytes,
         worksheet_name=worksheet_name.strip() or None,
+        _secret_fp=_secret_fp,
     )
 except Exception as exc:
     st.error(f"Failed to load sheet data: {exc}")
@@ -246,7 +428,11 @@ if "All Platforms" not in selected_platforms and selected_platforms:
     df = df[df["platform"].isin(selected_platforms)]
 
 if main_section == "Marketing":
-    st.markdown("### Marketing Dashboard")
+    st.markdown('<div class="block-title">Marketing Command Center</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="block-subtitle">Track media efficiency, lead quality, and funnel progression in one view.</div>',
+        unsafe_allow_html=True,
+    )
     st.markdown(
         """
         <span class="section-chip">Dashboard</span>
@@ -294,19 +480,29 @@ if main_section == "Marketing":
         m1, m2 = st.columns(2)
         with m1:
             fig_cost = px.line(monthly, x="month", y="cost", markers=True, title="Monthly Cost")
+            fig_cost.update_traces(line_color="#2563eb", marker_color="#2563eb")
+            fig_cost.update_layout(plot_bgcolor="white", paper_bgcolor="white", margin=dict(l=8, r=8, t=45, b=8))
             st.plotly_chart(fig_cost, use_container_width=True)
         with m2:
             fig_clicks = px.line(monthly, x="month", y="clicks", markers=True, title="Monthly Clicks")
+            fig_clicks.update_traces(line_color="#0f766e", marker_color="#0f766e")
+            fig_clicks.update_layout(plot_bgcolor="white", paper_bgcolor="white", margin=dict(l=8, r=8, t=45, b=8))
             st.plotly_chart(fig_clicks, use_container_width=True)
 
         st.markdown("#### Breakdown")
         b1, b2 = st.columns(2)
         with b1:
             by_country = df.groupby("country", as_index=False)["cost"].sum().sort_values("cost", ascending=False).head(15)
-            st.plotly_chart(px.bar(by_country, x="country", y="cost", title="Spend by Country"), use_container_width=True)
+            fig_country = px.bar(by_country, x="country", y="cost", title="Spend by Country")
+            fig_country.update_traces(marker_color="#334155")
+            fig_country.update_layout(plot_bgcolor="white", paper_bgcolor="white", margin=dict(l=8, r=8, t=45, b=8))
+            st.plotly_chart(fig_country, use_container_width=True)
         with b2:
             by_channel = df.groupby("channel", as_index=False)["cost"].sum().sort_values("cost", ascending=False).head(15)
-            st.plotly_chart(px.bar(by_channel, x="channel", y="cost", title="Spend by Channel"), use_container_width=True)
+            fig_channel = px.bar(by_channel, x="channel", y="cost", title="Spend by Channel")
+            fig_channel.update_traces(marker_color="#16a34a")
+            fig_channel.update_layout(plot_bgcolor="white", paper_bgcolor="white", margin=dict(l=8, r=8, t=45, b=8))
+            st.plotly_chart(fig_channel, use_container_width=True)
 
     with tab_region:
         by_region = (
@@ -338,7 +534,7 @@ if main_section == "Marketing":
         st.dataframe(df, use_container_width=True)
 
 elif main_section == "Country":
-    st.markdown("### Country Quality Analysis")
+    st.markdown('<div class="block-title">Country Quality Analysis</div>', unsafe_allow_html=True)
     by_country = (
         df.groupby("country", as_index=False)
         .agg(
@@ -368,7 +564,7 @@ elif main_section == "Country":
         st.dataframe(by_country, use_container_width=True)
 
 elif main_section == "Rep":
-    st.markdown("### Rep Quality Analysis")
+    st.markdown('<div class="block-title">Rep Quality Analysis</div>', unsafe_allow_html=True)
     rep_df = df.copy()
     rep_df["rep"] = rep_df.get("rep_name", "Unassigned")
     rep_agg = (
@@ -393,7 +589,7 @@ elif main_section == "Rep":
         st.dataframe(rep_agg, use_container_width=True)
 
 elif main_section == "BoB":
-    st.markdown("### Book of Business")
+    st.markdown('<div class="block-title">Book of Business</div>', unsafe_allow_html=True)
     bob_df = df.copy()
     if "account" not in bob_df.columns:
         bob_df["account"] = "Account not provided"
