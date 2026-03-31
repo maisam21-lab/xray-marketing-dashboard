@@ -484,10 +484,6 @@ def list_worksheet_meta(sheet_id: str, _secret_fp: str) -> list[tuple[str, int]]
 def load_all_worksheets_combined(sheet_id: str, _secret_fp: str) -> pd.DataFrame:
     """Read every worksheet in the spreadsheet (backend) and stack rows with `source_tab` set to the tab title."""
     meta = list_worksheet_meta(sheet_id, _secret_fp)
-    preferred_tabs = {"raw spend", "raw leads", "raw post qualification", "raw cw"}
-    selected_meta = [(t, g) for (t, g) in meta if t.strip().lower() in preferred_tabs]
-    if not selected_meta:
-        selected_meta = meta
     secret_creds = _service_account_from_streamlit_secrets()
     if not secret_creds:
         raise RuntimeError(
@@ -496,7 +492,7 @@ def load_all_worksheets_combined(sheet_id: str, _secret_fp: str) -> pd.DataFrame
         )
     frames: list[pd.DataFrame] = []
     tab_stats: list[tuple[str, int]] = []
-    for title, ws_gid in selected_meta:
+    for title, ws_gid in meta:
         try:
             raw = _read_sheet_auth(
                 sheet_id,
@@ -519,11 +515,11 @@ def load_all_worksheets_combined(sheet_id: str, _secret_fp: str) -> pd.DataFrame
     if not frames:
         out = pd.DataFrame()
         out.attrs["tab_stats"] = tab_stats
-        out.attrs["worksheet_order"] = [t for t, _ in selected_meta]
+        out.attrs["worksheet_order"] = [t for t, _ in meta]
         return out
     combined = pd.concat(frames, ignore_index=True)
     combined.attrs["tab_stats"] = tab_stats
-    combined.attrs["worksheet_order"] = [t for t, _ in selected_meta]
+    combined.attrs["worksheet_order"] = [t for t, _ in meta]
     try:
         combined.attrs["fields_mapped"] = list(frames[0].attrs.get("fields_mapped", []) or [])
     except Exception:
@@ -642,7 +638,7 @@ def _apply_sheet_filters(
     *,
     key_suffix: str,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Returns (filtered for metrics/charts, df_for_tabs before source_tab filter)."""
+    """Returns (filtered for metrics/charts, df_for_tabs mirror)."""
     country_opts = sorted([x for x in df_date["country"].dropna().unique().tolist() if x and x != "Unknown"])
     selected_countries = st.multiselect(
         "Country / market",
@@ -665,17 +661,6 @@ def _apply_sheet_filters(
         df = df[df["platform"].isin(selected_platforms)]
 
     df_for_tabs = df.copy()
-
-    if "source_tab" in df.columns:
-        st_opts = sorted([x for x in df["source_tab"].dropna().unique().tolist() if x])
-        selected_tabs = st.multiselect(
-            "Source tab",
-            ["All tabs"] + st_opts,
-            default=["All tabs"],
-            key=f"{key_suffix}_source_tab",
-        )
-        if "All tabs" not in selected_tabs and selected_tabs:
-            df = df[df["source_tab"].isin(selected_tabs)]
 
     return df, df_for_tabs
 
@@ -840,7 +825,7 @@ def render_page_marketing_performance(
         return
 
     st.markdown('<h1 class="looker-page-h1">Marketing Performance Overview</h1>', unsafe_allow_html=True)
-    df, df_for_tabs = _apply_sheet_filters(df_date, key_suffix=key_suffix)
+    df, _ = _apply_sheet_filters(df_date, key_suffix=key_suffix)
 
     c1, c2 = st.columns([3, 1])
     with c1:
@@ -849,40 +834,7 @@ def render_page_marketing_performance(
         with st.expander("Applied filters", expanded=False):
             st.caption("Country, platform, and source tab mirror Looker’s control strip.")
 
-    if "source_tab" in df_for_tabs.columns and df_for_tabs["source_tab"].nunique() > 0:
-        st.markdown("#### Workbook tabs")
-        by_tab = (
-            df_for_tabs.groupby("source_tab", as_index=False)
-            .agg(
-                rows=("cost", "count"),
-                spend=("cost", "sum"),
-                clicks=("clicks", "sum"),
-                impressions=("impressions", "sum"),
-                leads=("leads", "sum"),
-            )
-            .sort_values("spend", ascending=False)
-        )
-        t1, t2 = st.columns((1, 1))
-        with t1:
-            fig_tab_spend = px.bar(
-                by_tab,
-                x="spend",
-                y="source_tab",
-                orientation="h",
-                title="Spend by worksheet tab",
-                labels={"spend": "Spend (USD)", "source_tab": "Tab"},
-            )
-            fig_tab_spend.update_traces(marker_color="#0F766E")
-            fig_tab_spend.update_layout(
-                plot_bgcolor="white",
-                paper_bgcolor="white",
-                margin=dict(l=8, r=8, t=45, b=8),
-                yaxis={"categoryorder": "total ascending"},
-            )
-            st.plotly_chart(fig_tab_spend, use_container_width=True, key=f"{key_suffix}_pl_tab_spend")
-        with t2:
-            st.caption("Per-tab totals (ignores *Source tab* filter).")
-            st.dataframe(by_tab, use_container_width=True, hide_index=True, key=f"{key_suffix}_df_by_tab")
+    st.caption("All worksheet tabs are auto-combined into one model; no manual tab selection is required.")
 
     total_spend = float(df["cost"].sum())
     total_impr = int(df["impressions"].sum())
