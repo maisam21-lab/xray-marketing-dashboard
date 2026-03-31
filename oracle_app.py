@@ -10,7 +10,6 @@ from __future__ import annotations
 import hashlib
 import io
 import json
-import math
 import os
 import re
 import base64
@@ -1669,17 +1668,6 @@ def _format_currency(v: float) -> str:
     return f"${v:,.2f}"
 
 
-def _format_cpcw_lf_ratio(v: float) -> str:
-    """CpCW:LF can be a small positive (e.g. 61 / large LF sum); avoid rounding to 0.00."""
-    if not isinstance(v, (int, float)) or not math.isfinite(v) or v <= 0:
-        return "—"
-    if v >= 0.01:
-        return f"{v:.2f}"
-    if v >= 1e-6:
-        return f"{v:.4f}"
-    return f"{v:.6g}"
-
-
 def _format_spend_k(v: float) -> str:
     """Spend in thousands with K (and M for very large totals)."""
     if v == 0:
@@ -1811,8 +1799,8 @@ def _kpi_block(
     q_rate = (total_cw / total_qualified * 100) if total_qualified else 0.0
     sql_rate = (total_qualified / total_leads * 100) if total_leads else 0.0
     cpcw = (total_spend / total_cw) if total_cw else 0.0
-    # CpCW:LF = Closed Won (LF) ÷ LF Spend — same CW count as the card; LF Spend = sum Monthly LF USD (post-lead).
-    cpcw_lf = (total_cw / total_first_month_lf) if total_first_month_lf else 0.0
+    # CpCW:LF = LF Spend ÷ Closed Won (LF) — cost per CW deal in Monthly LF USD (average LF per deal).
+    cpcw_lf = (total_first_month_lf / total_cw) if total_cw else 0.0
     spend_tcv_pct = (total_spend / total_tcv * 100) if total_tcv else 0.0
 
     _cw_help = (
@@ -1828,11 +1816,10 @@ def _kpi_block(
         "If both ``Actual TCV`` and ``TCV (converted)`` exist on a row, the larger value is used—not added."
     )
     _cpcw_lf_help = (
-        "**CpCW:LF = Closed Won (LF) ÷ LF Spend.** "
-        "**Closed Won (LF)** is the same number as **CW (Inc Approved)** on this scorecard. "
-        "**LF Spend** is the **sum of Monthly LF USD** on the **post-lead** sheet for those same deals "
-        "(one row per opportunity, same scope as the Closed Won count). "
-        "If Monthly LF is missing on post-lead, the denominator falls back to the RAW CW tab sum."
+        "**CpCW:LF = LF Spend ÷ Closed Won (LF)** — **cost per** closed-won deal in Monthly LF terms. "
+        "**LF Spend** is the **sum of Monthly LF USD** on the post-lead sheet for the same CW (Inc Approved) deals. "
+        "**Closed Won (LF)** is the same count as **CW (Inc Approved)**. "
+        "If Monthly LF is missing on post-lead, LF Spend falls back to the RAW CW tab sum."
     )
     sections: list[tuple[str, list[tuple[Any, ...]]]] = [
         (
@@ -1844,7 +1831,7 @@ def _kpi_block(
                 ("Actual TCV", _format_currency(total_tcv) if total_tcv else "—", _actual_tcv_help),
                 (
                     "CpCW:LF",
-                    _format_cpcw_lf_ratio(cpcw_lf) if total_first_month_lf else "—",
+                    _format_currency(cpcw_lf) if total_cw else "—",
                     _cpcw_lf_help,
                 ),
                 ("Spend / TCV %", f"{spend_tcv_pct:.2f}%" if total_tcv else "—"),
@@ -1929,7 +1916,7 @@ def _master_performance_table(
     if "lf" in g.columns:
         g["1st Month LF"] = g["lf"]
         g["CPCW:LF"] = g.apply(
-            lambda r: (r["spend"] / r["lf"]) if r["lf"] and r["lf"] > 0 else float("nan"),
+            lambda r: (r["lf"] / r["cw"]) if r["cw"] and r["cw"] > 0 else float("nan"),
             axis=1,
         )
     if "tcv" in g.columns:
