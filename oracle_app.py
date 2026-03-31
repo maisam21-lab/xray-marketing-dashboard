@@ -608,22 +608,41 @@ def _sum_closed_won_unique_opportunities(df: pd.DataFrame) -> int:
 
 
 def _actual_tcv_value_column(df: pd.DataFrame) -> Optional[str]:
-    """Prefer ``actual_tcv`` (Actual TCV / TCV converted); else ``tcv``."""
+    """Use the **Actual TCV** / TCV (converted) field only (not generic ``tcv``)."""
     if "actual_tcv" in df.columns:
         return "actual_tcv"
-    if "tcv" in df.columns:
-        return "tcv"
     return None
 
 
+def _rows_for_actual_tcv_sum(df: pd.DataFrame) -> pd.DataFrame:
+    """Rows with CW flag set that are **Closed Won** in Stage (excludes standalone ``Approved`` for $).
+
+    Actual TCV is contract value for won deals; ``Approved``-only stage rows can carry pipeline TCV and
+    must not be summed here. If ``stage_text`` is missing/empty, keep all ``closed_won`` rows (legacy).
+    """
+    if df.empty or "closed_won" not in df.columns:
+        return df.iloc[0:0]
+    sub = df.loc[pd.to_numeric(df["closed_won"], errors="coerce").fillna(0) > 0].copy()
+    if sub.empty:
+        return sub
+    if "stage_text" not in sub.columns:
+        return sub
+    st = sub["stage_text"].astype(str).str.strip()
+    stl = st.str.lower()
+    if bool((stl.eq("") | stl.isin(["nan", "none"])).all()):
+        return sub
+    mask = stl.str.contains("closed won", na=False) & ~stl.str.contains("closed lost", na=False)
+    return sub.loc[mask]
+
+
 def _sum_actual_tcv_closed_won_deals(df: pd.DataFrame) -> float:
-    """Sum Actual TCV for rows that count as CW (Inc Approved), once per opportunity (same keys as CW)."""
+    """Sum Actual TCV for Closed Won stage rows, once per opportunity (same keys as CW)."""
     if df.empty or "closed_won" not in df.columns:
         return 0.0
     vc = _actual_tcv_value_column(df)
     if vc is None:
         return 0.0
-    sub = df.loc[pd.to_numeric(df["closed_won"], errors="coerce").fillna(0) > 0].copy()
+    sub = _rows_for_actual_tcv_sum(df)
     if sub.empty:
         return 0.0
     sub["_v"] = pd.to_numeric(sub[vc], errors="coerce").fillna(0.0)
@@ -641,14 +660,14 @@ def _sum_actual_tcv_closed_won_deals(df: pd.DataFrame) -> float:
 
 
 def _agg_actual_tcv_closed_won_by_month_country(post_df: pd.DataFrame) -> pd.DataFrame:
-    """Actual TCV for closed-won deals only, deduped per opp, summed by month × country (for master table)."""
+    """Actual TCV for Closed Won stage rows only, deduped per opp, summed by month × country (for master table)."""
     out_cols = ["month", "country", "tcv"]
     if post_df.empty or "closed_won" not in post_df.columns:
         return pd.DataFrame(columns=out_cols)
     vc = _actual_tcv_value_column(post_df)
     if vc is None or "month" not in post_df.columns or "country" not in post_df.columns:
         return pd.DataFrame(columns=out_cols)
-    sub = post_df.loc[pd.to_numeric(post_df["closed_won"], errors="coerce").fillna(0) > 0].copy()
+    sub = _rows_for_actual_tcv_sum(post_df)
     if sub.empty:
         return pd.DataFrame(columns=out_cols)
     sub["_v"] = pd.to_numeric(sub[vc], errors="coerce").fillna(0.0)
@@ -659,19 +678,33 @@ def _agg_actual_tcv_closed_won_by_month_country(post_df: pd.DataFrame) -> pd.Dat
 
 
 def _post_lead_slice_for_kpi(df: pd.DataFrame) -> pd.DataFrame:
-    """Rows used for post-lead CW KPIs: cross-tab dedupe, then exact-row dedupe (fixes 61 vs 122), then per-opp dedupe."""
+    """Rows used for post-lead CW KPIs: cross-tab dedupe, then exact-row dedupe (fixes 61 vs 122), then per-opp dedupe.
+
+    Per-opp collapse uses the **same composite key** as CW / Actual TCV (not tuple-of-all-ID-columns).
+    Tuple dedupe split one deal across ``opportunity_id`` vs ``opportunity_id_18`` rows and doubled TCV (~2×).
+    """
     post_df = _dedupe_post_lead_rows(_mpo_tab_subset(df, list(_POST_LEAD_SOURCE_TAB_PATTERNS)))
     if post_df.empty:
         return post_df
     # Same tab concatenated twice (e.g. extras reload) → identical rows; drop before summing CW.
     post_df = post_df.drop_duplicates(ignore_index=True)
-    keys = _opp_key_columns_for_post_lead(post_df)
-    if keys:
-        sub = post_df.copy()
-        for c in keys:
-            sub[c] = sub[c].map(_norm_key_cell)
-        post_df = sub.drop_duplicates(subset=keys, keep="first")
-    return post_df
+    post_df = post_df.copy()
+    ck = _composite_cw_opportunity_key_series(post_df).astype(str).str.strip()
+    bad = ck.eq("") | ck.str.lower().isin(["nan", "none", "<na>"])
+    if bad.any():
+        anon = "anon:" + pd.Series(range(len(post_df)), index=post_df.index).astype(str)
+        ck = ck.where(~bad, anon)
+    post_df["_ck"] = ck
+    if "source_tab" in post_df.columns:
+        tp = post_df["source_tab"].astype(str).str.lower().map(
+            lambda x: 0 if re.search(r"raw.*post.*qual", x) else 1
+        )
+        post_df["_tp"] = tp
+        post_df = post_df.sort_values(by=["_tp", "_ck"])
+    else:
+        post_df = post_df.sort_values(by="_ck")
+    post_df = post_df.drop_duplicates(subset=["_ck"], keep="first")
+    return post_df.drop(columns=["_ck", "_tp"], errors="ignore")
 
 
 # Normalized header → canonical column (covers X-Ray export names + ME X-Ray Excel template)
@@ -755,6 +788,12 @@ _NORM_TO_FIELD: dict[str, str] = {
     "opp_name": "opp_name",
     "deal_id": "deal_id",
     "deal_name": "deal_name",
+    # Preserve Stage for Actual TCV (must be Closed Won in stage text, not standalone Approved).
+    "stage": "stage_text",
+    "post_lead_stage": "stage_text",
+    "stagename": "stage_text",
+    "stage_name": "stage_text",
+    "opportunity_stage": "stage_text",
 }
 
 _NUM_FIELDS = frozenset(
@@ -964,11 +1003,22 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
                 nxt = _to_number_series(df[c])
                 if field == "closed_won":
                     acc = acc.combine(nxt, max)
+                elif field == "actual_tcv":
+                    # Same deal often has both "Actual TCV" and "TCV (converted)" — must not sum (≈2× scorecard).
+                    acc = acc.combine(nxt, max)
                 else:
                     acc = acc + nxt
             out[field] = acc
         else:
-            out[field] = df[srcs[0]]
+            if field == "stage_text" and len(srcs) > 1:
+                # First non-empty wins (Stage vs Post Lead Stage vs Opportunity Stage — same filter as Excel pivot).
+                comb = df[srcs[0]].astype(str).replace({"nan": "", "None": ""})
+                for c in srcs[1:]:
+                    nxt = df[c].astype(str).replace({"nan": "", "None": ""})
+                    comb = comb.where(comb.str.strip().ne(""), nxt)
+                out[field] = comb
+            else:
+                out[field] = df[srcs[0]]
 
     # Hard fallback for spend: if explicit mapping missed it, infer from any spend/cost/amount-like header.
     if "cost" not in out.columns:
@@ -1017,6 +1067,7 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
         "opp_name",
         "deal_id",
         "deal_name",
+        "stage_text",
     ):
         if dim not in out.columns:
             out[dim] = ""
@@ -1487,8 +1538,6 @@ def compute_mpo_totals(
     total_commitment = int(post_df["commitment"].sum()) if "commitment" in post_df.columns else 0
     total_closed_lost = int(post_df["closed_lost"].sum()) if "closed_lost" in post_df.columns else 0
     total_tcv = _sum_actual_tcv_closed_won_deals(post_df)
-    if total_tcv == 0.0 and _actual_tcv_value_column(post_df) is None:
-        total_tcv = float(cw_df["tcv"].sum()) if "tcv" in cw_df.columns else 0.0
     total_first_month_lf = float(cw_df["first_month_lf"].sum()) if "first_month_lf" in cw_df.columns else 0.0
 
     if total_spend == 0.0 and "cost" in df.columns:
@@ -1526,8 +1575,6 @@ def compute_mpo_totals(
         total_commitment = int(df["commitment"].sum()) if "commitment" in df.columns else 0
         total_closed_lost = int(df["closed_lost"].sum()) if "closed_lost" in df.columns else 0
         total_tcv = _sum_actual_tcv_closed_won_deals(pl_only)
-        if total_tcv == 0.0 and _actual_tcv_value_column(pl_only) is None:
-            total_tcv = float(df["tcv"].sum()) if "tcv" in df.columns else 0.0
         total_first_month_lf = float(df["first_month_lf"].sum()) if "first_month_lf" in df.columns else 0.0
 
     ctr = (total_clicks / total_impr * 100) if total_impr else 0
@@ -1717,9 +1764,9 @@ def _kpi_block(
         "Closed Won (Inc Approved) deals. Lower is better."
     )
     _actual_tcv_help = (
-        "Sum of **Actual TCV** (Salesforce TCV converted) on the post-lead tab for opportunities "
-        "in the same Closed Won / Approved stage filter as CW (Inc Approved). "
-        "If that column is missing, falls back to TCV from the RAW CW tab."
+        "Sum of **Actual TCV** / **TCV (converted)** on the post-lead tab for rows whose **Stage** text is "
+        "**Closed Won** (standalone **Approved** is excluded from the $ sum). If both column names exist "
+        "for the same deal, the larger value is used—not added. Deduped per opportunity like CW count."
     )
     sections: list[tuple[str, list[tuple[Any, ...]]]] = [
         (
