@@ -880,6 +880,34 @@ def load_spend_gid0_normalized(sheet_id: str, _secret_fp: str) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300)
+def load_spend_gid0_raw_sum(sheet_id: str, _secret_fp: str) -> float:
+    """Direct raw Spend sum from gid=0 by scanning spend/cost/amount-like columns."""
+    secret_creds = _service_account_from_streamlit_secrets()
+    if not secret_creds:
+        return 0.0
+    try:
+        raw = _read_sheet_auth_loose(sheet_id, secret_creds, worksheet_gid=0)
+    except Exception:
+        return 0.0
+    if raw.empty or len(raw.columns) == 0:
+        return 0.0
+    spend_cols = []
+    for c in raw.columns:
+        nk = _norm_header_key(c)
+        if ("spend" in nk or "cost" in nk or "amount" in nk) and nk not in {"cost_tcv", "cost_tcv_pct"}:
+            spend_cols.append(c)
+    if not spend_cols:
+        return 0.0
+    best_sum = 0.0
+    for c in spend_cols:
+        s = _to_number_series(raw[c])
+        sm = float(s.sum())
+        if abs(sm) > abs(best_sum):
+            best_sum = sm
+    return best_sum
+
+
+@st.cache_data(ttl=300)
 def load_first_matching_worksheet_normalized(
     sheet_id: str,
     name_patterns: tuple[str, ...],
@@ -1335,6 +1363,9 @@ def render_page_marketing_performance(
     # Per-metric safety fallbacks.
     if total_spend == 0.0 and "cost" in df.columns:
         total_spend = float(df["cost"].sum())
+    gid0_spend_sum = float(st.session_state.get("_gid0_spend_sum", 0.0) or 0.0)
+    if total_spend == 0.0 and gid0_spend_sum > 0.0:
+        total_spend = gid0_spend_sum
     if total_cw == 0 and "closed_won" in df.columns:
         total_cw = int(df["closed_won"].sum())
 
@@ -1425,6 +1456,10 @@ def render_page_marketing_performance(
                 master_df = df.copy()
 
     _master_performance_table(master_df, key_suffix=key_suffix)
+
+    # Temporary: show direct spend read from gid=0 to validate Cloud ingestion.
+    if gid0_spend_sum > 0:
+        st.caption(f"Debug Spend (gid=0 direct): ${gid0_spend_sum:,.2f}")
 
 
 def render_page_market_mom(
@@ -1580,6 +1615,7 @@ def render_main_dashboard(
                     df_loaded = pd.concat([df_loaded, spend_norm], ignore_index=True)
         # Hardwired spend source from gid=0 (requested source tab).
         spend_gid0 = load_spend_gid0_normalized(sheet_id, _fp)
+        st.session_state["_gid0_spend_sum"] = load_spend_gid0_raw_sum(sheet_id, _fp)
         if not spend_gid0.empty:
             if not df_loaded.empty and "source_tab" in df_loaded.columns:
                 df_loaded = df_loaded[df_loaded["source_tab"].astype(str) != "gid:0_spend"]
