@@ -1269,7 +1269,6 @@ def main() -> None:
         margin-right: 10px; vertical-align: middle; border: none;
         background: transparent; border-radius: 0;
     }
-    .looker-header-actions { font-size: 8px; color: #6b7280; display:flex; align-items:center; gap:8px; }
     .live-pill {
         background: #ecfdf3;
         color: #16a34a;
@@ -1281,20 +1280,14 @@ def main() -> None:
         line-height: 1;
     }
     .refresh-note { color: #6b7280; font-size: 8px; }
-    .right-icon {
-        width: 20px; height: 20px; border-radius: 50%;
-        border: 1px solid #e5e7eb; color:#6b7280; display:inline-flex;
-        align-items:center; justify-content:center; font-size:9px;
-        background:#fff;
-    }
-    .avatar-badge {
-        width: 22px; height: 22px; border-radius: 50%;
-        display:inline-flex; align-items:center; justify-content:center;
-        background:#0f766e; color:#fff; font-size:8px; font-weight:700;
-    }
-    .signout-btn {
-        border: 1px solid #e5e7eb; border-radius: 6px; padding: 4px 10px;
-        background:#fff; color:#374151; font-size:8px;
+    .stButton > button {
+        border: 1px solid #e5e7eb;
+        border-radius: 8px;
+        background: #fff;
+        color: #374151;
+        font-size: 8px;
+        padding: 2px 10px;
+        height: 26px;
     }
     .looker-page-h1 { font-size: 1.0rem; font-weight: 400; color: #202124; margin: 8px 0 16px 0; }
     .looker-table-title { font-size: 0.72rem; font-weight: 600; color: #202124; margin: 20px 0 8px 0; }
@@ -1389,24 +1382,31 @@ def main() -> None:
         if logo_uri
         else '<span style="display:inline-block;width:38px;height:38px;border-radius:6px;background:#4f8483;margin-right:10px;"></span>'
     )
-    st.markdown(
-        f"""
-    <div class="looker-header">
-      <div style="display:flex;align-items:center;">
-        {logo_html}
-        <h1 class="looker-header-title">KitchenPark Marketing Dashboard</h1>
-        <span class="live-pill">● Live Data</span>
-        <span class="refresh-note">Refreshed just now</span>
-      </div>
-      <div class="looker-header-actions">
-        <span class="right-icon">?</span>
-        <span class="avatar-badge">MA</span>
-        <span class="signout-btn">Sign out</span>
-      </div>
-    </div>
-    """,
-        unsafe_allow_html=True,
-    )
+    st.markdown('<div class="looker-header">', unsafe_allow_html=True)
+    hl, hr = st.columns([6, 2])
+    with hl:
+        st.markdown(
+            f"""
+        <div style="display:flex;align-items:center;gap:8px;">
+          {logo_html}
+          <h1 class="looker-header-title">KitchenPark Marketing Dashboard</h1>
+          <span class="live-pill">● Live Data</span>
+          <span class="refresh-note">Refreshed just now</span>
+        </div>
+        """,
+            unsafe_allow_html=True,
+        )
+    with hr:
+        b1, b2, b3 = st.columns([1, 1, 2])
+        with b1:
+            if st.button("?", key="hdr_help_btn"):
+                st.info("Help panel coming soon.")
+        with b2:
+            st.button("MA", key="hdr_user_btn")
+        with b3:
+            if st.button("Sign out", key="hdr_signout_btn"):
+                st.info("Signed out.")
+    st.markdown("</div>", unsafe_allow_html=True)
 
     _end = date.today()
     _start = _end - timedelta(days=730)
