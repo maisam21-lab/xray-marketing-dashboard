@@ -802,7 +802,7 @@ def _kpi_block(
     total_commitment: int,
     total_closed_lost: int,
 ) -> None:
-    """Old KPI style (st.metric) with newer KPI titles."""
+    """Old KPI style (st.metric) with old + new card sets."""
     q_rate = (total_cw / total_qualified * 100) if total_qualified else 0.0
     sql_rate = (total_qualified / total_leads * 100) if total_leads else 0.0
     cpcw = (total_spend / total_cw) if total_cw else 0.0
@@ -810,6 +810,21 @@ def _kpi_block(
     # CpCW:LF = CpCW / 1st Month LF(avg) == Marketing Spend / total 1st Month LF
     cpcw_lf = (total_spend / total_first_month_lf) if total_first_month_lf else 0.0
     spend_tcv_pct = (total_spend / total_tcv * 100) if total_tcv else 0.0
+
+    # Keep the original top KPI row design/content.
+    old_vals = [
+        _format_currency(total_spend),
+        f"{total_impr:,}",
+        f"{total_clicks:,}",
+        f"{ctr:.2f}%",
+        f"{total_qualified:,}",
+        f"{total_leads:,}",
+    ]
+    old_titles = ["Spend", "Impressions", "Clicks", "CTR", "Qualified", "Leads"]
+    old_row = st.columns(6)
+    for i, c in enumerate(old_row):
+        with c:
+            st.metric(old_titles[i], old_vals[i])
 
     vals = [
         f"{total_cw:,}",
@@ -820,12 +835,12 @@ def _kpi_block(
         f"{spend_tcv_pct:.2f}%" if total_tcv else "—",
     ]
     titles = ["CW (Inc Approved)", "Spend", "CPCW", "Actual TCV", "CpCW:LF", "Spend / TCV %"]
-    r1 = st.columns(6)
-    for i, c in enumerate(r1):
+    r2 = st.columns(6)
+    for i, c in enumerate(r2):
         with c:
             st.metric(titles[i], vals[i])
 
-    r2 = st.columns(6)
+    r3 = st.columns(6)
     pills = [
         ("Total Leads", f"{total_leads:,}"),
         ("Qualified", f"{total_qualified:,}"),
@@ -834,12 +849,12 @@ def _kpi_block(
         ("CPL", f"${cpl:,.2f}" if total_leads else "—"),
         ("CPSQL", f"${cpsql:,.2f}" if total_qualified else "—"),
     ]
-    for i, c in enumerate(r2):
+    for i, c in enumerate(r3):
         lbl, val = pills[i]
         with c:
             st.metric(lbl, val)
 
-    r3 = st.columns(5)
+    r4 = st.columns(5)
     tail = [
         ("Total Live", f"{total_total_live:,}"),
         ("Negotiation", f"{total_negotiation:,}"),
@@ -847,7 +862,7 @@ def _kpi_block(
         ("Closed Lost", f"{total_closed_lost:,}"),
         ("Q → Win %", f"{q_rate:.2f}%"),
     ]
-    for i, c in enumerate(r3):
+    for i, c in enumerate(r4):
         lbl, val = tail[i]
         with c:
             st.metric(lbl, val)
