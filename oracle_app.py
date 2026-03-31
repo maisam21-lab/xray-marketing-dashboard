@@ -726,6 +726,31 @@ def load_source_of_truth_tab(sheet_id: str, worksheet_gid: int, _secret_fp: str)
 
 
 @st.cache_data(ttl=300)
+def load_named_worksheet_normalized(sheet_id: str, worksheet_name: str, _secret_fp: str) -> pd.DataFrame:
+    """Load one worksheet by exact title, preprocess + normalize, and tag source_tab."""
+    secret_creds = _service_account_from_streamlit_secrets()
+    if not secret_creds:
+        raise RuntimeError(
+            "No service account in Streamlit Secrets. Add a `[gsheet_service_account]` block "
+            "(or `GCP_SERVICE_ACCOUNT`) in this app’s Secrets, then reboot."
+        )
+    raw = _read_sheet_auth(
+        sheet_id,
+        secret_creds,
+        worksheet_name=worksheet_name,
+        worksheet_gid=None,
+    )
+    if raw.empty or len(raw.columns) == 0:
+        return pd.DataFrame()
+    raw = _preprocess_excel_sheet(raw, worksheet_name)
+    out = _normalize(raw)
+    if out.empty:
+        return out
+    out["source_tab"] = worksheet_name
+    return out
+
+
+@st.cache_data(ttl=300)
 def load_excel_all_sheets(_content_hash: str, xlsx_bytes: bytes) -> pd.DataFrame:
     """Load and combine core ME X-Ray tabs (spend, leads, post-leads) into one dataset."""
     bio = io.BytesIO(xlsx_bytes)
@@ -1360,6 +1385,19 @@ def render_main_dashboard(
     try:
         # Source of truth is the entire spreadsheet; aggregate data across tabs.
         df_loaded = load_all_worksheets_combined(sheet_id, _fp)
+        # Hard requirement: ensure Spend sheet is present (sheet: Spend, column: Spend).
+        needs_spend_inject = True
+        if not df_loaded.empty and "source_tab" in df_loaded.columns:
+            spend_rows = df_loaded[df_loaded["source_tab"].astype(str).str.strip().str.lower() == "spend"]
+            if not spend_rows.empty and "cost" in spend_rows.columns and float(spend_rows["cost"].sum()) > 0:
+                needs_spend_inject = False
+        if needs_spend_inject:
+            spend_norm = load_named_worksheet_normalized(sheet_id, "Spend", _fp)
+            if not spend_norm.empty:
+                if df_loaded.empty:
+                    df_loaded = spend_norm
+                else:
+                    df_loaded = pd.concat([df_loaded, spend_norm], ignore_index=True)
     except Exception as exc:
         st.error(f"Failed to load spreadsheet: {exc}")
         return
