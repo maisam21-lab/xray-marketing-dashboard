@@ -913,7 +913,7 @@ def _master_performance_table(
     )
     g["Total Leads"] = g["leads"]
 
-    metric_options = [
+    metrics = [
         "Spend",
         "CW (Inc Approved)",
         "CPCW",
@@ -922,41 +922,45 @@ def _master_performance_table(
         "Total Leads",
     ]
     if "1st Month LF" in g.columns:
-        metric_options.append("1st Month LF")
+        metrics.append("1st Month LF")
     if "Actual TCV" in g.columns:
-        metric_options.append("Actual TCV")
+        metrics.append("Actual TCV")
     if "CPCW:LF" in g.columns:
-        metric_options.append("CPCW:LF")
+        metrics.append("CPCW:LF")
     if "Cost/TCV%" in g.columns:
-        metric_options.append("Cost/TCV%")
+        metrics.append("Cost/TCV%")
 
-    metric = st.selectbox(
-        "Pivot metric",
-        metric_options,
-        index=0,
-        key=f"{key_suffix}_pivot_metric",
-    )
+    pvt = g.pivot_table(index="Market", columns="month", values=metrics, aggfunc="sum")
+    pvt = pvt.sort_index(axis=1, level=[1, 0])
 
-    pvt = g.pivot_table(index="Market", columns="month", values=metric, aggfunc="sum")
-    pvt = pvt.sort_index(axis=1)
-    pvt.columns = [pd.Period(m, freq="M").strftime("%b %Y") for m in pvt.columns]
+    flat_cols: list[str] = []
+    for metric_name, month_value in pvt.columns:
+        month_txt = pd.Period(month_value, freq="M").strftime("%b %Y")
+        flat_cols.append(f"{month_txt} | {metric_name}")
+    pvt.columns = flat_cols
     pvt = pvt.sort_index().reset_index()
 
-    fmt: Any
-    if metric in {"Spend", "CPCW", "CPL", "Actual TCV", "1st Month LF"}:
-        fmt = lambda x: f"${x:,.2f}" if pd.notna(x) else "—"
-    elif metric in {"SQL %", "Cost/TCV%"}:
-        fmt = lambda x: f"{x:.2f}%" if pd.notna(x) else "—"
-    elif metric in {"CW (Inc Approved)", "Total Leads"}:
-        fmt = lambda x: f"{x:,.0f}" if pd.notna(x) else "—"
-    else:
-        fmt = lambda x: f"{x:,.2f}" if pd.notna(x) else "—"
+    def _fmt_for_metric(metric_name: str) -> Any:
+        if metric_name in {"Spend", "CPCW", "CPL", "Actual TCV", "1st Month LF"}:
+            return lambda x: f"${x:,.2f}" if pd.notna(x) else "—"
+        if metric_name in {"SQL %", "Cost/TCV%"}:
+            return lambda x: f"{x:.2f}%" if pd.notna(x) else "—"
+        if metric_name in {"CW (Inc Approved)", "Total Leads"}:
+            return lambda x: f"{x:,.0f}" if pd.notna(x) else "—"
+        return lambda x: f"{x:,.2f}" if pd.notna(x) else "—"
 
-    month_cols = [c for c in pvt.columns if c != "Market"]
-    styler = pvt.style.format({c: fmt for c in month_cols})
-    good_low = metric in {"CPCW", "CPCW:LF", "Cost/TCV%", "CPL"}
-    for c in month_cols:
-        styler = styler.apply(lambda s, col=c: _heatmap_bg(pvt[col], good_low=good_low), subset=[c])
+    fmt_map: dict[str, Any] = {}
+    for c in pvt.columns:
+        if c == "Market":
+            continue
+        metric_name = c.split("|", 1)[1].strip() if "|" in c else ""
+        fmt_map[c] = _fmt_for_metric(metric_name)
+
+    styler = pvt.style.format(fmt_map)
+    for c in [x for x in pvt.columns if x != "Market"]:
+        metric_name = c.split("|", 1)[1].strip() if "|" in c else ""
+        good_low = metric_name in {"CPCW", "CPCW:LF", "Cost/TCV%", "CPL"}
+        styler = styler.apply(lambda s, col=c, gl=good_low: _heatmap_bg(pvt[col], good_low=gl), subset=[c])
     st.dataframe(styler, use_container_width=True, hide_index=True, key=f"{key_suffix}_df_master_pivot")
 
 
