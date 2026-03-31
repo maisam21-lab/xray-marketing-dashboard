@@ -1364,18 +1364,26 @@ def main() -> None:
         background: #F8FAFC !important;
         border: 1px solid #E2E8F0 !important;
     }
-    /* Multiselect selected chips: use app green instead of default red */
-    [data-baseweb="tag"] {
+    /* Multiselect selected chips: force app green instead of default red */
+    .stMultiSelect [data-baseweb="select"] [data-baseweb="tag"],
+    .stMultiSelect [data-baseweb="tag"] {
         background: #4f8483 !important;
         color: #ffffff !important;
         border-color: #4f8483 !important;
     }
-    [data-baseweb="tag"] * {
+    .stMultiSelect [data-baseweb="select"] [data-baseweb="tag"] *,
+    .stMultiSelect [data-baseweb="tag"] * {
         color: #ffffff !important;
     }
-    [data-baseweb="tag"] [role="button"] svg {
+    .stMultiSelect [data-baseweb="select"] [data-baseweb="tag"] [role="button"] svg,
+    .stMultiSelect [data-baseweb="tag"] [role="button"] svg {
         fill: #ffffff !important;
         color: #ffffff !important;
+    }
+    .stMultiSelect [data-baseweb="select"] [data-baseweb="tag"] [role="button"] svg path,
+    .stMultiSelect [data-baseweb="tag"] [role="button"] svg path {
+        fill: #ffffff !important;
+        stroke: #ffffff !important;
     }
     .stDataFrame { border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); border: 1px solid #E2E8F0; }
     [data-testid="stMetricValue"] { color: #1E293B !important; }
