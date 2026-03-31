@@ -1219,48 +1219,16 @@ def render_main_dashboard(
 ) -> None:
     """Load Google Sheets or ME X-Ray Excel template, then route to Looker-named report pages."""
     with st.container():
-        t1, t2 = st.columns([1.1, 2.4])
-        with t1:
-            src = st.radio(
-                "Data source",
-                ["Google Sheets", "Excel (.xlsx)"],
-                horizontal=True,
-                key="data_src",
-            )
-        with t2:
-            excel_path = ""
-            if src == "Excel (.xlsx)":
-                excel_path = st.text_input(
-                    "Workbook path",
-                    value=_default_excel_path_from_secrets(),
-                    key="xlsx_path",
-                    placeholder="Full path to .xlsx — on Cloud set XRAY_EXCEL_PATH in secrets",
-                )
+        st.caption("Source: Google Sheets")
 
-    df_loaded: pd.DataFrame
-    if src == "Excel (.xlsx)":
-        if not (excel_path or "").strip():
-            st.error("Enter the full path to your .xlsx file, or set **XRAY_EXCEL_PATH** in Streamlit secrets (required on Streamlit Cloud).")
-            return
-        p = Path(excel_path.strip()).expanduser()
-        if not p.exists():
-            st.error(f"Excel file not found: {p}")
-            return
-        if p.suffix.lower() != ".xlsx":
-            st.error("Excel source must be a .xlsx file.")
-            return
-        xbytes = p.read_bytes()
-        fp = hashlib.md5(xbytes).hexdigest()
-        df_loaded = load_excel_all_sheets(fp, xbytes)
-    else:
-        sheet_id = _extract_sheet_id(_default_sheet_id_from_secrets())
-        _fp = _secret_fingerprint(_service_account_from_streamlit_secrets())
-        truth_gid = _default_truth_gid_from_secrets()
-        try:
-            df_loaded = load_source_of_truth_tab(sheet_id, truth_gid, _fp)
-        except Exception as exc:
-            st.error(f"Failed to load spreadsheet: {exc}")
-            return
+    sheet_id = _extract_sheet_id(_default_sheet_id_from_secrets())
+    _fp = _secret_fingerprint(_service_account_from_streamlit_secrets())
+    truth_gid = _default_truth_gid_from_secrets()
+    try:
+        df_loaded = load_source_of_truth_tab(sheet_id, truth_gid, _fp)
+    except Exception as exc:
+        st.error(f"Failed to load spreadsheet: {exc}")
+        return
 
     if df_loaded.empty:
         st.warning("No data rows were returned. Check tabs and column headers against the ME X-Ray template.")
