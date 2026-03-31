@@ -930,10 +930,10 @@ def _master_performance_table(
     if "Cost/TCV%" in g.columns:
         metrics.append("Cost/TCV%")
 
-    monthly = g.groupby("month", as_index=False)[metrics].sum().sort_values("month")
-    monthly["Month"] = monthly["month"].apply(lambda m: pd.Period(m, freq="M").strftime("%b %Y"))
-    pvt = monthly.drop(columns=["month"])
-    cols = ["Month"] + [m for m in metrics if m in pvt.columns]
+    monthly_market = g.groupby(["month", "Market"], as_index=False)[metrics].sum().sort_values(["month", "Market"])
+    monthly_market["Month"] = monthly_market["month"].apply(lambda m: pd.Period(m, freq="M").strftime("%b %Y"))
+    pvt = monthly_market.drop(columns=["month"])
+    cols = ["Month", "Market"] + [m for m in metrics if m in pvt.columns]
     pvt = pvt[cols]
 
     def _fmt_for_metric(metric_name: str) -> Any:
@@ -947,13 +947,13 @@ def _master_performance_table(
 
     fmt_map: dict[str, Any] = {}
     for c in pvt.columns:
-        if c == "Month":
+        if c in {"Month", "Market"}:
             continue
         metric_name = c
         fmt_map[c] = _fmt_for_metric(metric_name)
 
     styler = pvt.style.format(fmt_map)
-    for c in [x for x in pvt.columns if x != "Month"]:
+    for c in [x for x in pvt.columns if x not in {"Month", "Market"}]:
         metric_name = c
         good_low = metric_name in {"CPCW", "CPCW:LF", "Cost/TCV%", "CPL"}
         styler = styler.apply(lambda s, col=c, gl=good_low: _heatmap_bg(pvt[col], good_low=gl), subset=[c])
