@@ -1654,13 +1654,17 @@ def _kpi_block(
     _cw_help = (
         "Deals that are in a Closed Won status, including any deals that have been formally approved."
     )
+    _cpcw_help = (
+        "Cost per Closed Won (CPCW): total marketing spend divided by the number of "
+        "Closed Won (Inc Approved) deals. Lower is better."
+    )
     sections: list[tuple[str, list[tuple[Any, ...]]]] = [
         (
             "Closed Won",
             [
                 ("CW (Inc Approved)", f"{total_cw:,}", _cw_help),
                 ("Spend", _format_spend_k(total_spend)),
-                ("CPCW", f"${cpcw:,.2f}" if total_cw else "—"),
+                ("CPCW", f"${cpcw:,.2f}" if total_cw else "—", _cpcw_help),
                 ("Actual TCV", _format_currency(total_tcv) if total_tcv else "—"),
                 ("CpCW:LF", f"{cpcw_lf:.2f}" if total_first_month_lf else "—"),
                 ("Spend / TCV %", f"{spend_tcv_pct:.2f}%" if total_tcv else "—"),
