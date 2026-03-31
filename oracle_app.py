@@ -1008,10 +1008,14 @@ def _kpi_block(
             for idx in range(0, len(cards), 2):
                 row_cols = st.columns(2)
                 with row_cols[0]:
-                    st.metric(cards[idx][0], cards[idx][1])
+                    label_left = cards[idx][0]
+                    help_left = "Sum of media spend" if label_left == "Spend" else None
+                    st.metric(label_left, cards[idx][1], help=help_left)
                 if idx + 1 < len(cards):
                     with row_cols[1]:
-                        st.metric(cards[idx + 1][0], cards[idx + 1][1])
+                        label_right = cards[idx + 1][0]
+                        help_right = "Sum of media spend" if label_right == "Spend" else None
+                        st.metric(label_right, cards[idx + 1][1], help=help_right)
 
 
 def _master_performance_table(
