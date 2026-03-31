@@ -1273,12 +1273,12 @@ def main() -> None:
         color: #16a34a;
         border: 1px solid #bbf7d0;
         border-radius: 999px;
-        padding: 1px 6px;
-        font-size: 7px;
+        padding: 2px 8px;
+        font-size: 10px;
         font-weight: 600;
         line-height: 1;
     }
-    .refresh-note { color: #6b7280; font-size: 7px; }
+    .refresh-note { color: #6b7280; font-size: 10px; }
     .stButton > button {
         border: 1px solid #b7d9d5;
         border-radius: 999px;
