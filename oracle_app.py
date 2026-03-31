@@ -445,6 +445,13 @@ def _preprocess_excel_sheet(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
         lf_num = pd.to_numeric(df.get("Monthly LF (USD)", 0), errors="coerce").fillna(0)
         term_num = pd.to_numeric(df.get("License Initial Term (Months)", 0), errors="coerce").fillna(0)
         df["TCV (USD)"] = tcv_num.where(tcv_num > 0, lf_num * term_num)
+
+    # Global fallback: if any sheet has a Stage-like column, derive Closed Won (inc approved).
+    # This prevents CW from dropping to zero when tab naming differs in source files.
+    stage_col_any = next((c for c in df.columns if "stage" in _norm_header_key(c)), None)
+    if stage_col_any and "Closed Won" not in df.columns:
+        stage_any = df[stage_col_any].astype(str).str.lower().str.strip()
+        df["Closed Won"] = stage_any.str.contains(r"closed won|approved", na=False, regex=True).astype(int)
     return df
 
 
@@ -1045,6 +1052,8 @@ def render_page_marketing_performance(
     total_qualified = int(leads_df["qualified"].sum()) if "qualified" in leads_df.columns else 0
     total_pitching = int(post_df["pitching"].sum()) if "pitching" in post_df.columns else 0
     total_cw = int(post_df["closed_won"].sum()) if "closed_won" in post_df.columns else 0
+    if total_cw == 0 and "closed_won" in df.columns:
+        total_cw = int(df["closed_won"].sum())
     total_new = int(post_df["new"].sum()) if "new" in post_df.columns else 0
     total_working = int(post_df["working"].sum()) if "working" in post_df.columns else 0
     total_total_live = int(post_df["total_live"].sum()) if "total_live" in post_df.columns else 0
