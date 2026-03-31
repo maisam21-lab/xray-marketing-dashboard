@@ -796,23 +796,21 @@ def _kpi_block(
     cpc: float,
     cpl: float,
     cpsql: float,
-    total_new_working: int,
-    total_total_live: int,
-    total_negotiation: int,
-    total_commitment: int,
-    total_closed_lost: int,
 ) -> None:
-    """Grouped KPI cards matching requested marketing layout."""
-    def _mini_card(col, label: str, value: str) -> None:
-        col.markdown(
-            f"""
-            <div class="mini-kpi-card">
-              <div class="mini-kpi-label">{label}</div>
-              <div class="mini-kpi-value">{value}</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+    """Old KPI style using standard Streamlit metrics."""
+    vals = [
+        _format_currency(total_spend),
+        f"{total_impr:,}",
+        f"{total_clicks:,}",
+        f"{ctr:.2f}%",
+        f"{total_qualified:,}",
+        f"{total_leads:,}",
+    ]
+    titles = ["Spend", "Impressions", "Clicks", "CTR", "Qualified", "Leads"]
+    r1 = st.columns(6)
+    for i, c in enumerate(r1):
+        with c:
+            st.metric(titles[i], vals[i])
 
     q_rate = (total_cw / total_qualified * 100) if total_qualified else 0.0
     cpcw = (total_spend / total_cw) if total_cw else 0.0
@@ -820,42 +818,19 @@ def _kpi_block(
     # CpCW:LF = CpCW / 1st Month LF(avg) == Marketing Spend / total 1st Month LF
     cpcw_lf = (total_spend / total_first_month_lf) if total_first_month_lf else 0.0
     spend_tcv_pct = (total_spend / total_tcv * 100) if total_tcv else 0.0
-    g1, g2, g3 = st.columns(3)
-
-    with g1:
-        st.markdown("#### Closed Won")
-        r = st.columns(2)
-        _mini_card(r[0], "CW (Inc Approved)", f"{total_cw:,}")
-        _mini_card(r[1], "Spend", _format_currency(total_spend))
-        r = st.columns(2)
-        _mini_card(r[0], "CPCW", f"${cpcw:,.2f}" if total_cw else "0")
-        _mini_card(r[1], "Actual TCV", _format_currency(total_tcv) if total_tcv else "$0.0")
-        r = st.columns(2)
-        _mini_card(r[0], "CPCW:LF", f"{cpcw_lf:.2f}" if total_first_month_lf else "0")
-        _mini_card(r[1], "Cost/TCV%", f"{spend_tcv_pct:.2f}%" if total_tcv else "0")
-
-    with g2:
-        st.markdown("#### Leads")
-        r = st.columns(2)
-        _mini_card(r[0], "Total Leads", f"{total_leads:,}")
-        _mini_card(r[1], "Qualified", f"{total_qualified:,}")
-        r = st.columns(2)
-        _mini_card(r[0], "New + Working", f"{total_new_working:,}")
-        _mini_card(r[1], "SQL%", f"{(total_qualified / total_leads * 100):.2f}%" if total_leads else "0.00%")
-        r = st.columns(2)
-        _mini_card(r[0], "CPL", f"${cpl:,.2f}" if total_leads else "$0")
-        _mini_card(r[1], "CPSQL", f"${cpsql:,.2f}" if total_qualified else "$0")
-
-    with g3:
-        st.markdown("#### Qualified Leads")
-        r = st.columns(2)
-        _mini_card(r[0], "Total Live", f"{total_total_live:,}")
-        _mini_card(r[1], "Negotiation", f"{total_negotiation:,}")
-        r = st.columns(2)
-        _mini_card(r[0], "Commitment", f"{total_commitment:,}")
-        _mini_card(r[1], "Closed Lost", f"{total_closed_lost:,}")
-        r = st.columns(2)
-        _mini_card(r[0], "Q Win Rate%", f"{q_rate:.2f}%")
+    r2 = st.columns(6)
+    pills = [
+        ("CPCW (Spend/CW)", f"${cpcw:,.2f}" if total_cw else "—"),
+        ("CpCW:LF", f"{cpcw_lf:.2f}" if total_first_month_lf else "—"),
+        ("Spend / TCV %", f"{spend_tcv_pct:.2f}%" if total_tcv else "—"),
+        ("CPL", f"${cpl:,.2f}" if total_leads else "—"),
+        ("CPSQL", f"${cpsql:,.2f}" if total_qualified else "—"),
+        ("Q → Win %", f"{q_rate:.2f}%"),
+    ]
+    for i, c in enumerate(r2):
+        lbl, val = pills[i]
+        with c:
+            st.metric(lbl, val)
 
 
 def _master_performance_table(
@@ -979,12 +954,6 @@ def render_page_marketing_performance(
     total_qualified = int(df["qualified"].sum())
     total_pitching = int(df["pitching"].sum())
     total_cw = int(df["closed_won"].sum())
-    total_new = int(df["new"].sum()) if "new" in df.columns else 0
-    total_working = int(df["working"].sum()) if "working" in df.columns else 0
-    total_total_live = int(df["total_live"].sum()) if "total_live" in df.columns else 0
-    total_negotiation = int(df["negotiation"].sum()) if "negotiation" in df.columns else 0
-    total_commitment = int(df["commitment"].sum()) if "commitment" in df.columns else 0
-    total_closed_lost = int(df["closed_lost"].sum()) if "closed_lost" in df.columns else 0
     total_tcv = float(df["tcv"].sum()) if "tcv" in df.columns else 0.0
     total_first_month_lf = float(df["first_month_lf"].sum()) if "first_month_lf" in df.columns else 0.0
     ctr = (total_clicks / total_impr * 100) if total_impr else 0
@@ -1006,11 +975,6 @@ def render_page_marketing_performance(
         cpc=cpc,
         cpl=cpl,
         cpsql=cpsql,
-        total_new_working=total_new + total_working,
-        total_total_live=total_total_live,
-        total_negotiation=total_negotiation,
-        total_commitment=total_commitment,
-        total_closed_lost=total_closed_lost,
     )
 
     _master_performance_table(df, key_suffix=key_suffix)
@@ -1446,18 +1410,6 @@ def main() -> None:
     [data-testid="stMetricLabel"] { color: #64748B !important; }
     .stCaption { color: #64748B !important; }
     .stAlert { border-radius: 8px; border-left: 4px solid #4f8483; }
-    .mini-kpi-card {
-        background: #88c2bf;
-        border: 2px solid #2e6d69;
-        border-radius: 16px;
-        box-shadow: 0 1px 2px rgba(0,0,0,.2);
-        padding: 8px 8px 6px 8px;
-        min-height: 56px;
-        text-align: center;
-        margin: 4px 0;
-    }
-    .mini-kpi-label { font-size: 9px; color: #2c5d5b; line-height: 1.05; margin-bottom: 2px; }
-    .mini-kpi-value { font-size: 18px; color: #1e3d3b; line-height: 1.05; font-weight: 500; }
     /* Replace red-like status accents with app green palette */
     [data-testid="stAlert"] svg, [data-testid="stNotification"] svg { color: #4f8483 !important; fill: #4f8483 !important; }
     [data-baseweb="tag"][class*="danger"], [class*="danger"], [class*="error"] { color: #19766f !important; }
