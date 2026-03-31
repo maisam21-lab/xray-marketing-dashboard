@@ -401,7 +401,8 @@ def _preprocess_excel_sheet(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
         if "Pitching" not in df.columns:
             df["Pitching"] = stage.str.contains("pitch", na=False).astype(int)
         if "Closed Won" not in df.columns:
-            df["Closed Won"] = stage.str.contains("closed won", na=False).astype(int)
+            # Per business rule: Closed Won count should include both "closed won" and "approved" stages.
+            df["Closed Won"] = stage.str.contains(r"closed won|approved", na=False, regex=True).astype(int)
         if "Negotiation" not in df.columns:
             df["Negotiation"] = stage.str.contains("negotiation", na=False).astype(int)
         if "Commitment" not in df.columns:
