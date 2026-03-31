@@ -484,6 +484,10 @@ def list_worksheet_meta(sheet_id: str, _secret_fp: str) -> list[tuple[str, int]]
 def load_all_worksheets_combined(sheet_id: str, _secret_fp: str) -> pd.DataFrame:
     """Read every worksheet in the spreadsheet (backend) and stack rows with `source_tab` set to the tab title."""
     meta = list_worksheet_meta(sheet_id, _secret_fp)
+    preferred_tabs = {"raw spend", "raw leads", "raw post qualification", "raw cw"}
+    selected_meta = [(t, g) for (t, g) in meta if t.strip().lower() in preferred_tabs]
+    if not selected_meta:
+        selected_meta = meta
     secret_creds = _service_account_from_streamlit_secrets()
     if not secret_creds:
         raise RuntimeError(
@@ -492,7 +496,7 @@ def load_all_worksheets_combined(sheet_id: str, _secret_fp: str) -> pd.DataFrame
         )
     frames: list[pd.DataFrame] = []
     tab_stats: list[tuple[str, int]] = []
-    for title, ws_gid in meta:
+    for title, ws_gid in selected_meta:
         try:
             raw = _read_sheet_auth(
                 sheet_id,
@@ -515,11 +519,11 @@ def load_all_worksheets_combined(sheet_id: str, _secret_fp: str) -> pd.DataFrame
     if not frames:
         out = pd.DataFrame()
         out.attrs["tab_stats"] = tab_stats
-        out.attrs["worksheet_order"] = [t for t, _ in meta]
+        out.attrs["worksheet_order"] = [t for t, _ in selected_meta]
         return out
     combined = pd.concat(frames, ignore_index=True)
     combined.attrs["tab_stats"] = tab_stats
-    combined.attrs["worksheet_order"] = [t for t, _ in meta]
+    combined.attrs["worksheet_order"] = [t for t, _ in selected_meta]
     try:
         combined.attrs["fields_mapped"] = list(frames[0].attrs.get("fields_mapped", []) or [])
     except Exception:
@@ -893,6 +897,17 @@ def render_page_marketing_performance(
     cpc = (total_spend / total_clicks) if total_clicks else 0.0
     cpl = (total_spend / total_leads) if total_leads else 0.0
     cpsql = (total_spend / total_qualified) if total_qualified else 0.0
+
+    # Quick health check so "no numbers" issues are visible immediately.
+    if total_spend == 0 and total_leads == 0 and total_cw == 0:
+        st.warning(
+            "Loaded rows but key totals are zero (Spend, Leads, Closed Won). "
+            "Check selected source tabs and verify raw sheets contain numeric values."
+        )
+    st.caption(
+        f"Data health — rows: {len(df):,} | spend: {total_spend:,.2f} | "
+        f"leads: {total_leads:,} | qualified: {total_qualified:,} | closed won: {total_cw:,}"
+    )
 
     _kpi_block(
         total_spend=total_spend,
