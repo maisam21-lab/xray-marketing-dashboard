@@ -1959,7 +1959,7 @@ def _master_performance_table(
     def _fmt_for_metric(metric_name: str) -> Any:
         if metric_name == "Spend":
             return lambda x: _format_spend_k(float(x)) if pd.notna(x) else "—"
-        if metric_name in {"CPCW", "CPL", "Actual TCV", "1st Month LF"}:
+        if metric_name in {"CPCW", "CPCW:LF", "CPL", "Actual TCV", "1st Month LF"}:
             return lambda x: f"${x:,.2f}" if pd.notna(x) else "—"
         if metric_name in {"SQL %", "Cost/TCV%"}:
             return lambda x: f"{x:.2f}%" if pd.notna(x) else "—"
