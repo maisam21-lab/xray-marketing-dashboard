@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import math
 import os
 import re
 import base64
@@ -646,27 +647,33 @@ def _sum_actual_tcv_closed_won_deals(df: pd.DataFrame) -> float:
 
 
 def _sum_monthly_lf_for_cw_deals(df: pd.DataFrame) -> float:
-    """**LF Spend** for CpCW:LF: sum of Monthly LF USD on post-lead for CW (Inc Approved) deals, once per opportunity.
+    """**LF Spend**: sum of Monthly LF USD for CW (Inc Approved) deals, one LF per opportunity.
 
-    Same rows and composite keys as :func:`_sum_actual_tcv_closed_won_deals`.
+    Uses **all** funnel rows in ``df`` (before one-row-per-opp collapse) so max LF per opp is not lost when
+    LF sits on a non–Closed Won row. Includes a deal if ``closed_won`` is 1 on any row for that opportunity key.
     """
     if df.empty or "closed_won" not in df.columns or "first_month_lf" not in df.columns:
         return 0.0
-    sub = _rows_for_actual_tcv_sum(df)
-    if sub.empty:
-        return 0.0
-    sub["_v"] = pd.to_numeric(sub["first_month_lf"], errors="coerce").fillna(0.0)
-    k = _composite_cw_opportunity_key_series(sub)
-    ks = k.astype(str).replace("nan", "")
-    tmp = pd.DataFrame({"_k": ks, "_v": sub["_v"]})
-    if (tmp["_k"] == "").all():
-        dims = _dim_cols_for_cw_dedupe(sub)
-        use = [c for c in dims if c in sub.columns]
+    sub = df.copy()
+    sub["_k"] = _composite_cw_opportunity_key_series(sub).astype(str).replace("nan", "")
+    sub["_lf"] = pd.to_numeric(sub["first_month_lf"], errors="coerce").fillna(0.0)
+    sub["_cw"] = (pd.to_numeric(sub["closed_won"], errors="coerce").fillna(0) > 0).astype(int)
+    if (sub["_k"].fillna("").astype(str).str.strip() == "").all():
+        cw_only = sub.loc[sub["_cw"] > 0]
+        if cw_only.empty:
+            return 0.0
+        dims = _dim_cols_for_cw_dedupe(cw_only)
+        use = [c for c in dims if c in cw_only.columns]
         if use:
-            d = sub.drop_duplicates(subset=use, keep="first")
+            d = cw_only.drop_duplicates(subset=use, keep="first")
             return float(pd.to_numeric(d["first_month_lf"], errors="coerce").fillna(0.0).sum())
-        return float(tmp["_v"].sum())
-    return float(tmp.groupby("_k", dropna=False)["_v"].max().sum())
+        return float(sub.loc[sub["_cw"] > 0, "_lf"].sum())
+    g_lf = sub.groupby("_k", dropna=False)["_lf"].max()
+    g_cw = sub.groupby("_k", dropna=False)["_cw"].max()
+    take = g_cw > 0
+    if not take.any():
+        return 0.0
+    return float(g_lf.loc[take].sum())
 
 
 def _agg_actual_tcv_closed_won_by_month_country(post_df: pd.DataFrame) -> pd.DataFrame:
@@ -685,6 +692,17 @@ def _agg_actual_tcv_closed_won_by_month_country(post_df: pd.DataFrame) -> pd.Dat
     g = sub.groupby(["month", "country", "_k"], as_index=False)["_v"].max()
     g = g.groupby(["month", "country"], as_index=False)["_v"].sum()
     return g.rename(columns={"_v": "tcv"})
+
+
+def _post_lead_slice_before_ck_dedupe(df: pd.DataFrame) -> pd.DataFrame:
+    """Post-lead rows after tab + identical-row dedupe, **before** one row per composite opp key.
+
+    Used for LF Spend so Monthly LF can be taken as max per opportunity across funnel rows.
+    """
+    post_df = _dedupe_post_lead_rows(_mpo_tab_subset(df, list(_POST_LEAD_SOURCE_TAB_PATTERNS)))
+    if post_df.empty:
+        return post_df
+    return post_df.drop_duplicates(ignore_index=True)
 
 
 def _post_lead_slice_for_kpi(df: pd.DataFrame) -> pd.DataFrame:
@@ -788,6 +806,7 @@ _NORM_TO_FIELD: dict[str, str] = {
     "tcv_converted": "actual_tcv",
     "actual_tcv": "actual_tcv",
     "1st_month_lf": "first_month_lf",
+    "monthly_lf": "first_month_lf",
     "monthly_lf_usd": "first_month_lf",
     "cpcw": "cpcw",
     "cpcw_lf": "cpcw_lf",
@@ -1542,6 +1561,7 @@ def compute_mpo_totals(
     )
     leads_df = _mpo_pick_source(df, [r"raw\s*leads?"], ["leads", "qualified"])
     post_df = _post_lead_slice_for_kpi(df)
+    post_pl_pre = _post_lead_slice_before_ck_dedupe(df)
     cw_df = _mpo_pick_source(df, [r"raw\s*cw"], ["tcv", "first_month_lf"])
 
     total_spend = float(spend_df["cost"].sum()) if "cost" in spend_df.columns else 0.0
@@ -1561,9 +1581,10 @@ def compute_mpo_totals(
     total_commitment = int(post_df["commitment"].sum()) if "commitment" in post_df.columns else 0
     total_closed_lost = int(post_df["closed_lost"].sum()) if "closed_lost" in post_df.columns else 0
     total_tcv = _sum_actual_tcv_closed_won_deals(post_df)
-    total_first_month_lf = _sum_monthly_lf_for_cw_deals(post_df)
+    # LF Spend: use pre–per-opp-collapse frame so Monthly LF is not dropped with the wrong funnel row.
+    total_first_month_lf = _sum_monthly_lf_for_cw_deals(post_pl_pre)
     if total_first_month_lf == 0.0 and "first_month_lf" in cw_df.columns:
-        total_first_month_lf = float(cw_df["first_month_lf"].sum())
+        total_first_month_lf = float(pd.to_numeric(cw_df["first_month_lf"], errors="coerce").fillna(0).sum())
 
     if total_spend == 0.0 and "cost" in df.columns:
         total_spend = float(df["cost"].sum())
@@ -1600,9 +1621,10 @@ def compute_mpo_totals(
         total_commitment = int(df["commitment"].sum()) if "commitment" in df.columns else 0
         total_closed_lost = int(df["closed_lost"].sum()) if "closed_lost" in df.columns else 0
         total_tcv = _sum_actual_tcv_closed_won_deals(pl_only)
-        total_first_month_lf = _sum_monthly_lf_for_cw_deals(pl_only)
+        pl_pre = _post_lead_slice_before_ck_dedupe(df)
+        total_first_month_lf = _sum_monthly_lf_for_cw_deals(pl_pre)
         if total_first_month_lf == 0.0 and "first_month_lf" in df.columns:
-            total_first_month_lf = float(df["first_month_lf"].sum())
+            total_first_month_lf = float(pd.to_numeric(df["first_month_lf"], errors="coerce").fillna(0).sum())
 
     ctr = (total_clicks / total_impr * 100) if total_impr else 0
     cpc = (total_spend / total_clicks) if total_clicks else 0.0
@@ -1645,6 +1667,17 @@ def _format_currency(v: float) -> str:
     if v >= 1_000:
         return f"${v:,.0f}"
     return f"${v:,.2f}"
+
+
+def _format_cpcw_lf_ratio(v: float) -> str:
+    """CpCW:LF can be a small positive (e.g. 61 / large LF sum); avoid rounding to 0.00."""
+    if not isinstance(v, (int, float)) or not math.isfinite(v) or v <= 0:
+        return "—"
+    if v >= 0.01:
+        return f"{v:.2f}"
+    if v >= 1e-6:
+        return f"{v:.4f}"
+    return f"{v:.6g}"
 
 
 def _format_spend_k(v: float) -> str:
@@ -1809,7 +1842,11 @@ def _kpi_block(
                 ("Spend", _format_spend_k(total_spend)),
                 ("CPCW", f"${cpcw:,.2f}" if total_cw else "—", _cpcw_help),
                 ("Actual TCV", _format_currency(total_tcv) if total_tcv else "—", _actual_tcv_help),
-                ("CpCW:LF", f"{cpcw_lf:.2f}" if total_first_month_lf else "—", _cpcw_lf_help),
+                (
+                    "CpCW:LF",
+                    _format_cpcw_lf_ratio(cpcw_lf) if total_first_month_lf else "—",
+                    _cpcw_lf_help,
+                ),
                 ("Spend / TCV %", f"{spend_tcv_pct:.2f}%" if total_tcv else "—"),
             ],
         ),
