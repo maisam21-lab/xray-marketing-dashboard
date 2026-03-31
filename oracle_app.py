@@ -1245,16 +1245,16 @@ def main() -> None:
     st.markdown(
         """
     <style>
-    .stApp { background: #f4f6f8; font-family: 'Segoe UI', system-ui, sans-serif; font-size: 0.56rem !important; }
+    .stApp { background: #f4f6f8; font-family: 'Segoe UI', system-ui, sans-serif; font-size: 0.50rem !important; }
     section[data-testid="stSidebar"] { display: none !important; }
     [data-testid="collapsedControl"] { display: none !important; }
     header[data-testid="stHeader"] { background: #FFFFFF !important; border-bottom: 1px solid #E2E8F0; }
     header[data-testid="stHeader"] * { color: #1E293B !important; }
     .looker-header {
-        background: #ffffff;
-        border: 1px solid #e6ebef;
+        background: transparent;
+        border: none;
         border-radius: 0;
-        padding: 10px 16px;
+        padding: 8px 10px;
         margin: -1rem -1rem 10px -1rem;
         display: flex;
         align-items: center;
@@ -1263,41 +1263,41 @@ def main() -> None:
         gap: 8px;
         color: #1f2937;
     }
-    .looker-header-title { font-size: 0.84rem; font-weight: 700; color: #111827; margin: 0; }
+    .looker-header-title { font-size: 0.74rem; font-weight: 700; color: #111827; margin: 0; }
     .looker-header-logo {
         width: 38px; height: 38px; border-radius: 6px; object-fit: cover;
         margin-right: 10px; vertical-align: middle; border: 1px solid #d3e3e3;
         background: #ffffff;
     }
-    .looker-header-actions { font-size: 9.6px; color: #6b7280; display:flex; align-items:center; gap:10px; }
+    .looker-header-actions { font-size: 8px; color: #6b7280; display:flex; align-items:center; gap:8px; }
     .live-pill {
         background: #ecfdf3;
         color: #16a34a;
         border: 1px solid #bbf7d0;
         border-radius: 999px;
-        padding: 2px 8px;
-        font-size: 9px;
+        padding: 2px 7px;
+        font-size: 8px;
         font-weight: 600;
         line-height: 1;
     }
-    .refresh-note { color: #6b7280; font-size: 9px; }
+    .refresh-note { color: #6b7280; font-size: 8px; }
     .right-icon {
         width: 20px; height: 20px; border-radius: 50%;
         border: 1px solid #e5e7eb; color:#6b7280; display:inline-flex;
-        align-items:center; justify-content:center; font-size:10px;
+        align-items:center; justify-content:center; font-size:9px;
         background:#fff;
     }
     .avatar-badge {
         width: 22px; height: 22px; border-radius: 50%;
         display:inline-flex; align-items:center; justify-content:center;
-        background:#0f766e; color:#fff; font-size:9px; font-weight:700;
+        background:#0f766e; color:#fff; font-size:8px; font-weight:700;
     }
     .signout-btn {
         border: 1px solid #e5e7eb; border-radius: 6px; padding: 4px 10px;
-        background:#fff; color:#374151; font-size:9px;
+        background:#fff; color:#374151; font-size:8px;
     }
-    .looker-page-h1 { font-size: 1.2rem; font-weight: 400; color: #202124; margin: 8px 0 16px 0; }
-    .looker-table-title { font-size: 0.8rem; font-weight: 600; color: #202124; margin: 20px 0 8px 0; }
+    .looker-page-h1 { font-size: 1.0rem; font-weight: 400; color: #202124; margin: 8px 0 16px 0; }
+    .looker-table-title { font-size: 0.72rem; font-weight: 600; color: #202124; margin: 20px 0 8px 0; }
     .looker-kpi-big {
         background: linear-gradient(180deg, #5c9090 0%, #4f8483 100%);
         color: #fff;
@@ -1362,8 +1362,8 @@ def main() -> None:
         border-radius: 8px;
         padding: 6px 10px;
     }
-    [data-testid="stMetricLabel"] { font-size: 8.8px !important; color: #4b5563 !important; }
-    [data-testid="stMetricValue"] { font-size: 1.44rem !important; color: #1f2937 !important; }
+    [data-testid="stMetricLabel"] { font-size: 8px !important; color: #4b5563 !important; }
+    [data-testid="stMetricValue"] { font-size: 1.2rem !important; color: #1f2937 !important; }
     .stRadio [role="radiogroup"] { gap: 14px; }
     .stSelectbox > label, .stRadio > label, .stTextInput > label { font-size: 11px !important; color: #6b7280 !important; }
     .stTabs [aria-selected="true"] span { color: white !important; }
