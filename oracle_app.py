@@ -1254,19 +1254,18 @@ def main() -> None:
         background: transparent;
         border: none;
         border-radius: 0;
-        padding: 8px 10px;
-        margin: -1rem -1rem 10px -1rem;
+        padding: 4px 8px;
+        margin: -1rem -1rem 6px -1rem;
         display: flex;
         align-items: center;
         justify-content: space-between;
-        flex-wrap: wrap;
-        gap: 8px;
+        gap: 6px;
         color: #1f2937;
     }
-    .looker-header-title { font-size: 0.74rem; font-weight: 700; color: #111827; margin: 0; }
+    .looker-header-title { font-size: 0.58rem; font-weight: 700; color: #111827; margin: 0; line-height: 1.05; }
     .looker-header-logo {
-        width: auto; height: 34px; object-fit: contain;
-        margin-right: 10px; vertical-align: middle; border: none;
+        width: auto; height: 24px; object-fit: contain;
+        margin-right: 6px; vertical-align: middle; border: none;
         background: transparent; border-radius: 0;
     }
     .live-pill {
@@ -1274,20 +1273,20 @@ def main() -> None:
         color: #16a34a;
         border: 1px solid #bbf7d0;
         border-radius: 999px;
-        padding: 2px 7px;
-        font-size: 8px;
+        padding: 1px 6px;
+        font-size: 7px;
         font-weight: 600;
         line-height: 1;
     }
-    .refresh-note { color: #6b7280; font-size: 8px; }
+    .refresh-note { color: #6b7280; font-size: 7px; }
     .stButton > button {
         border: 1px solid #e5e7eb;
-        border-radius: 8px;
+        border-radius: 6px;
         background: #fff;
         color: #374151;
-        font-size: 8px;
-        padding: 2px 10px;
-        height: 26px;
+        font-size: 7px;
+        padding: 1px 8px;
+        height: 22px;
     }
     .looker-page-h1 { font-size: 1.0rem; font-weight: 400; color: #202124; margin: 8px 0 16px 0; }
     .looker-table-title { font-size: 0.72rem; font-weight: 600; color: #202124; margin: 20px 0 8px 0; }
@@ -1382,22 +1381,23 @@ def main() -> None:
         if logo_uri
         else '<span style="display:inline-block;width:38px;height:38px;border-radius:6px;background:#4f8483;margin-right:10px;"></span>'
     )
+    refreshed_text = datetime.now().strftime("Refreshed %I:%M %p").lstrip("0")
     st.markdown('<div class="looker-header">', unsafe_allow_html=True)
-    hl, hr = st.columns([6, 2])
+    hl, hr = st.columns([8, 2])
     with hl:
         st.markdown(
             f"""
         <div style="display:flex;align-items:center;gap:8px;">
           {logo_html}
           <h1 class="looker-header-title">KitchenPark Marketing Dashboard</h1>
-          <span class="live-pill">● Live Data</span>
-          <span class="refresh-note">Refreshed just now</span>
+          <span class="live-pill">● Live</span>
+          <span class="refresh-note">{refreshed_text}</span>
         </div>
         """,
             unsafe_allow_html=True,
         )
     with hr:
-        b1, b2, b3 = st.columns([1, 1, 2])
+        b1, b2, b3 = st.columns([1, 1, 1.7])
         with b1:
             if st.button("?", key="hdr_help_btn"):
                 st.info("Help panel coming soon.")
