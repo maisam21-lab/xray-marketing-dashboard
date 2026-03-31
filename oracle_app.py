@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import os
 import re
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
@@ -20,7 +21,8 @@ import plotly.express as px
 import streamlit as st
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
-DEFAULT_LOCAL_EXCEL_PATH = r"C:\Users\MaysamAbuKashabeh\Downloads\ME X-ray Data Aug 2025 - 27th Jan 2026.xlsx"
+# Default empty on Streamlit Cloud; set `XRAY_EXCEL_PATH` in secrets or `XRAY_EXCEL_PATH_DEFAULT` locally.
+DEFAULT_LOCAL_EXCEL_PATH = (os.environ.get("XRAY_EXCEL_PATH_DEFAULT") or "").strip()
 
 
 def _default_sheet_id_from_secrets() -> str:
@@ -337,6 +339,10 @@ def _preprocess_excel_sheet(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
             elif "Created Date" in df.columns:
                 df["Date"] = pd.to_datetime(df["Created Date"], errors="coerce")
     if t == "raw cw":
+        # RAW CW can contain repeated rows for the same opportunity; dedupe before aggregation.
+        dedupe_cols = [c for c in ("Opportunity Name", "Close Date", "Kitchen Country", "Stage") if c in df.columns]
+        if dedupe_cols:
+            df = df.drop_duplicates(subset=dedupe_cols, keep="first")
         stage = df.get("Stage", pd.Series(index=df.index, dtype=str)).astype(str).str.lower().str.strip()
         if "Closed Won" not in df.columns:
             df["Closed Won"] = stage.str.contains("closed won", na=False).astype(int)
@@ -345,6 +351,14 @@ def _preprocess_excel_sheet(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
                 df["Date"] = pd.to_datetime(df["Close Date"], errors="coerce", dayfirst=True)
             elif "Created Date" in df.columns:
                 df["Date"] = pd.to_datetime(df["Created Date"], errors="coerce")
+        # Training definition: TCV = Monthly LF x Contract Length (fallback if TCV (USD) absent/zero).
+        if "TCV (USD)" in df.columns:
+            tcv_num = pd.to_numeric(df["TCV (USD)"], errors="coerce").fillna(0)
+        else:
+            tcv_num = pd.Series(0, index=df.index, dtype=float)
+        lf_num = pd.to_numeric(df.get("Monthly LF (USD)", 0), errors="coerce").fillna(0)
+        term_num = pd.to_numeric(df.get("License Initial Term (Months)", 0), errors="coerce").fillna(0)
+        df["TCV (USD)"] = tcv_num.where(tcv_num > 0, lf_num * term_num)
     return df
 
 
@@ -452,11 +466,24 @@ def list_worksheet_meta(sheet_id: str, _secret_fp: str) -> list[tuple[str, int]]
 def load_all_worksheets_combined(sheet_id: str, _secret_fp: str) -> pd.DataFrame:
     """Read every worksheet in the spreadsheet (backend) and stack rows with `source_tab` set to the tab title."""
     meta = list_worksheet_meta(sheet_id, _secret_fp)
+    secret_creds = _service_account_from_streamlit_secrets()
+    if not secret_creds:
+        raise RuntimeError(
+            "No service account in Streamlit Secrets. Add a `[gsheet_service_account]` block "
+            "(or `GCP_SERVICE_ACCOUNT`) in this app’s Secrets, then reboot."
+        )
     frames: list[pd.DataFrame] = []
     tab_stats: list[tuple[str, int]] = []
     for title, ws_gid in meta:
         try:
-            df = load_marketing_data(sheet_id, ws_gid, _secret_fp)
+            raw = _read_sheet_auth(
+                sheet_id,
+                secret_creds,
+                worksheet_name=None,
+                worksheet_gid=int(ws_gid),
+            )
+            raw = _preprocess_excel_sheet(raw, title)
+            df = _normalize(raw)
         except Exception:
             tab_stats.append((title, -1))
             continue
@@ -640,12 +667,13 @@ def _kpi_block(
     total_leads: int,
     total_qualified: int,
     total_cw: int,
+    total_tcv: float,
+    total_first_month_lf: float,
     cpc: float,
     cpl: float,
     cpsql: float,
 ) -> None:
-    """Looker-style two-row scorecards (dark teal tiles + pill row)."""
-    r1 = st.columns(6)
+    """Looker-style scorecards: `st.metric` so values always render on Streamlit Cloud (HTML can be stripped)."""
     vals = [
         _format_currency(total_spend),
         f"{total_impr:,}",
@@ -655,21 +683,21 @@ def _kpi_block(
         f"{total_leads:,}",
     ]
     titles = ["Spend", "Impressions", "Clicks", "CTR", "Qualified", "Leads"]
+    r1 = st.columns(6)
     for i, c in enumerate(r1):
-        c.markdown(
-            f"""
-            <div class="looker-kpi-big">
-                <div class="looker-kpi-big-val">{vals[i]}</div>
-                <div class="looker-kpi-big-lbl">{titles[i]}</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        with c:
+            st.metric(titles[i], vals[i])
+
     q_rate = (total_cw / total_qualified * 100) if total_qualified else 0.0
     cpcw = (total_spend / total_cw) if total_cw else 0.0
+    # Training deck formulas:
+    # CpCW:LF = CpCW / 1st Month LF(avg) == Marketing Spend / total 1st Month LF
+    cpcw_lf = (total_spend / total_first_month_lf) if total_first_month_lf else 0.0
+    spend_tcv_pct = (total_spend / total_tcv * 100) if total_tcv else 0.0
     pills = [
         ("CPCW (Spend/CW)", f"${cpcw:,.2f}" if total_cw else "—"),
-        ("CPC", f"${cpc:,.2f}"),
+        ("CpCW:LF", f"{cpcw_lf:.2f}" if total_first_month_lf else "—"),
+        ("Spend / TCV %", f"{spend_tcv_pct:.2f}%" if total_tcv else "—"),
         ("CPL", f"${cpl:,.2f}" if total_leads else "—"),
         ("CPSQL", f"${cpsql:,.2f}" if total_qualified else "—"),
         ("Q → Win %", f"{q_rate:.2f}%"),
@@ -677,11 +705,8 @@ def _kpi_block(
     r2 = st.columns(5)
     for i, c in enumerate(r2):
         lbl, val = pills[i]
-        c.markdown(
-            f'<div class="looker-kpi-pill"><span class="looker-pill-lbl">{lbl}</span> '
-            f'<span class="looker-pill-val">{val}</span></div>',
-            unsafe_allow_html=True,
-        )
+        with c:
+            st.metric(lbl, val)
 
 
 def _master_performance_table(
@@ -844,6 +869,8 @@ def render_page_marketing_performance(
     total_qualified = int(df["qualified"].sum())
     total_pitching = int(df["pitching"].sum())
     total_cw = int(df["closed_won"].sum())
+    total_tcv = float(df["tcv"].sum()) if "tcv" in df.columns else 0.0
+    total_first_month_lf = float(df["first_month_lf"].sum()) if "first_month_lf" in df.columns else 0.0
     ctr = (total_clicks / total_impr * 100) if total_impr else 0
     cpc = (total_spend / total_clicks) if total_clicks else 0.0
     cpl = (total_spend / total_leads) if total_leads else 0.0
@@ -857,6 +884,8 @@ def render_page_marketing_performance(
         total_leads=total_leads,
         total_qualified=total_qualified,
         total_cw=total_cw,
+        total_tcv=total_tcv,
+        total_first_month_lf=total_first_month_lf,
         cpc=cpc,
         cpl=cpl,
         cpsql=cpsql,
@@ -1110,22 +1139,33 @@ def render_main_dashboard(
     end_date: date,
 ) -> None:
     """Load Google Sheets or ME X-Ray Excel template, then route to Looker-named report pages."""
-    st.sidebar.markdown("### Data")
-    src = st.sidebar.radio(
-        "Source",
-        ["Google Sheets", "Excel (.xlsx)"],
-        key="data_src",
-        help="Use the ME X-Ray Excel template (same columns as your workbook) or the live Google Sheet.",
-    )
+    with st.container():
+        t1, t2, t3 = st.columns([1.0, 1.4, 2.2])
+        with t1:
+            src = st.radio(
+                "Data source",
+                ["Google Sheets", "Excel (.xlsx)"],
+                horizontal=True,
+                key="data_src",
+            )
+        with t2:
+            page = st.selectbox("Report page", LOOKER_PAGES, key="looker_page")
+        with t3:
+            excel_path = ""
+            if src == "Excel (.xlsx)":
+                excel_path = st.text_input(
+                    "Workbook path",
+                    value=_default_excel_path_from_secrets(),
+                    key="xlsx_path",
+                    placeholder="Full path to .xlsx — on Cloud set XRAY_EXCEL_PATH in secrets",
+                )
+
     df_loaded: pd.DataFrame
     if src == "Excel (.xlsx)":
-        excel_path = st.sidebar.text_input(
-            "Workbook path",
-            value=_default_excel_path_from_secrets(),
-            key="xlsx_path",
-            help="Local .xlsx path. No upload needed.",
-        )
-        p = Path(excel_path).expanduser()
+        if not (excel_path or "").strip():
+            st.error("Enter the full path to your .xlsx file, or set **XRAY_EXCEL_PATH** in Streamlit secrets (required on Streamlit Cloud).")
+            return
+        p = Path(excel_path.strip()).expanduser()
         if not p.exists():
             st.error(f"Excel file not found: {p}")
             return
@@ -1147,11 +1187,6 @@ def render_main_dashboard(
     if df_loaded.empty:
         st.warning("No data rows were returned. Check tabs and column headers against the ME X-Ray template.")
         return
-
-    st.sidebar.markdown("---")
-    st.sidebar.markdown("### KitchenPark")
-    st.sidebar.caption("Marketing Dashboard")
-    page = st.sidebar.radio("Pages", LOOKER_PAGES, key="looker_page")
     if page == "Marketing Performance Overview":
         render_page_marketing_performance(df_loaded, start_date, end_date)
     elif page == "Market MoM View":
@@ -1167,15 +1202,15 @@ def main() -> None:
         page_title="KitchenPark Marketing Dashboard",
         page_icon="📊",
         layout="wide",
-        initial_sidebar_state="expanded",
+        initial_sidebar_state="collapsed",
     )
 
     st.markdown(
         """
     <style>
     .stApp { background: #ECEFF1; font-family: 'Segoe UI', system-ui, sans-serif; font-size: 0.772rem !important; }
-    section[data-testid="stSidebar"] { background: #FAFAFA !important; border-right: 1px solid #E0E0E0 !important; }
-    section[data-testid="stSidebar"] .block-container { padding-top: 1rem; }
+    section[data-testid="stSidebar"] { display: none !important; }
+    [data-testid="collapsedControl"] { display: none !important; }
     header[data-testid="stHeader"] { background: #FFFFFF !important; border-bottom: 1px solid #E2E8F0; }
     header[data-testid="stHeader"] * { color: #1E293B !important; }
     .looker-header {
@@ -1279,7 +1314,7 @@ def main() -> None:
         <span class="looker-header-badge">K</span>
         <h1 class="looker-header-title">KitchenPark Marketing Dashboard</h1>
       </div>
-      <div class="looker-header-actions">Streamlit · Google Sheets or Excel</div>
+      <div class="looker-header-actions">Reports, data source &amp; Excel path — toolbar below</div>
     </div>
     """,
         unsafe_allow_html=True,
