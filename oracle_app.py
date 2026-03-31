@@ -802,7 +802,7 @@ def _kpi_block(
     total_commitment: int,
     total_closed_lost: int,
 ) -> None:
-    """Render grouped KPI cards in 3 sections."""
+    """Render grouped KPI cards in 3 dynamic sections."""
     q_rate = (total_cw / total_qualified * 100) if total_qualified else 0.0
     sql_rate = (total_qualified / total_leads * 100) if total_leads else 0.0
     cpcw = (total_spend / total_cw) if total_cw else 0.0
@@ -822,41 +822,51 @@ def _kpi_block(
             unsafe_allow_html=True,
         )
 
-    g1, g2, g3 = st.columns(3)
-    with g1:
-        st.markdown('<div class="kpi-section-title">Closed Won</div>', unsafe_allow_html=True)
-        r = st.columns(2)
-        _mini_card(r[0], "CW (Inc Approved)", f"{total_cw:,}")
-        _mini_card(r[1], "Spend", _format_currency(total_spend))
-        r = st.columns(2)
-        _mini_card(r[0], "CPCW", f"${cpcw:,.2f}" if total_cw else "0")
-        _mini_card(r[1], "Actual TCV", _format_currency(total_tcv) if total_tcv else "$0.0")
-        r = st.columns(2)
-        _mini_card(r[0], "CpCW:LF", f"{cpcw_lf:.2f}" if total_first_month_lf else "0")
-        _mini_card(r[1], "Cost/TCV%", f"{spend_tcv_pct:.2f}%" if total_tcv else "0")
+    sections: list[tuple[str, list[tuple[str, str]]]] = [
+        (
+            "Closed Won",
+            [
+                ("CW (Inc Approved)", f"{total_cw:,}"),
+                ("Spend", _format_currency(total_spend)),
+                ("CPCW", f"${cpcw:,.2f}" if total_cw else "0"),
+                ("Actual TCV", _format_currency(total_tcv) if total_tcv else "$0.0"),
+                ("CpCW:LF", f"{cpcw_lf:.2f}" if total_first_month_lf else "0"),
+                ("Cost/TCV%", f"{spend_tcv_pct:.2f}%" if total_tcv else "0"),
+            ],
+        ),
+        (
+            "Leads",
+            [
+                ("Total Leads", f"{total_leads:,}"),
+                ("Qualified", f"{total_qualified:,}"),
+                ("New + Working", f"{total_new_working:,}"),
+                ("SQL%", f"{sql_rate:.2f}%"),
+                ("CPL", f"${cpl:,.2f}" if total_leads else "$0"),
+                ("CPSQL", f"${cpsql:,.2f}" if total_qualified else "$0"),
+            ],
+        ),
+        (
+            "Qualified Leads",
+            [
+                ("Total Live", f"{total_total_live:,}"),
+                ("Negotiation", f"{total_negotiation:,}"),
+                ("Commitment", f"{total_commitment:,}"),
+                ("Closed Lost", f"{total_closed_lost:,}"),
+                ("Q Win Rate%", f"{q_rate:.2f}%"),
+            ],
+        ),
+    ]
 
-    with g2:
-        st.markdown('<div class="kpi-section-title">Leads</div>', unsafe_allow_html=True)
-        r = st.columns(2)
-        _mini_card(r[0], "Total Leads", f"{total_leads:,}")
-        _mini_card(r[1], "Qualified", f"{total_qualified:,}")
-        r = st.columns(2)
-        _mini_card(r[0], "New + Working", f"{total_new_working:,}")
-        _mini_card(r[1], "SQL%", f"{sql_rate:.2f}%")
-        r = st.columns(2)
-        _mini_card(r[0], "CPL", f"${cpl:,.2f}" if total_leads else "$0")
-        _mini_card(r[1], "CPSQL", f"${cpsql:,.2f}" if total_qualified else "$0")
-
-    with g3:
-        st.markdown('<div class="kpi-section-title">Qualified Leads</div>', unsafe_allow_html=True)
-        r = st.columns(2)
-        _mini_card(r[0], "Total Live", f"{total_total_live:,}")
-        _mini_card(r[1], "Negotiation", f"{total_negotiation:,}")
-        r = st.columns(2)
-        _mini_card(r[0], "Commitment", f"{total_commitment:,}")
-        _mini_card(r[1], "Closed Lost", f"{total_closed_lost:,}")
-        r = st.columns(2)
-        _mini_card(r[0], "Q Win Rate%", f"{q_rate:.2f}%")
+    sec_cols = st.columns(len(sections))
+    for i, (section_title, cards) in enumerate(sections):
+        with sec_cols[i]:
+            st.markdown(f'<div class="kpi-section-title">{section_title}</div>', unsafe_allow_html=True)
+            for idx in range(0, len(cards), 2):
+                row_cards = cards[idx : idx + 2]
+                row_cols = st.columns(2)
+                _mini_card(row_cols[0], row_cards[0][0], row_cards[0][1])
+                if len(row_cards) > 1:
+                    _mini_card(row_cols[1], row_cards[1][0], row_cards[1][1])
 
 
 def _master_performance_table(
