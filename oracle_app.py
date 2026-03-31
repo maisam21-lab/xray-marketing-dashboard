@@ -1253,9 +1253,9 @@ def main() -> None:
     .looker-header {
         background: #ffffff;
         border: 1px solid #e6ebef;
-        border-radius: 10px;
-        padding: 14px 20px;
-        margin: -1rem -1rem 12px -1rem;
+        border-radius: 0;
+        padding: 10px 16px;
+        margin: -1rem -1rem 10px -1rem;
         display: flex;
         align-items: center;
         justify-content: space-between;
@@ -1269,7 +1269,33 @@ def main() -> None:
         margin-right: 10px; vertical-align: middle; border: 1px solid #d3e3e3;
         background: #ffffff;
     }
-    .looker-header-actions { font-size: 9.6px; color: #6b7280; }
+    .looker-header-actions { font-size: 9.6px; color: #6b7280; display:flex; align-items:center; gap:10px; }
+    .live-pill {
+        background: #ecfdf3;
+        color: #16a34a;
+        border: 1px solid #bbf7d0;
+        border-radius: 999px;
+        padding: 2px 8px;
+        font-size: 9px;
+        font-weight: 600;
+        line-height: 1;
+    }
+    .refresh-note { color: #6b7280; font-size: 9px; }
+    .right-icon {
+        width: 20px; height: 20px; border-radius: 50%;
+        border: 1px solid #e5e7eb; color:#6b7280; display:inline-flex;
+        align-items:center; justify-content:center; font-size:10px;
+        background:#fff;
+    }
+    .avatar-badge {
+        width: 22px; height: 22px; border-radius: 50%;
+        display:inline-flex; align-items:center; justify-content:center;
+        background:#0f766e; color:#fff; font-size:9px; font-weight:700;
+    }
+    .signout-btn {
+        border: 1px solid #e5e7eb; border-radius: 6px; padding: 4px 10px;
+        background:#fff; color:#374151; font-size:9px;
+    }
     .looker-page-h1 { font-size: 1.2rem; font-weight: 400; color: #202124; margin: 8px 0 16px 0; }
     .looker-table-title { font-size: 0.8rem; font-weight: 600; color: #202124; margin: 20px 0 8px 0; }
     .looker-kpi-big {
@@ -1369,8 +1395,14 @@ def main() -> None:
       <div style="display:flex;align-items:center;">
         {logo_html}
         <h1 class="looker-header-title">KitchenPark Marketing Dashboard</h1>
+        <span class="live-pill">● Live Data</span>
+        <span class="refresh-note">Refreshed just now</span>
       </div>
-      <div class="looker-header-actions"></div>
+      <div class="looker-header-actions">
+        <span class="right-icon">?</span>
+        <span class="avatar-badge">MA</span>
+        <span class="signout-btn">Sign out</span>
+      </div>
     </div>
     """,
         unsafe_allow_html=True,
