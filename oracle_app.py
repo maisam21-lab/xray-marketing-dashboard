@@ -276,6 +276,34 @@ def _read_sheet_auth_loose(
     return pd.DataFrame(fixed_rows, columns=headers)
 
 
+def _dataframe_from_grid_with_keyword_header(grid: list[list[str]], keyword: str) -> pd.DataFrame:
+    """Build a dataframe by detecting a header row containing a keyword (e.g. 'spend')."""
+    if not grid:
+        return pd.DataFrame()
+    kw = _norm_header_key(keyword)
+    best_idx = None
+    best_score = -1
+    for i, row in enumerate(grid[:25]):  # scan first rows for likely header
+        if not any(str(c).strip() for c in row):
+            continue
+        norm_cells = [_norm_header_key(c) for c in row]
+        score = sum(1 for c in norm_cells if kw in c)
+        # Prefer rows that also look tabular (multiple non-empty cells)
+        non_empty = sum(1 for c in row if str(c).strip())
+        if non_empty >= 2 and score > best_score:
+            best_score = score
+            best_idx = i
+    if best_idx is None or best_score <= 0:
+        return pd.DataFrame()
+    header = [str(h).strip() or f"col_{j+1}" for j, h in enumerate(grid[best_idx])]
+    rows = grid[best_idx + 1 :]
+    if not rows:
+        return pd.DataFrame(columns=header)
+    width = len(header)
+    fixed_rows = [(r + [""] * max(0, width - len(r)))[:width] for r in rows]
+    return pd.DataFrame(fixed_rows, columns=header)
+
+
 def _norm_header_key(name: str) -> str:
     """Lowercase; non-alphanumeric → underscores (matches ME X-Ray Excel headers like `CPCW:LF`, `Cost/TCV%`)."""
     s = str(name).strip().lower()
@@ -741,9 +769,45 @@ def load_named_worksheet_normalized(sheet_id: str, worksheet_name: str, _secret_
         worksheet_gid=None,
     )
     if raw.empty or len(raw.columns) == 0:
-        return pd.DataFrame()
+        try:
+            import gspread
+            from google.oauth2.service_account import Credentials
+
+            creds_info = _coerce_service_account_dict(secret_creds)
+            _validate_service_account_dict(creds_info)
+            creds = Credentials.from_service_account_info(
+                creds_info,
+                scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"],
+            )
+            gc = gspread.authorize(creds)
+            sh = gc.open_by_key(sheet_id)
+            ws = sh.worksheet(worksheet_name)
+            grid = ws.get_all_values()
+            raw = _dataframe_from_grid_with_keyword_header(grid, "spend")
+        except Exception:
+            return pd.DataFrame()
     raw = _preprocess_excel_sheet(raw, worksheet_name)
     out = _normalize(raw)
+    if (out.empty or "cost" not in out.columns or float(out["cost"].sum()) == 0.0) and worksheet_name.strip().lower() == "spend":
+        try:
+            import gspread
+            from google.oauth2.service_account import Credentials
+
+            creds_info = _coerce_service_account_dict(secret_creds)
+            _validate_service_account_dict(creds_info)
+            creds = Credentials.from_service_account_info(
+                creds_info,
+                scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"],
+            )
+            gc = gspread.authorize(creds)
+            sh = gc.open_by_key(sheet_id)
+            ws = sh.worksheet(worksheet_name)
+            grid = ws.get_all_values()
+            raw2 = _dataframe_from_grid_with_keyword_header(grid, "spend")
+            if not raw2.empty:
+                out = _normalize(_preprocess_excel_sheet(raw2, worksheet_name))
+        except Exception:
+            pass
     if out.empty:
         return out
     out["source_tab"] = worksheet_name
