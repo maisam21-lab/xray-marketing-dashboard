@@ -12,6 +12,7 @@ import io
 import json
 import os
 import re
+import base64
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Optional, Union
@@ -24,6 +25,11 @@ DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 DEFAULT_SOURCE_TRUTH_GID = 8109573
 # Default empty on Streamlit Cloud; set `XRAY_EXCEL_PATH` in secrets or `XRAY_EXCEL_PATH_DEFAULT` locally.
 DEFAULT_LOCAL_EXCEL_PATH = (os.environ.get("XRAY_EXCEL_PATH_DEFAULT") or "").strip()
+DEFAULT_LOGO_PATH = (
+    os.environ.get("XRAY_LOGO_PATH_DEFAULT")
+    or r"C:\Users\MaysamAbuKashabeh\.cursor\projects\C-Users-MAYSAM-1-AppData-Local-Temp-cc91c28c-086e-4f5e-b9d9-114908bf7621\assets\c__Users_MaysamAbuKashabeh_AppData_Roaming_Cursor_User_workspaceStorage_1769338407773_images_image-1f5bf7e1-f69f-402f-8845-f80d96f4d4b6.png"
+    or ""
+).strip()
 
 
 def _default_sheet_id_from_secrets() -> str:
@@ -54,6 +60,28 @@ def _default_excel_path_from_secrets() -> str:
         return v if v else DEFAULT_LOCAL_EXCEL_PATH
     except Exception:
         return DEFAULT_LOCAL_EXCEL_PATH
+
+
+def _default_logo_path_from_secrets() -> str:
+    """Optional path for header logo image."""
+    try:
+        s = st.secrets
+        v = (s.get("XRAY_LOGO_PATH") or s.get("xray_logo_path") or "").strip()
+        return v if v else DEFAULT_LOGO_PATH
+    except Exception:
+        return DEFAULT_LOGO_PATH
+
+
+def _logo_data_uri(path_str: str) -> str:
+    p = Path(path_str).expanduser()
+    if not path_str or not p.exists():
+        return ""
+    raw = p.read_bytes()
+    b64 = base64.b64encode(raw).decode("ascii")
+    ext = p.suffix.lower().lstrip(".") or "png"
+    if ext == "jpg":
+        ext = "jpeg"
+    return f"data:image/{ext};base64,{b64}"
 
 
 def _extract_sheet_id(url_or_id: str) -> str:
@@ -1124,7 +1152,7 @@ def render_page_channels(df_loaded: pd.DataFrame, start_date: date, end_date: da
     m1, m2 = st.columns(2)
     with m1:
         fig = px.bar(agg.head(20), x=group_col, y="spend", title="Spend")
-        fig.update_traces(marker_color="#0F766E")
+        fig.update_traces(marker_color="#4f8483")
         fig.update_layout(plot_bgcolor="white", paper_bgcolor="white", margin=dict(l=8, r=8, t=45, b=8))
         st.plotly_chart(fig, use_container_width=True, key=f"{key_suffix}_pl_spend")
     with m2:
@@ -1234,16 +1262,16 @@ def main() -> None:
         color: #1f2937;
     }
     .looker-header-title { font-size: 0.84rem; font-weight: 700; color: #111827; margin: 0; }
-    .looker-header-badge {
-        width: 28px; height: 28px; border-radius: 50%;
-        background: #1A73E8; color: #fff; display: inline-flex; align-items: center; justify-content: center;
-        font-size: 14px; font-weight: 700; margin-right: 10px; vertical-align: middle;
+    .looker-header-logo {
+        width: 38px; height: 38px; border-radius: 6px; object-fit: cover;
+        margin-right: 10px; vertical-align: middle; border: 1px solid #d3e3e3;
+        background: #ffffff;
     }
     .looker-header-actions { font-size: 9.6px; color: #6b7280; }
     .looker-page-h1 { font-size: 1.2rem; font-weight: 400; color: #202124; margin: 8px 0 16px 0; }
     .looker-table-title { font-size: 0.8rem; font-weight: 600; color: #202124; margin: 20px 0 8px 0; }
     .looker-kpi-big {
-        background: linear-gradient(180deg, #0D9488 0%, #0F766E 100%);
+        background: linear-gradient(180deg, #5c9090 0%, #4f8483 100%);
         color: #fff;
         border-radius: 8px;
         padding: 14px 12px;
@@ -1254,7 +1282,7 @@ def main() -> None:
     .looker-kpi-big-val { font-size: 1.35rem; font-weight: 600; line-height: 1.2; }
     .looker-kpi-big-lbl { font-size: 11px; opacity: 0.92; margin-top: 6px; font-weight: 500; }
     .looker-kpi-pill {
-        border: 1px solid #0F766E;
+        border: 1px solid #4f8483;
         background: #F0FDFA;
         border-radius: 999px;
         padding: 8px 12px;
@@ -1280,7 +1308,7 @@ def main() -> None:
         padding: 14px 16px;
         border-radius: 10px;
         background: linear-gradient(145deg, #f0fdf4 0%, #e0f2fe 100%);
-        border-left: 4px solid #0F766E;
+        border-left: 4px solid #4f8483;
         box-shadow: 0 1px 3px rgba(0,0,0,.08);
         min-height: 92px;
     }
@@ -1298,11 +1326,11 @@ def main() -> None:
         flex-wrap: nowrap !important;
     }
     .stTabs [data-baseweb="tab"] { padding: 10px 18px; border-radius: 8px; font-weight: 500; color: #475569; flex-shrink: 0; }
-    .stTabs [aria-selected="true"] { background: #0F766E !important; color: white !important; }
+    .stTabs [aria-selected="true"] { background: #4f8483 !important; color: white !important; }
     [data-testid="stMetric"] {
         background: #e9f3f8;
         border: 1px solid #d5e4ec;
-        border-left: 3px solid #19766f;
+        border-left: 3px solid #4f8483;
         border-radius: 8px;
         padding: 6px 10px;
     }
@@ -1311,7 +1339,7 @@ def main() -> None:
     .stRadio [role="radiogroup"] { gap: 14px; }
     .stSelectbox > label, .stRadio > label, .stTextInput > label { font-size: 11px !important; color: #6b7280 !important; }
     .stTabs [aria-selected="true"] span { color: white !important; }
-    .streamlit-expanderHeader { background: #F8FAFC; border-radius: 8px; border-left: 4px solid #0F766E; }
+    .streamlit-expanderHeader { background: #F8FAFC; border-radius: 8px; border-left: 4px solid #4f8483; }
     .stTextInput input, .stSelectbox > div, .stDateInput input {
         border-radius: 6px !important;
         background: #F8FAFC !important;
@@ -1321,17 +1349,23 @@ def main() -> None:
     [data-testid="stMetricValue"] { color: #1E293B !important; }
     [data-testid="stMetricLabel"] { color: #64748B !important; }
     .stCaption { color: #64748B !important; }
-    .stAlert { border-radius: 8px; border-left: 4px solid #0F766E; }
+    .stAlert { border-radius: 8px; border-left: 4px solid #4f8483; }
     </style>
     """,
         unsafe_allow_html=True,
     )
 
+    logo_uri = _logo_data_uri(_default_logo_path_from_secrets())
+    logo_html = (
+        f'<img class="looker-header-logo" src="{logo_uri}" alt="Logo" />'
+        if logo_uri
+        else '<span style="display:inline-block;width:38px;height:38px;border-radius:6px;background:#4f8483;margin-right:10px;"></span>'
+    )
     st.markdown(
-        """
+        f"""
     <div class="looker-header">
       <div style="display:flex;align-items:center;">
-        <span class="looker-header-badge">K</span>
+        {logo_html}
         <h1 class="looker-header-title">KitchenPark Marketing Dashboard</h1>
       </div>
       <div class="looker-header-actions"></div>
