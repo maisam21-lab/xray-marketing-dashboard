@@ -802,7 +802,7 @@ def _kpi_block(
     total_commitment: int,
     total_closed_lost: int,
 ) -> None:
-    """Old card design with new KPI titles."""
+    """Old card design grouped under 3 sections."""
     q_rate = (total_cw / total_qualified * 100) if total_qualified else 0.0
     sql_rate = (total_qualified / total_leads * 100) if total_leads else 0.0
     cpcw = (total_spend / total_cw) if total_cw else 0.0
@@ -811,43 +811,52 @@ def _kpi_block(
     cpcw_lf = (total_spend / total_first_month_lf) if total_first_month_lf else 0.0
     spend_tcv_pct = (total_spend / total_tcv * 100) if total_tcv else 0.0
 
-    r1 = st.columns(6)
-    row1 = [
-        ("CW (Inc Approved)", f"{total_cw:,}"),
-        ("Spend", _format_currency(total_spend)),
-        ("CPCW", f"${cpcw:,.2f}" if total_cw else "—"),
-        ("Actual TCV", _format_currency(total_tcv) if total_tcv else "—"),
-        ("CpCW:LF", f"{cpcw_lf:.2f}" if total_first_month_lf else "—"),
-        ("Spend / TCV %", f"{spend_tcv_pct:.2f}%" if total_tcv else "—"),
+    sections: list[tuple[str, list[tuple[str, str]]]] = [
+        (
+            "Closed Won",
+            [
+                ("CW (Inc Approved)", f"{total_cw:,}"),
+                ("Spend", _format_currency(total_spend)),
+                ("CPCW", f"${cpcw:,.2f}" if total_cw else "—"),
+                ("Actual TCV", _format_currency(total_tcv) if total_tcv else "—"),
+                ("CpCW:LF", f"{cpcw_lf:.2f}" if total_first_month_lf else "—"),
+                ("Spend / TCV %", f"{spend_tcv_pct:.2f}%" if total_tcv else "—"),
+            ],
+        ),
+        (
+            "Leads",
+            [
+                ("Total Leads", f"{total_leads:,}"),
+                ("Qualified", f"{total_qualified:,}"),
+                ("New + Working", f"{total_new_working:,}"),
+                ("SQL %", f"{sql_rate:.2f}%"),
+                ("CPL", f"${cpl:,.2f}" if total_leads else "—"),
+                ("CPSQL", f"${cpsql:,.2f}" if total_qualified else "—"),
+            ],
+        ),
+        (
+            "Qualified Leads",
+            [
+                ("Total Live", f"{total_total_live:,}"),
+                ("Negotiation", f"{total_negotiation:,}"),
+                ("Commitment", f"{total_commitment:,}"),
+                ("Closed Lost", f"{total_closed_lost:,}"),
+                ("Q Win Rate%", f"{q_rate:.2f}%"),
+            ],
+        ),
     ]
-    for i, c in enumerate(r1):
-        with c:
-            st.metric(row1[i][0], row1[i][1])
 
-    r2 = st.columns(6)
-    row2 = [
-        ("Total Leads", f"{total_leads:,}"),
-        ("Qualified", f"{total_qualified:,}"),
-        ("New + Working", f"{total_new_working:,}"),
-        ("SQL %", f"{sql_rate:.2f}%"),
-        ("CPL", f"${cpl:,.2f}" if total_leads else "—"),
-        ("CPSQL", f"${cpsql:,.2f}" if total_qualified else "—"),
-    ]
-    for i, c in enumerate(r2):
-        with c:
-            st.metric(row2[i][0], row2[i][1])
-
-    r3 = st.columns(5)
-    row3 = [
-        ("Total Live", f"{total_total_live:,}"),
-        ("Negotiation", f"{total_negotiation:,}"),
-        ("Commitment", f"{total_commitment:,}"),
-        ("Closed Lost", f"{total_closed_lost:,}"),
-        ("Q Win Rate%", f"{q_rate:.2f}%"),
-    ]
-    for i, c in enumerate(r3):
-        with c:
-            st.metric(row3[i][0], row3[i][1])
+    sec_cols = st.columns(3)
+    for i, (title, cards) in enumerate(sections):
+        with sec_cols[i]:
+            st.markdown(f"#### {title}")
+            for idx in range(0, len(cards), 2):
+                row_cols = st.columns(2)
+                with row_cols[0]:
+                    st.metric(cards[idx][0], cards[idx][1])
+                if idx + 1 < len(cards):
+                    with row_cols[1]:
+                        st.metric(cards[idx + 1][0], cards[idx + 1][1])
 
 
 def _master_performance_table(
