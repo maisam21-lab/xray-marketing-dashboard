@@ -21,6 +21,7 @@ import plotly.express as px
 import streamlit as st
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
+DEFAULT_SOURCE_TRUTH_GID = 8109573
 # Default empty on Streamlit Cloud; set `XRAY_EXCEL_PATH` in secrets or `XRAY_EXCEL_PATH_DEFAULT` locally.
 DEFAULT_LOCAL_EXCEL_PATH = (os.environ.get("XRAY_EXCEL_PATH_DEFAULT") or "").strip()
 
@@ -33,6 +34,16 @@ def _default_sheet_id_from_secrets() -> str:
         return v if v else DEFAULT_SHEET_ID
     except Exception:
         return DEFAULT_SHEET_ID
+
+
+def _default_truth_gid_from_secrets() -> int:
+    """Optional Streamlit secret XRAY_TRUTH_GID overrides default source-of-truth tab gid."""
+    try:
+        s = st.secrets
+        v = (s.get("XRAY_TRUTH_GID") or s.get("xray_truth_gid") or "").strip()
+        return int(v) if v else DEFAULT_SOURCE_TRUTH_GID
+    except Exception:
+        return DEFAULT_SOURCE_TRUTH_GID
 
 
 def _default_excel_path_from_secrets() -> str:
@@ -548,6 +559,27 @@ def load_marketing_data(
         worksheet_gid=int(worksheet_gid),
     )
     return _normalize(raw)
+
+
+@st.cache_data(ttl=300)
+def load_source_of_truth_tab(sheet_id: str, worksheet_gid: int, _secret_fp: str) -> pd.DataFrame:
+    """Load one canonical source-of-truth tab by gid from Google Sheets."""
+    secret_creds = _service_account_from_streamlit_secrets()
+    if not secret_creds:
+        raise RuntimeError(
+            "No service account in Streamlit Secrets. Add a `[gsheet_service_account]` block "
+            "(or `GCP_SERVICE_ACCOUNT`) in this app’s Secrets, then reboot."
+        )
+    raw = _read_sheet_auth(
+        sheet_id,
+        secret_creds,
+        worksheet_name=None,
+        worksheet_gid=int(worksheet_gid),
+    )
+    raw = _preprocess_excel_sheet(raw, "source_of_truth")
+    out = _normalize(raw)
+    out["source_tab"] = f"gid:{worksheet_gid}"
+    return out
 
 
 @st.cache_data(ttl=300)
@@ -1173,8 +1205,9 @@ def render_main_dashboard(
     else:
         sheet_id = _extract_sheet_id(_default_sheet_id_from_secrets())
         _fp = _secret_fingerprint(_service_account_from_streamlit_secrets())
+        truth_gid = _default_truth_gid_from_secrets()
         try:
-            df_loaded = load_all_worksheets_combined(sheet_id, _fp)
+            df_loaded = load_source_of_truth_tab(sheet_id, truth_gid, _fp)
         except Exception as exc:
             st.error(f"Failed to load spreadsheet: {exc}")
             return
