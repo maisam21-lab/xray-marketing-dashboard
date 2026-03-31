@@ -1106,7 +1106,7 @@ def render_page_marketing_performance(
     leads_df = _pick_source(df, [r"raw\s*leads?"], ["leads", "qualified"])
     post_df = _pick_source(
         df,
-        [r"raw.*post.*qual"],
+        [r"raw.*post.*qual", r"post\s*leads?"],
         ["closed_won", "pitching", "new", "working", "total_live", "negotiation", "commitment", "closed_lost"],
     )
     cw_df = _pick_source(df, [r"raw\s*cw"], ["tcv", "first_month_lf"])
@@ -1128,6 +1128,12 @@ def render_page_marketing_performance(
     total_closed_lost = int(post_df["closed_lost"].sum()) if "closed_lost" in post_df.columns else 0
     total_tcv = float(cw_df["tcv"].sum()) if "tcv" in cw_df.columns else 0.0
     total_first_month_lf = float(cw_df["first_month_lf"].sum()) if "first_month_lf" in cw_df.columns else 0.0
+
+    # Per-metric safety fallbacks.
+    if total_spend == 0.0 and "cost" in df.columns:
+        total_spend = float(df["cost"].sum())
+    if total_cw == 0 and "closed_won" in df.columns:
+        total_cw = int(df["closed_won"].sum())
 
     # Cloud safety net: if mapped sources still resolve to zeros, fall back to full filtered frame.
     if (
@@ -1195,6 +1201,12 @@ def render_page_marketing_performance(
     leads_g = _agg_for_master(leads_df, ["leads", "qualified"])
     post_g = _agg_for_master(post_df, ["closed_won", "pitching", "new", "working", "total_live", "negotiation", "commitment", "closed_lost"])
     cw_g = _agg_for_master(cw_df, ["tcv", "first_month_lf"])
+
+    # Master-view fallbacks for spend and CW.
+    if spend_g.empty or ("cost" in spend_g.columns and float(spend_g["cost"].sum()) == 0.0):
+        spend_g = _agg_for_master(df, ["cost", "clicks", "impressions"])
+    if post_g.empty or ("closed_won" in post_g.columns and float(post_g["closed_won"].sum()) == 0.0):
+        post_g = _agg_for_master(df, ["closed_won", "pitching", "new", "working", "total_live", "negotiation", "commitment", "closed_lost"])
 
     master_df = spend_g.merge(leads_g, on=["month", "country"], how="outer")
     master_df = master_df.merge(post_g, on=["month", "country"], how="outer")
