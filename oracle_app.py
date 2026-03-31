@@ -1218,9 +1218,6 @@ def render_main_dashboard(
     end_date: date,
 ) -> None:
     """Load Google Sheets or ME X-Ray Excel template, then route to Looker-named report pages."""
-    with st.container():
-        st.caption("Source: Google Sheets")
-
     sheet_id = _extract_sheet_id(_default_sheet_id_from_secrets())
     _fp = _secret_fingerprint(_service_account_from_streamlit_secrets())
     truth_gid = _default_truth_gid_from_secrets()
