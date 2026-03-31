@@ -930,15 +930,11 @@ def _master_performance_table(
     if "Cost/TCV%" in g.columns:
         metrics.append("Cost/TCV%")
 
-    pvt = g.pivot_table(index="Market", columns="month", values=metrics, aggfunc="sum")
-    pvt = pvt.sort_index(axis=1, level=[1, 0])
-
-    flat_cols: list[str] = []
-    for metric_name, month_value in pvt.columns:
-        month_txt = pd.Period(month_value, freq="M").strftime("%b %Y")
-        flat_cols.append(f"{month_txt} | {metric_name}")
-    pvt.columns = flat_cols
-    pvt = pvt.sort_index().reset_index()
+    monthly = g.groupby("month", as_index=False)[metrics].sum().sort_values("month")
+    monthly["Month"] = monthly["month"].apply(lambda m: pd.Period(m, freq="M").strftime("%b %Y"))
+    pvt = monthly.drop(columns=["month"])
+    cols = ["Month"] + [m for m in metrics if m in pvt.columns]
+    pvt = pvt[cols]
 
     def _fmt_for_metric(metric_name: str) -> Any:
         if metric_name in {"Spend", "CPCW", "CPL", "Actual TCV", "1st Month LF"}:
@@ -951,14 +947,14 @@ def _master_performance_table(
 
     fmt_map: dict[str, Any] = {}
     for c in pvt.columns:
-        if c == "Market":
+        if c == "Month":
             continue
-        metric_name = c.split("|", 1)[1].strip() if "|" in c else ""
+        metric_name = c
         fmt_map[c] = _fmt_for_metric(metric_name)
 
     styler = pvt.style.format(fmt_map)
-    for c in [x for x in pvt.columns if x != "Market"]:
-        metric_name = c.split("|", 1)[1].strip() if "|" in c else ""
+    for c in [x for x in pvt.columns if x != "Month"]:
+        metric_name = c
         good_low = metric_name in {"CPCW", "CPCW:LF", "Cost/TCV%", "CPL"}
         styler = styler.apply(lambda s, col=c, gl=good_low: _heatmap_bg(pvt[col], good_low=gl), subset=[c])
     st.dataframe(styler, use_container_width=True, hide_index=True, key=f"{key_suffix}_df_master_pivot")
