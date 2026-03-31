@@ -1009,6 +1009,18 @@ def _format_currency(v: float) -> str:
     return f"${v:,.2f}"
 
 
+def _format_spend_k(v: float) -> str:
+    """Spend in thousands with K (and M for very large totals)."""
+    if v == 0:
+        return "$0"
+    if abs(v) >= 1_000_000:
+        return f"${v / 1_000_000:.2f}M"
+    k = v / 1_000
+    if abs(k) >= 1:
+        return f"${k:.1f}K"
+    return f"${k:.2f}K"
+
+
 def _heatmap_bg(series: pd.Series, *, good_low: bool = True) -> list[str]:
     """Return teal/blue heatmap backgrounds (no red tones)."""
     s = pd.to_numeric(series, errors="coerce")
@@ -1138,7 +1150,7 @@ def _kpi_block(
             "Closed Won",
             [
                 ("CW (Inc Approved)", f"{total_cw:,}"),
-                ("Spend", _format_currency(total_spend)),
+                ("Spend", _format_spend_k(total_spend)),
                 ("CPCW", f"${cpcw:,.2f}" if total_cw else "—"),
                 ("Actual TCV", _format_currency(total_tcv) if total_tcv else "—"),
                 ("CpCW:LF", f"{cpcw_lf:.2f}" if total_first_month_lf else "—"),
@@ -1261,7 +1273,9 @@ def _master_performance_table(
     pvt = pvt[cols]
 
     def _fmt_for_metric(metric_name: str) -> Any:
-        if metric_name in {"Spend", "CPCW", "CPL", "Actual TCV", "1st Month LF"}:
+        if metric_name == "Spend":
+            return lambda x: _format_spend_k(float(x)) if pd.notna(x) else "—"
+        if metric_name in {"CPCW", "CPL", "Actual TCV", "1st Month LF"}:
             return lambda x: f"${x:,.2f}" if pd.notna(x) else "—"
         if metric_name in {"SQL %", "Cost/TCV%"}:
             return lambda x: f"{x:.2f}%" if pd.notna(x) else "—"
@@ -1456,10 +1470,6 @@ def render_page_marketing_performance(
                 master_df = df.copy()
 
     _master_performance_table(master_df, key_suffix=key_suffix)
-
-    # Temporary: show direct spend read from gid=0 to validate Cloud ingestion.
-    if gid0_spend_sum > 0:
-        st.caption(f"Debug Spend (gid=0 direct): ${gid0_spend_sum:,.2f}")
 
 
 def render_page_market_mom(
