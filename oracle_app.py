@@ -1156,18 +1156,8 @@ def render_main_dashboard(
     end_date: date,
 ) -> None:
     """Load Google Sheets or ME X-Ray Excel template, then route to Looker-named report pages."""
-    st.markdown(
-        """
-        <div class="ksa-nav">
-          <div class="ksa-pill">Kitchen Master Data</div>
-          <div class="ksa-pill active">Dashboard</div>
-          <div class="ksa-pill">Discussions</div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-    )
     with st.container():
-        t1, t2, t3 = st.columns([1.0, 1.4, 2.2])
+        t1, t2 = st.columns([1.1, 2.4])
         with t1:
             src = st.radio(
                 "Data source",
@@ -1176,8 +1166,6 @@ def render_main_dashboard(
                 key="data_src",
             )
         with t2:
-            page = st.selectbox("Report page", LOOKER_PAGES, key="looker_page")
-        with t3:
             excel_path = ""
             if src == "Excel (.xlsx)":
                 excel_path = st.text_input(
@@ -1215,13 +1203,15 @@ def render_main_dashboard(
     if df_loaded.empty:
         st.warning("No data rows were returned. Check tabs and column headers against the ME X-Ray template.")
         return
-    if page == "Marketing Performance Overview":
+
+    tab_mpo, tab_mom, tab_pmc, tab_inbound = st.tabs(list(LOOKER_PAGES))
+    with tab_mpo:
         render_page_marketing_performance(df_loaded, start_date, end_date)
-    elif page == "Market MoM View":
+    with tab_mom:
         render_page_market_mom(df_loaded, start_date, end_date)
-    elif page == "Performance Marketing Channels Overview":
+    with tab_pmc:
         render_page_channels(df_loaded, start_date, end_date, inbound=False)
-    else:
+    with tab_inbound:
         render_page_channels(df_loaded, start_date, end_date, inbound=True)
 
 
@@ -1261,27 +1251,6 @@ def main() -> None:
         font-size: 14px; font-weight: 700; margin-right: 10px; vertical-align: middle;
     }
     .looker-header-actions { font-size: 12px; color: #6b7280; }
-    .ksa-nav {
-        display: grid;
-        grid-template-columns: 1fr 1fr 1fr;
-        gap: 10px;
-        margin: 10px 0 8px 0;
-    }
-    .ksa-pill {
-        background: #ffffff;
-        border: 1px solid #dde4ea;
-        color: #4b5563;
-        border-radius: 6px;
-        text-align: center;
-        padding: 8px 12px;
-        font-size: 12px;
-        font-weight: 500;
-    }
-    .ksa-pill.active {
-        background: #19766f;
-        color: #ffffff;
-        border-color: #19766f;
-    }
     .looker-page-h1 { font-size: 1.5rem; font-weight: 400; color: #202124; margin: 8px 0 16px 0; }
     .looker-table-title { font-size: 1rem; font-weight: 600; color: #202124; margin: 20px 0 8px 0; }
     .looker-kpi-big {
