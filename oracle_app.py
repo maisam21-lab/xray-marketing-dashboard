@@ -695,16 +695,35 @@ def _post_lead_slice_for_kpi(df: pd.DataFrame) -> pd.DataFrame:
         anon = "anon:" + pd.Series(range(len(post_df)), index=post_df.index).astype(str)
         ck = ck.where(~bad, anon)
     post_df["_ck"] = ck
+    cw_s = post_df.get("closed_won", pd.Series(0, index=post_df.index))
+    post_df["_prio_cw"] = pd.to_numeric(cw_s, errors="coerce").fillna(0)
+    atc_s = post_df.get("actual_tcv", pd.Series(0.0, index=post_df.index))
+    post_df["_prio_tcv"] = pd.to_numeric(atc_s, errors="coerce").fillna(0.0)
+    # When the same opp appears on multiple funnel rows, keep the row that matches Actual TCV / CW logic:
+    # prefer literal "Closed Won" in Stage over standalone "Approved", then higher CW flag, then higher Actual TCV.
+    post_df["_prio_stage"] = 1
+    if "stage_text" in post_df.columns:
+        st = post_df["stage_text"].astype(str).str.lower().str.strip()
+        has_lit_cw = st.str.contains("closed won", na=False) & ~st.str.contains("closed lost", na=False)
+        app_only = st.eq("approved")
+        post_df.loc[has_lit_cw, "_prio_stage"] = 2
+        post_df.loc[app_only & ~has_lit_cw, "_prio_stage"] = 0
     if "source_tab" in post_df.columns:
         tp = post_df["source_tab"].astype(str).str.lower().map(
             lambda x: 0 if re.search(r"raw.*post.*qual", x) else 1
         )
         post_df["_tp"] = tp
-        post_df = post_df.sort_values(by=["_tp", "_ck"])
+        post_df = post_df.sort_values(
+            by=["_tp", "_ck", "_prio_stage", "_prio_cw", "_prio_tcv"],
+            ascending=[True, True, False, False, False],
+        )
     else:
-        post_df = post_df.sort_values(by="_ck")
+        post_df = post_df.sort_values(
+            by=["_ck", "_prio_stage", "_prio_cw", "_prio_tcv"],
+            ascending=[True, False, False, False],
+        )
     post_df = post_df.drop_duplicates(subset=["_ck"], keep="first")
-    return post_df.drop(columns=["_ck", "_tp"], errors="ignore")
+    return post_df.drop(columns=["_ck", "_tp", "_prio_stage", "_prio_cw", "_prio_tcv"], errors="ignore")
 
 
 # Normalized header → canonical column (covers X-Ray export names + ME X-Ray Excel template)
