@@ -533,6 +533,22 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
         else:
             out[field] = df[srcs[0]]
 
+    # Hard fallback for spend: if explicit mapping missed it, infer from any spend/cost-like header.
+    if "cost" not in out.columns:
+        spend_like_cols = []
+        for c in df.columns:
+            nk = _norm_header_key(c)
+            if ("spend" in nk or "cost" in nk) and nk not in {"cost_tcv", "cost_tcv_pct"}:
+                spend_like_cols.append(c)
+        if spend_like_cols:
+            inferred = _to_number_series(df[spend_like_cols[0]])
+            for c in spend_like_cols[1:]:
+                cand = _to_number_series(df[c])
+                # Prefer column with larger non-zero signal.
+                if float(cand.abs().sum()) > float(inferred.abs().sum()):
+                    inferred = cand
+            out["cost"] = inferred
+
     if "date" in out.columns:
         out["date"] = pd.to_datetime(out["date"], errors="coerce")
     else:
