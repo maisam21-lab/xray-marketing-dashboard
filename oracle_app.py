@@ -796,39 +796,59 @@ def _kpi_block(
     cpc: float,
     cpl: float,
     cpsql: float,
+    total_new_working: int,
+    total_total_live: int,
+    total_negotiation: int,
+    total_commitment: int,
+    total_closed_lost: int,
 ) -> None:
-    """Old KPI style using standard Streamlit metrics."""
-    vals = [
-        _format_currency(total_spend),
-        f"{total_impr:,}",
-        f"{total_clicks:,}",
-        f"{ctr:.2f}%",
-        f"{total_qualified:,}",
-        f"{total_leads:,}",
-    ]
-    titles = ["Spend", "Impressions", "Clicks", "CTR", "Qualified", "Leads"]
-    r1 = st.columns(6)
-    for i, c in enumerate(r1):
-        with c:
-            st.metric(titles[i], vals[i])
-
+    """Old KPI style (st.metric) with newer KPI titles."""
     q_rate = (total_cw / total_qualified * 100) if total_qualified else 0.0
+    sql_rate = (total_qualified / total_leads * 100) if total_leads else 0.0
     cpcw = (total_spend / total_cw) if total_cw else 0.0
     # Training deck formulas:
     # CpCW:LF = CpCW / 1st Month LF(avg) == Marketing Spend / total 1st Month LF
     cpcw_lf = (total_spend / total_first_month_lf) if total_first_month_lf else 0.0
     spend_tcv_pct = (total_spend / total_tcv * 100) if total_tcv else 0.0
+
+    vals = [
+        f"{total_cw:,}",
+        _format_currency(total_spend),
+        f"${cpcw:,.2f}" if total_cw else "—",
+        _format_currency(total_tcv) if total_tcv else "—",
+        f"{cpcw_lf:.2f}" if total_first_month_lf else "—",
+        f"{spend_tcv_pct:.2f}%" if total_tcv else "—",
+    ]
+    titles = ["CW (Inc Approved)", "Spend", "CPCW", "Actual TCV", "CpCW:LF", "Spend / TCV %"]
+    r1 = st.columns(6)
+    for i, c in enumerate(r1):
+        with c:
+            st.metric(titles[i], vals[i])
+
     r2 = st.columns(6)
     pills = [
-        ("CPCW (Spend/CW)", f"${cpcw:,.2f}" if total_cw else "—"),
-        ("CpCW:LF", f"{cpcw_lf:.2f}" if total_first_month_lf else "—"),
-        ("Spend / TCV %", f"{spend_tcv_pct:.2f}%" if total_tcv else "—"),
+        ("Total Leads", f"{total_leads:,}"),
+        ("Qualified", f"{total_qualified:,}"),
+        ("New + Working", f"{total_new_working:,}"),
+        ("SQL %", f"{sql_rate:.2f}%"),
         ("CPL", f"${cpl:,.2f}" if total_leads else "—"),
         ("CPSQL", f"${cpsql:,.2f}" if total_qualified else "—"),
-        ("Q → Win %", f"{q_rate:.2f}%"),
     ]
     for i, c in enumerate(r2):
         lbl, val = pills[i]
+        with c:
+            st.metric(lbl, val)
+
+    r3 = st.columns(5)
+    tail = [
+        ("Total Live", f"{total_total_live:,}"),
+        ("Negotiation", f"{total_negotiation:,}"),
+        ("Commitment", f"{total_commitment:,}"),
+        ("Closed Lost", f"{total_closed_lost:,}"),
+        ("Q → Win %", f"{q_rate:.2f}%"),
+    ]
+    for i, c in enumerate(r3):
+        lbl, val = tail[i]
         with c:
             st.metric(lbl, val)
 
@@ -954,6 +974,12 @@ def render_page_marketing_performance(
     total_qualified = int(df["qualified"].sum())
     total_pitching = int(df["pitching"].sum())
     total_cw = int(df["closed_won"].sum())
+    total_new = int(df["new"].sum()) if "new" in df.columns else 0
+    total_working = int(df["working"].sum()) if "working" in df.columns else 0
+    total_total_live = int(df["total_live"].sum()) if "total_live" in df.columns else 0
+    total_negotiation = int(df["negotiation"].sum()) if "negotiation" in df.columns else 0
+    total_commitment = int(df["commitment"].sum()) if "commitment" in df.columns else 0
+    total_closed_lost = int(df["closed_lost"].sum()) if "closed_lost" in df.columns else 0
     total_tcv = float(df["tcv"].sum()) if "tcv" in df.columns else 0.0
     total_first_month_lf = float(df["first_month_lf"].sum()) if "first_month_lf" in df.columns else 0.0
     ctr = (total_clicks / total_impr * 100) if total_impr else 0
@@ -975,6 +1001,11 @@ def render_page_marketing_performance(
         cpc=cpc,
         cpl=cpl,
         cpsql=cpsql,
+        total_new_working=total_new + total_working,
+        total_total_live=total_total_live,
+        total_negotiation=total_negotiation,
+        total_commitment=total_commitment,
+        total_closed_lost=total_closed_lost,
     )
 
     _master_performance_table(df, key_suffix=key_suffix)
