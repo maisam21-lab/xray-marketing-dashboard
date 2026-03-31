@@ -1124,6 +1124,16 @@ def render_main_dashboard(
     end_date: date,
 ) -> None:
     """Load Google Sheets or ME X-Ray Excel template, then route to Looker-named report pages."""
+    st.markdown(
+        """
+        <div class="ksa-nav">
+          <div class="ksa-pill">Kitchen Master Data</div>
+          <div class="ksa-pill active">Dashboard</div>
+          <div class="ksa-pill">Discussions</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
     with st.container():
         t1, t2, t3 = st.columns([1.0, 1.4, 2.2])
         with t1:
@@ -1193,31 +1203,52 @@ def main() -> None:
     st.markdown(
         """
     <style>
-    .stApp { background: #ECEFF1; font-family: 'Segoe UI', system-ui, sans-serif; font-size: 0.772rem !important; }
+    .stApp { background: #f4f6f8; font-family: 'Segoe UI', system-ui, sans-serif; font-size: 0.772rem !important; }
     section[data-testid="stSidebar"] { display: none !important; }
     [data-testid="collapsedControl"] { display: none !important; }
     header[data-testid="stHeader"] { background: #FFFFFF !important; border-bottom: 1px solid #E2E8F0; }
     header[data-testid="stHeader"] * { color: #1E293B !important; }
     .looker-header {
-        background: #0F766E;
-        border: 1px solid #0b5d57;
-        border-radius: 0 10px 10px 0;
-        padding: 12px 20px 14px 20px;
+        background: #ffffff;
+        border: 1px solid #e6ebef;
+        border-radius: 10px;
+        padding: 14px 20px;
         margin: -1rem -1rem 12px -1rem;
         display: flex;
         align-items: center;
         justify-content: space-between;
         flex-wrap: wrap;
         gap: 8px;
-        color: #ecfeff;
+        color: #1f2937;
     }
-    .looker-header-title { font-size: 1.05rem; font-weight: 700; color: #ecfeff; margin: 0; }
+    .looker-header-title { font-size: 1.05rem; font-weight: 700; color: #111827; margin: 0; }
     .looker-header-badge {
         width: 28px; height: 28px; border-radius: 50%;
         background: #1A73E8; color: #fff; display: inline-flex; align-items: center; justify-content: center;
         font-size: 14px; font-weight: 700; margin-right: 10px; vertical-align: middle;
     }
-    .looker-header-actions { font-size: 12px; color: #ccfbf1; }
+    .looker-header-actions { font-size: 12px; color: #6b7280; }
+    .ksa-nav {
+        display: grid;
+        grid-template-columns: 1fr 1fr 1fr;
+        gap: 10px;
+        margin: 10px 0 8px 0;
+    }
+    .ksa-pill {
+        background: #ffffff;
+        border: 1px solid #dde4ea;
+        color: #4b5563;
+        border-radius: 6px;
+        text-align: center;
+        padding: 8px 12px;
+        font-size: 12px;
+        font-weight: 500;
+    }
+    .ksa-pill.active {
+        background: #19766f;
+        color: #ffffff;
+        border-color: #19766f;
+    }
     .looker-page-h1 { font-size: 1.5rem; font-weight: 400; color: #202124; margin: 8px 0 16px 0; }
     .looker-table-title { font-size: 1rem; font-weight: 600; color: #202124; margin: 20px 0 8px 0; }
     .looker-kpi-big {
@@ -1278,12 +1309,16 @@ def main() -> None:
     .stTabs [data-baseweb="tab"] { padding: 10px 18px; border-radius: 8px; font-weight: 500; color: #475569; flex-shrink: 0; }
     .stTabs [aria-selected="true"] { background: #0F766E !important; color: white !important; }
     [data-testid="stMetric"] {
-        background: #f8fafc;
-        border: 1px solid #dbe6ea;
-        border-left: 4px solid #0F766E;
+        background: #e9f3f8;
+        border: 1px solid #d5e4ec;
+        border-left: 3px solid #19766f;
         border-radius: 8px;
-        padding: 8px 10px;
+        padding: 6px 10px;
     }
+    [data-testid="stMetricLabel"] { font-size: 11px !important; color: #4b5563 !important; }
+    [data-testid="stMetricValue"] { font-size: 1.8rem !important; color: #1f2937 !important; }
+    .stRadio [role="radiogroup"] { gap: 14px; }
+    .stSelectbox > label, .stRadio > label, .stTextInput > label { font-size: 11px !important; color: #6b7280 !important; }
     .stTabs [aria-selected="true"] span { color: white !important; }
     .streamlit-expanderHeader { background: #F8FAFC; border-radius: 8px; border-left: 4px solid #0F766E; }
     .stTextInput input, .stSelectbox > div, .stDateInput input {
@@ -1308,7 +1343,7 @@ def main() -> None:
         <span class="looker-header-badge">K</span>
         <h1 class="looker-header-title">KitchenPark Marketing Dashboard</h1>
       </div>
-      <div class="looker-header-actions">Reports, data source &amp; Excel path — toolbar below</div>
+      <div class="looker-header-actions">● Delayed &nbsp;&nbsp; Refreshed 31 min ago</div>
     </div>
     """,
         unsafe_allow_html=True,
