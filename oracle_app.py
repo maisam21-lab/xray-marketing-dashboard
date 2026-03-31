@@ -395,7 +395,8 @@ def _preprocess_excel_sheet(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
             df["Date"] = pd.to_datetime(df["Date Formatted"], errors="coerce")
     if ("raw" in t and "post" in t and "qual" in t):
         # Stage rows become pipeline counters (post-lead funnel).
-        stage = df.get("Stage", pd.Series(index=df.index, dtype=str)).astype(str).str.lower().str.strip()
+        stage_col = next((c for c in df.columns if "stage" in _norm_header_key(c)), None)
+        stage = df.get(stage_col or "Stage", pd.Series(index=df.index, dtype=str)).astype(str).str.lower().str.strip()
         if "Qualified" not in df.columns:
             df["Qualified"] = 1
         if "Pitching" not in df.columns:
@@ -412,16 +413,23 @@ def _preprocess_excel_sheet(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
         if "Total Live" not in df.columns:
             df["Total Live"] = stage.str.contains("new|working|qualifying|pitch|negotiation|commitment", na=False).astype(int)
         if "Date" not in df.columns:
-            if "Formatted Date" in df.columns:
-                df["Date"] = pd.to_datetime(df["Formatted Date"], errors="coerce")
-            elif "Created Date" in df.columns:
-                df["Date"] = pd.to_datetime(df["Created Date"], errors="coerce")
+            date_col = next(
+                (
+                    c
+                    for c in df.columns
+                    if _norm_header_key(c) in {"formatted_date", "created_date", "create_date", "date", "date_formatted"}
+                ),
+                None,
+            )
+            if date_col:
+                df["Date"] = pd.to_datetime(df[date_col], errors="coerce")
     if ("raw" in t and "cw" in t):
         # RAW CW can contain repeated rows for the same opportunity; dedupe before aggregation.
         dedupe_cols = [c for c in ("Opportunity Name", "Close Date", "Kitchen Country", "Stage") if c in df.columns]
         if dedupe_cols:
             df = df.drop_duplicates(subset=dedupe_cols, keep="first")
-        stage = df.get("Stage", pd.Series(index=df.index, dtype=str)).astype(str).str.lower().str.strip()
+        stage_col = next((c for c in df.columns if "stage" in _norm_header_key(c)), None)
+        stage = df.get(stage_col or "Stage", pd.Series(index=df.index, dtype=str)).astype(str).str.lower().str.strip()
         if "Closed Won" not in df.columns:
             df["Closed Won"] = stage.str.contains("closed won", na=False).astype(int)
         if "Date" not in df.columns:
@@ -513,7 +521,8 @@ def _filter_by_date_range(df: pd.DataFrame, start: date, end: date) -> pd.DataFr
         pass
     start_ts = pd.Timestamp(datetime.combine(start, time.min))
     end_ts = pd.Timestamp(datetime.combine(end, time.max))
-    mask = (s >= start_ts) & (s <= end_ts)
+    # Keep undated rows so stage-based metrics (e.g., post-qualification CW) don't get zeroed.
+    mask = ((s >= start_ts) & (s <= end_ts)) | s.isna()
     return df.loc[mask].copy()
 
 
