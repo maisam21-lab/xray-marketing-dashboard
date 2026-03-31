@@ -237,6 +237,45 @@ def _read_sheet_auth(
     return pd.DataFrame(ws.get_all_records())
 
 
+def _read_sheet_auth_loose(
+    sheet_id: str,
+    service_account_data: Union[bytes, dict, str],
+    *,
+    worksheet_gid: int,
+) -> pd.DataFrame:
+    """Fallback reader for tabs where get_all_records() fails due unusual header rows."""
+    import gspread
+    from google.oauth2.service_account import Credentials
+
+    creds_info = _coerce_service_account_dict(service_account_data)
+    _validate_service_account_dict(creds_info)
+    creds = Credentials.from_service_account_info(
+        creds_info,
+        scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"],
+    )
+    gc = gspread.authorize(creds)
+    sh = gc.open_by_key(sheet_id)
+    ws = sh.get_worksheet_by_id(int(worksheet_gid))
+    grid = ws.get_all_values()
+    if not grid:
+        return pd.DataFrame()
+    # Choose the first non-empty row as header.
+    header_idx = None
+    for i, row in enumerate(grid):
+        if any(str(cell).strip() for cell in row):
+            header_idx = i
+            break
+    if header_idx is None:
+        return pd.DataFrame()
+    headers = [str(h).strip() or f"col_{j+1}" for j, h in enumerate(grid[header_idx])]
+    rows = grid[header_idx + 1 :]
+    if not rows:
+        return pd.DataFrame(columns=headers)
+    width = len(headers)
+    fixed_rows = [(r + [""] * max(0, width - len(r)))[:width] for r in rows]
+    return pd.DataFrame(fixed_rows, columns=headers)
+
+
 def _norm_header_key(name: str) -> str:
     """Lowercase; non-alphanumeric → underscores (matches ME X-Ray Excel headers like `CPCW:LF`, `Cost/TCV%`)."""
     s = str(name).strip().lower()
@@ -582,6 +621,12 @@ def load_all_worksheets_combined(sheet_id: str, _secret_fp: str) -> pd.DataFrame
                 worksheet_name=None,
                 worksheet_gid=int(ws_gid),
             )
+            if raw.empty or len(raw.columns) == 0:
+                raw = _read_sheet_auth_loose(
+                    sheet_id,
+                    secret_creds,
+                    worksheet_gid=int(ws_gid),
+                )
             raw = _preprocess_excel_sheet(raw, title)
             df = _normalize(raw)
         except Exception:
