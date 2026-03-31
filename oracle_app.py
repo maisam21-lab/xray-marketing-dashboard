@@ -645,6 +645,30 @@ def _sum_actual_tcv_closed_won_deals(df: pd.DataFrame) -> float:
     return float(tmp.groupby("_k", dropna=False)["_v"].max().sum())
 
 
+def _sum_monthly_lf_for_cw_deals(df: pd.DataFrame) -> float:
+    """Sum Monthly LF (1st Month LF / Monthly LF USD) for CW (Inc Approved) deals, once per opportunity.
+
+    Same rows and composite keys as :func:`_sum_actual_tcv_closed_won_deals`, for the denominator of CpCW:LF.
+    """
+    if df.empty or "closed_won" not in df.columns or "first_month_lf" not in df.columns:
+        return 0.0
+    sub = _rows_for_actual_tcv_sum(df)
+    if sub.empty:
+        return 0.0
+    sub["_v"] = pd.to_numeric(sub["first_month_lf"], errors="coerce").fillna(0.0)
+    k = _composite_cw_opportunity_key_series(sub)
+    ks = k.astype(str).replace("nan", "")
+    tmp = pd.DataFrame({"_k": ks, "_v": sub["_v"]})
+    if (tmp["_k"] == "").all():
+        dims = _dim_cols_for_cw_dedupe(sub)
+        use = [c for c in dims if c in sub.columns]
+        if use:
+            d = sub.drop_duplicates(subset=use, keep="first")
+            return float(pd.to_numeric(d["first_month_lf"], errors="coerce").fillna(0.0).sum())
+        return float(tmp["_v"].sum())
+    return float(tmp.groupby("_k", dropna=False)["_v"].max().sum())
+
+
 def _agg_actual_tcv_closed_won_by_month_country(post_df: pd.DataFrame) -> pd.DataFrame:
     """Actual TCV for CW (Inc Approved) rows, deduped per opp, summed by month × country (for master table)."""
     out_cols = ["month", "country", "tcv"]
@@ -685,23 +709,25 @@ def _post_lead_slice_for_kpi(df: pd.DataFrame) -> pd.DataFrame:
     post_df["_prio_cw"] = pd.to_numeric(cw_s, errors="coerce").fillna(0)
     atc_s = post_df.get("actual_tcv", pd.Series(0.0, index=post_df.index))
     post_df["_prio_tcv"] = pd.to_numeric(atc_s, errors="coerce").fillna(0.0)
-    # Same opp on multiple funnel rows: prefer higher CW flag, then higher Actual TCV (matches simple sum per deal).
+    lf_s = post_df.get("first_month_lf", pd.Series(0.0, index=post_df.index))
+    post_df["_prio_lf"] = pd.to_numeric(lf_s, errors="coerce").fillna(0.0)
+    # Same opp on multiple funnel rows: prefer higher CW, then Actual TCV, then Monthly LF (for CpCW:LF denominator).
     if "source_tab" in post_df.columns:
         tp = post_df["source_tab"].astype(str).str.lower().map(
             lambda x: 0 if re.search(r"raw.*post.*qual", x) else 1
         )
         post_df["_tp"] = tp
         post_df = post_df.sort_values(
-            by=["_tp", "_ck", "_prio_cw", "_prio_tcv"],
-            ascending=[True, True, False, False],
+            by=["_tp", "_ck", "_prio_cw", "_prio_tcv", "_prio_lf"],
+            ascending=[True, True, False, False, False],
         )
     else:
         post_df = post_df.sort_values(
-            by=["_ck", "_prio_cw", "_prio_tcv"],
-            ascending=[True, False, False],
+            by=["_ck", "_prio_cw", "_prio_tcv", "_prio_lf"],
+            ascending=[True, False, False, False],
         )
     post_df = post_df.drop_duplicates(subset=["_ck"], keep="first")
-    return post_df.drop(columns=["_ck", "_tp", "_prio_cw", "_prio_tcv"], errors="ignore")
+    return post_df.drop(columns=["_ck", "_tp", "_prio_cw", "_prio_tcv", "_prio_lf"], errors="ignore")
 
 
 # Normalized header → canonical column (covers X-Ray export names + ME X-Ray Excel template)
@@ -1535,7 +1561,9 @@ def compute_mpo_totals(
     total_commitment = int(post_df["commitment"].sum()) if "commitment" in post_df.columns else 0
     total_closed_lost = int(post_df["closed_lost"].sum()) if "closed_lost" in post_df.columns else 0
     total_tcv = _sum_actual_tcv_closed_won_deals(post_df)
-    total_first_month_lf = float(cw_df["first_month_lf"].sum()) if "first_month_lf" in cw_df.columns else 0.0
+    total_first_month_lf = _sum_monthly_lf_for_cw_deals(post_df)
+    if total_first_month_lf == 0.0 and "first_month_lf" in cw_df.columns:
+        total_first_month_lf = float(cw_df["first_month_lf"].sum())
 
     if total_spend == 0.0 and "cost" in df.columns:
         total_spend = float(df["cost"].sum())
@@ -1572,7 +1600,9 @@ def compute_mpo_totals(
         total_commitment = int(df["commitment"].sum()) if "commitment" in df.columns else 0
         total_closed_lost = int(df["closed_lost"].sum()) if "closed_lost" in df.columns else 0
         total_tcv = _sum_actual_tcv_closed_won_deals(pl_only)
-        total_first_month_lf = float(df["first_month_lf"].sum()) if "first_month_lf" in df.columns else 0.0
+        total_first_month_lf = _sum_monthly_lf_for_cw_deals(pl_only)
+        if total_first_month_lf == 0.0 and "first_month_lf" in df.columns:
+            total_first_month_lf = float(df["first_month_lf"].sum())
 
     ctr = (total_clicks / total_impr * 100) if total_impr else 0
     cpc = (total_spend / total_clicks) if total_clicks else 0.0
@@ -1748,8 +1778,8 @@ def _kpi_block(
     q_rate = (total_cw / total_qualified * 100) if total_qualified else 0.0
     sql_rate = (total_qualified / total_leads * 100) if total_leads else 0.0
     cpcw = (total_spend / total_cw) if total_cw else 0.0
-    # Training deck: Cost per Closed Won – License Fee = Spend / total 1st Month LF (RAW CW tab).
-    cpcw_lf = (total_spend / total_first_month_lf) if total_first_month_lf else 0.0
+    # CpCW:LF = (# CW Inc Approved deals) / (sum Monthly LF USD for those same deals).
+    cpcw_lf = (total_cw / total_first_month_lf) if total_first_month_lf else 0.0
     spend_tcv_pct = (total_spend / total_tcv * 100) if total_tcv else 0.0
 
     _cw_help = (
@@ -1765,8 +1795,9 @@ def _kpi_block(
         "If both ``Actual TCV`` and ``TCV (converted)`` exist on a row, the larger value is used—not added."
     )
     _cpcw_lf_help = (
-        "**Cost per Closed Won – License Fee** (CpCW:LF): total marketing **Spend** divided by **1st Month LF** "
-        "(sum of first-month license fee from the RAW CW tab). Lower is better."
+        "**CpCW:LF** (Closed Won – License Fee): **# of CW (Inc Approved) deals** divided by the **sum of Monthly LF USD** "
+        "for those **same** deals (post-lead, deduped per opportunity like the CW count). "
+        "If Monthly LF is missing on post-lead, falls back to the RAW CW tab sum."
     )
     sections: list[tuple[str, list[tuple[Any, ...]]]] = [
         (
