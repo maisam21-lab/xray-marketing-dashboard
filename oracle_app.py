@@ -359,28 +359,25 @@ def _closed_won_kpi_mask(
     raw_stage: pd.Series,
     approval_optional: Optional[pd.Series] = None,
 ) -> pd.Series:
-    """KPI Closed Won: Stage contains Closed Won AND the deal is approved.
+    """KPI Closed Won (Inc Approved): **Closed Won** in Stage **and** an **approved** signal.
 
-    - **Stage text**: must include ``closed won``, not ``closed lost``; not ``not approved`` / ``unapproved``.
-    - **Approved** if: the word *approved* appears in Stage (e.g. ``Closed Won - Approved``), or Stage is
-      exactly ``Closed Won`` (common Salesforce value), or an optional **approval** column accepts the row.
-    - If an approval column is present and explicitly rejects (e.g. Not Approved), the row is excluded unless
-      Stage text still contains *approved* (downstream correction).
+    - Stage must include ``closed won``, not ``closed lost``; exclude ``not approved`` / ``unapproved`` in Stage.
+    - **Approved** if the word *approved* appears in Stage (e.g. ``Closed Won - Approved``), **or** an optional
+      **approval** column explicitly accepts the row (Approved / Yes / …).
+    - Plain ``Closed Won`` alone (no *approved* in Stage and no approving approval column) does **not** count.
     """
     s = raw_stage.astype(str).str.lower()
     cw = s.str.contains("closed won", na=False) & ~s.str.contains("closed lost", na=False)
     not_unappr = ~s.str.contains("not approved", na=False) & ~s.str.contains("unapproved", na=False)
     appr_in_stage = s.str.contains(r"\bapproved\b", na=False)
-    bare = s.str.strip().eq("closed won")
     if approval_optional is None:
-        appr_ok = appr_in_stage | bare
-        return cw & not_unappr & appr_ok
+        return cw & not_unappr & appr_in_stage
     ao = approval_optional.astype(str).str.lower()
     col_accept = (
         ao.str.contains("approved", na=False) & ~ao.str.contains("not approved", na=False)
     ) | ao.str.strip().isin(["yes", "y", "true", "1"])
     col_reject = ao.str.contains("not approved", na=False) | ao.str.contains("rejected", na=False)
-    appr_ok = appr_in_stage | bare | col_accept
+    appr_ok = appr_in_stage | col_accept
     appr_ok = appr_ok & (~col_reject | appr_in_stage)
     return cw & not_unappr & appr_ok
 
@@ -849,9 +846,13 @@ def _preprocess_excel_sheet(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
         if dedupe_cols:
             df = df.drop_duplicates(subset=dedupe_cols, keep="first")
         stage_col = next((c for c in df.columns if "stage" in _norm_header_key(c)), None)
-        stage = df.get(stage_col or "Stage", pd.Series(index=df.index, dtype=str)).astype(str).str.lower().str.strip()
+        raw_stage_cw = df.get(stage_col or "Stage", pd.Series(index=df.index, dtype=str))
         if "Closed Won" not in df.columns:
-            df["Closed Won"] = stage.str.contains("closed won", na=False).astype(int)
+            appr_col_cw = _resolve_optional_approval_column(df)
+            if appr_col_cw is not None:
+                df["Closed Won"] = _closed_won_kpi_mask(raw_stage_cw, df[appr_col_cw]).astype(int)
+            else:
+                df["Closed Won"] = _closed_won_kpi_mask(raw_stage_cw, None).astype(int)
         if "Date" not in df.columns:
             if "Close Date" in df.columns:
                 df["Date"] = pd.to_datetime(df["Close Date"], errors="coerce", dayfirst=True)
