@@ -1032,6 +1032,31 @@ def render_page_marketing_performance(
     total_closed_lost = int(post_df["closed_lost"].sum()) if "closed_lost" in post_df.columns else 0
     total_tcv = float(cw_df["tcv"].sum()) if "tcv" in cw_df.columns else 0.0
     total_first_month_lf = float(cw_df["first_month_lf"].sum()) if "first_month_lf" in cw_df.columns else 0.0
+
+    # Cloud safety net: if mapped sources still resolve to zeros, fall back to full filtered frame.
+    if (
+        total_spend == 0.0
+        and total_leads == 0
+        and total_qualified == 0
+        and total_cw == 0
+        and total_tcv == 0.0
+        and total_first_month_lf == 0.0
+    ):
+        total_spend = float(df["cost"].sum()) if "cost" in df.columns else 0.0
+        total_impr = int(df["impressions"].sum()) if "impressions" in df.columns else 0
+        total_clicks = int(df["clicks"].sum()) if "clicks" in df.columns else 0
+        total_leads = int(df["leads"].sum()) if "leads" in df.columns else 0
+        total_qualified = int(df["qualified"].sum()) if "qualified" in df.columns else 0
+        total_pitching = int(df["pitching"].sum()) if "pitching" in df.columns else 0
+        total_cw = int(df["closed_won"].sum()) if "closed_won" in df.columns else 0
+        total_new = int(df["new"].sum()) if "new" in df.columns else 0
+        total_working = int(df["working"].sum()) if "working" in df.columns else 0
+        total_total_live = int(df["total_live"].sum()) if "total_live" in df.columns else 0
+        total_negotiation = int(df["negotiation"].sum()) if "negotiation" in df.columns else 0
+        total_commitment = int(df["commitment"].sum()) if "commitment" in df.columns else 0
+        total_closed_lost = int(df["closed_lost"].sum()) if "closed_lost" in df.columns else 0
+        total_tcv = float(df["tcv"].sum()) if "tcv" in df.columns else 0.0
+        total_first_month_lf = float(df["first_month_lf"].sum()) if "first_month_lf" in df.columns else 0.0
     ctr = (total_clicks / total_impr * 100) if total_impr else 0
     cpc = (total_spend / total_clicks) if total_clicks else 0.0
     cpl = (total_spend / total_leads) if total_leads else 0.0
@@ -1079,6 +1104,14 @@ def render_page_marketing_performance(
     master_df = master_df.merge(post_g, on=["month", "country"], how="outer")
     master_df = master_df.merge(cw_g, on=["month", "country"], how="outer")
     master_df = master_df.fillna(0)
+    if master_df.empty:
+        master_df = df.copy()
+    else:
+        metric_probe = [c for c in ("cost", "leads", "qualified", "closed_won", "tcv", "first_month_lf") if c in master_df.columns]
+        if metric_probe:
+            probe_total = float(master_df[metric_probe].sum(numeric_only=True).sum())
+            if probe_total == 0.0:
+                master_df = df.copy()
 
     _master_performance_table(master_df, key_suffix=key_suffix)
 
