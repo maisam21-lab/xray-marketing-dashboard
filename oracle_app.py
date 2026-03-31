@@ -615,28 +615,14 @@ def _actual_tcv_value_column(df: pd.DataFrame) -> Optional[str]:
 
 
 def _rows_for_actual_tcv_sum(df: pd.DataFrame) -> pd.DataFrame:
-    """Rows with CW flag set that are **Closed Won** in Stage (excludes standalone ``Approved`` for $).
-
-    Actual TCV is contract value for won deals; ``Approved``-only stage rows can carry pipeline TCV and
-    must not be summed here. If ``stage_text`` is missing/empty, keep all ``closed_won`` rows (legacy).
-    """
+    """Rows that count as **CW (Inc Approved)** — same ``closed_won`` flag as the deal count (61, etc.)."""
     if df.empty or "closed_won" not in df.columns:
         return df.iloc[0:0]
-    sub = df.loc[pd.to_numeric(df["closed_won"], errors="coerce").fillna(0) > 0].copy()
-    if sub.empty:
-        return sub
-    if "stage_text" not in sub.columns:
-        return sub
-    st = sub["stage_text"].astype(str).str.strip()
-    stl = st.str.lower()
-    if bool((stl.eq("") | stl.isin(["nan", "none"])).all()):
-        return sub
-    mask = stl.str.contains("closed won", na=False) & ~stl.str.contains("closed lost", na=False)
-    return sub.loc[mask]
+    return df.loc[pd.to_numeric(df["closed_won"], errors="coerce").fillna(0) > 0].copy()
 
 
 def _sum_actual_tcv_closed_won_deals(df: pd.DataFrame) -> float:
-    """Sum Actual TCV for Closed Won stage rows, once per opportunity (same keys as CW)."""
+    """Sum Actual TCV for those deals, once per opportunity (same composite keys as CW count)."""
     if df.empty or "closed_won" not in df.columns:
         return 0.0
     vc = _actual_tcv_value_column(df)
@@ -660,7 +646,7 @@ def _sum_actual_tcv_closed_won_deals(df: pd.DataFrame) -> float:
 
 
 def _agg_actual_tcv_closed_won_by_month_country(post_df: pd.DataFrame) -> pd.DataFrame:
-    """Actual TCV for Closed Won stage rows only, deduped per opp, summed by month × country (for master table)."""
+    """Actual TCV for CW (Inc Approved) rows, deduped per opp, summed by month × country (for master table)."""
     out_cols = ["month", "country", "tcv"]
     if post_df.empty or "closed_won" not in post_df.columns:
         return pd.DataFrame(columns=out_cols)
@@ -699,31 +685,23 @@ def _post_lead_slice_for_kpi(df: pd.DataFrame) -> pd.DataFrame:
     post_df["_prio_cw"] = pd.to_numeric(cw_s, errors="coerce").fillna(0)
     atc_s = post_df.get("actual_tcv", pd.Series(0.0, index=post_df.index))
     post_df["_prio_tcv"] = pd.to_numeric(atc_s, errors="coerce").fillna(0.0)
-    # When the same opp appears on multiple funnel rows, keep the row that matches Actual TCV / CW logic:
-    # prefer literal "Closed Won" in Stage over standalone "Approved", then higher CW flag, then higher Actual TCV.
-    post_df["_prio_stage"] = 1
-    if "stage_text" in post_df.columns:
-        st = post_df["stage_text"].astype(str).str.lower().str.strip()
-        has_lit_cw = st.str.contains("closed won", na=False) & ~st.str.contains("closed lost", na=False)
-        app_only = st.eq("approved")
-        post_df.loc[has_lit_cw, "_prio_stage"] = 2
-        post_df.loc[app_only & ~has_lit_cw, "_prio_stage"] = 0
+    # Same opp on multiple funnel rows: prefer higher CW flag, then higher Actual TCV (matches simple sum per deal).
     if "source_tab" in post_df.columns:
         tp = post_df["source_tab"].astype(str).str.lower().map(
             lambda x: 0 if re.search(r"raw.*post.*qual", x) else 1
         )
         post_df["_tp"] = tp
         post_df = post_df.sort_values(
-            by=["_tp", "_ck", "_prio_stage", "_prio_cw", "_prio_tcv"],
-            ascending=[True, True, False, False, False],
+            by=["_tp", "_ck", "_prio_cw", "_prio_tcv"],
+            ascending=[True, True, False, False],
         )
     else:
         post_df = post_df.sort_values(
-            by=["_ck", "_prio_stage", "_prio_cw", "_prio_tcv"],
-            ascending=[True, False, False, False],
+            by=["_ck", "_prio_cw", "_prio_tcv"],
+            ascending=[True, False, False],
         )
     post_df = post_df.drop_duplicates(subset=["_ck"], keep="first")
-    return post_df.drop(columns=["_ck", "_tp", "_prio_stage", "_prio_cw", "_prio_tcv"], errors="ignore")
+    return post_df.drop(columns=["_ck", "_tp", "_prio_cw", "_prio_tcv"], errors="ignore")
 
 
 # Normalized header → canonical column (covers X-Ray export names + ME X-Ray Excel template)
@@ -1783,9 +1761,9 @@ def _kpi_block(
         "Closed Won (Inc Approved) deals. Lower is better."
     )
     _actual_tcv_help = (
-        "Sum of **Actual TCV** / **TCV (converted)** on the post-lead tab for rows whose **Stage** text is "
-        "**Closed Won** (standalone **Approved** is excluded from the $ sum). If both column names exist "
-        "for the same deal, the larger value is used—not added. Deduped per opportunity like CW count."
+        "Sum of **Actual TCV** / **TCV (converted)** for the **same** deals as **CW (Inc Approved)**—any row "
+        "with the Closed Won / Approved stage flag. Once per opportunity (same dedupe as the CW count). "
+        "If both ``Actual TCV`` and ``TCV (converted)`` exist on a row, the larger value is used—not added."
     )
     sections: list[tuple[str, list[tuple[Any, ...]]]] = [
         (
