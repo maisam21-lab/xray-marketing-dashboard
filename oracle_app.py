@@ -1234,7 +1234,7 @@ def main() -> None:
     }
     .stButton > button:hover { border-color: #4f8483; color: #0f766e; }
     .looker-page-h1 { font-size: 1.0rem; font-weight: 400; color: #202124; margin: 8px 0 16px 0; }
-    .looker-table-title { font-size: 0.72rem; font-weight: 600; color: #202124; margin: 20px 0 8px 0; }
+    .looker-table-title { font-size: 1.0rem; font-weight: 700; color: #202124; margin: 20px 0 8px 0; }
     .looker-kpi-big {
         background: linear-gradient(180deg, #5c9090 0%, #4f8483 100%);
         color: #fff;
