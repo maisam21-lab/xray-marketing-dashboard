@@ -646,9 +646,9 @@ def _sum_actual_tcv_closed_won_deals(df: pd.DataFrame) -> float:
 
 
 def _sum_monthly_lf_for_cw_deals(df: pd.DataFrame) -> float:
-    """Sum Monthly LF (1st Month LF / Monthly LF USD) for CW (Inc Approved) deals, once per opportunity.
+    """**LF Spend** for CpCW:LF: sum of Monthly LF USD on post-lead for CW (Inc Approved) deals, once per opportunity.
 
-    Same rows and composite keys as :func:`_sum_actual_tcv_closed_won_deals`, for the denominator of CpCW:LF.
+    Same rows and composite keys as :func:`_sum_actual_tcv_closed_won_deals`.
     """
     if df.empty or "closed_won" not in df.columns or "first_month_lf" not in df.columns:
         return 0.0
@@ -1778,7 +1778,7 @@ def _kpi_block(
     q_rate = (total_cw / total_qualified * 100) if total_qualified else 0.0
     sql_rate = (total_qualified / total_leads * 100) if total_leads else 0.0
     cpcw = (total_spend / total_cw) if total_cw else 0.0
-    # CpCW:LF = (# CW Inc Approved deals) / (sum Monthly LF USD for those same deals).
+    # CpCW:LF = Closed Won (LF) ÷ LF Spend — same CW count as the card; LF Spend = sum Monthly LF USD (post-lead).
     cpcw_lf = (total_cw / total_first_month_lf) if total_first_month_lf else 0.0
     spend_tcv_pct = (total_spend / total_tcv * 100) if total_tcv else 0.0
 
@@ -1795,9 +1795,11 @@ def _kpi_block(
         "If both ``Actual TCV`` and ``TCV (converted)`` exist on a row, the larger value is used—not added."
     )
     _cpcw_lf_help = (
-        "**CpCW:LF** (Closed Won – License Fee): **# of CW (Inc Approved) deals** divided by the **sum of Monthly LF USD** "
-        "for those **same** deals (post-lead, deduped per opportunity like the CW count). "
-        "If Monthly LF is missing on post-lead, falls back to the RAW CW tab sum."
+        "**CpCW:LF = Closed Won (LF) ÷ LF Spend.** "
+        "**Closed Won (LF)** is the same number as **CW (Inc Approved)** on this scorecard. "
+        "**LF Spend** is the **sum of Monthly LF USD** on the **post-lead** sheet for those same deals "
+        "(one row per opportunity, same scope as the Closed Won count). "
+        "If Monthly LF is missing on post-lead, the denominator falls back to the RAW CW tab sum."
     )
     sections: list[tuple[str, list[tuple[Any, ...]]]] = [
         (
