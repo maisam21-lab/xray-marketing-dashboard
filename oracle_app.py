@@ -913,22 +913,20 @@ def _master_performance_table(
     )
     g["Total Leads"] = g["leads"]
 
+    # Keep only requested KPI headers in this order.
     metrics = [
         "Spend",
         "CW (Inc Approved)",
         "CPCW",
-        "CPL",
-        "SQL %",
+        "1st Month LF",
+        "Actual TCV",
+        "CPCW:LF",
+        "Cost/TCV%",
         "Total Leads",
     ]
-    if "1st Month LF" in g.columns:
-        metrics.append("1st Month LF")
-    if "Actual TCV" in g.columns:
-        metrics.append("Actual TCV")
-    if "CPCW:LF" in g.columns:
-        metrics.append("CPCW:LF")
-    if "Cost/TCV%" in g.columns:
-        metrics.append("Cost/TCV%")
+    for m in metrics:
+        if m not in g.columns:
+            g[m] = float("nan")
 
     monthly_market = g.groupby(["month", "Market"], as_index=False)[metrics].sum().sort_values(["month", "Market"])
     monthly_market["Month"] = monthly_market["month"].apply(lambda m: pd.Period(m, freq="M").strftime("%b %Y"))
