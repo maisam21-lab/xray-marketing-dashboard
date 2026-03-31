@@ -437,16 +437,20 @@ def _dedupe_post_lead_rows(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _opp_key_columns_for_post_lead(df: pd.DataFrame) -> list[str]:
-    """Columns that identify one Salesforce opportunity (for de-duping CW)."""
+    """Columns that identify one **opportunity** (for de-duping CW).
+
+    Excludes ``record_id`` / ``case_id`` — those are often **unique per sheet row**, so groupby
+    would count every row as a distinct deal (e.g. 122 instead of 61).
+    """
     keys: list[str] = []
     for c in df.columns:
         nk = _norm_header_key(c)
+        if nk in ("record_id", "case_id"):
+            continue
         if nk in {
             "opportunity_id",
             "opportunity_id_18",
             "opportunity_name",
-            "record_id",
-            "case_id",
             "opp_id",
             "opp_name",
             "deal_id",
@@ -454,23 +458,172 @@ def _opp_key_columns_for_post_lead(df: pd.DataFrame) -> list[str]:
         }:
             keys.append(c)
             continue
-        if "opportunity" in nk and ("id" in nk or "name" in nk):
+        if nk == "opportunity" or (
+            "opportunity" in nk and ("id" in nk or "name" in nk)
+        ):
             keys.append(c)
     return list(dict.fromkeys(keys))
 
 
+def _norm_key_cell(val: Any) -> str:
+    """Normalize ID / name for stable groupby (avoids NaN-as-unique-group and 123.0 vs 123)."""
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return ""
+    s = str(val).strip().lower()
+    if s in ("nan", "none", "<na>"):
+        return ""
+    if re.fullmatch(r"-?\d+\.0", s):
+        s = s[:-2]
+    return s
+
+
+def _primary_opp_key_column(df: pd.DataFrame) -> Optional[str]:
+    """Pick **one** column for CW dedupe: real opp IDs only, fixed priority (not record/case row ids)."""
+    # Prefer Salesforce opportunity identifiers first — never use row-unique fields here.
+    for want in (
+        "opportunity_id_18",
+        "opportunity_id",
+        "opp_id",
+        "deal_id",
+    ):
+        for c in df.columns:
+            if _norm_header_key(c) != want:
+                continue
+            s = df[c].map(_norm_key_cell)
+            if float((s != "").mean()) >= 0.3:
+                return c
+    for want in ("opportunity_name", "opp_name", "deal_name"):
+        for c in df.columns:
+            if _norm_header_key(c) != want:
+                continue
+            s = df[c].map(_norm_key_cell)
+            if float((s != "").mean()) >= 0.5:
+                return c
+    # Any other opportunity*id column (still not record/case — excluded from _opp_key_columns_for_post_lead)
+    keys = _opp_key_columns_for_post_lead(df)
+    best_c: Optional[str] = None
+    best_score = 0.0
+    for c in keys:
+        nk = _norm_header_key(c)
+        if "id" in nk and "name" not in nk:
+            s = df[c].map(_norm_key_cell)
+            score = float((s != "").mean())
+            if score > best_score:
+                best_score = score
+                best_c = c
+    if best_c is not None and best_score >= 0.3:
+        return best_c
+    return None
+
+
+def _dim_cols_for_cw_dedupe(df: pd.DataFrame) -> list[str]:
+    """When opp keys are missing, collapse duplicate metric rows that share the same funnel slice."""
+    want = [
+        "opportunity_id",
+        "opportunity_id_18",
+        "opportunity_name",
+        "country",
+        "month",
+        "source_tab",
+        "channel",
+        "platform",
+        "utm_source",
+    ]
+    return [c for c in want if c in df.columns]
+
+
+def _dim_bucket_cols_for_cw_composite(df: pd.DataFrame) -> list[str]:
+    """Funnel slice for last-resort CW keys — omits ``source_tab`` so the same deal on two tab copies is one group."""
+    return [c for c in _dim_cols_for_cw_dedupe(df) if c != "source_tab"]
+
+
+def _resolved_opp_id_series(df: pd.DataFrame) -> pd.Series:
+    """Best-effort opp id per row, then fill missing ids from rows that share the same opportunity name."""
+    idx = df.index
+    k = pd.Series("", index=idx, dtype=object)
+    pk = _primary_opp_key_column(df)
+    if pk is not None:
+        k = df[pk].map(_norm_key_cell).reindex(idx).fillna("")
+    for want in ("opportunity_id_18", "opportunity_id", "opp_id", "deal_id"):
+        if want not in df.columns:
+            continue
+        alt = df[want].map(_norm_key_cell)
+        k = k.where(k != "", alt)
+    merged_name = pd.Series("", index=idx, dtype=object)
+    for want in ("opportunity_name", "opp_name", "deal_name"):
+        if want not in df.columns:
+            continue
+        alt = df[want].map(_norm_key_cell)
+        merged_name = merged_name.where(merged_name != "", alt)
+    if merged_name.eq("").all():
+        return k
+    names = merged_name
+    name_to_id: dict[str, str] = {}
+    for i in idx:
+        n = str(names.loc[i])
+        kid = str(k.loc[i])
+        if n and kid:
+            name_to_id.setdefault(n, kid)
+    for i in idx:
+        n = str(names.loc[i])
+        kid = str(k.loc[i])
+        if (not kid) and n and n in name_to_id:
+            k.loc[i] = name_to_id[n]
+    return k
+
+
+def _composite_cw_opportunity_key_series(df: pd.DataFrame) -> pd.Series:
+    """One stable key per row: resolved opp id → name → dim bucket.
+
+    Avoids double-count when the same deal appears once with an SF id and again without (61 + 61 = 122).
+    """
+    k = _resolved_opp_id_series(df)
+    for want in ("opportunity_name", "opp_name", "deal_name"):
+        if want not in df.columns:
+            continue
+        alt = df[want].map(_norm_key_cell)
+        k = k.mask((k == "") & (alt != ""), "n:" + alt.astype(str))
+    empty = k.astype(str) == ""
+    if empty.any():
+        dim_cols = [c for c in _dim_bucket_cols_for_cw_composite(df) if c in df.columns]
+        if dim_cols:
+            sub = df.loc[empty, dim_cols].astype(str).agg("|".join, axis=1)
+            k.loc[empty] = "d:" + sub
+    return k
+
+
 def _sum_closed_won_unique_opportunities(df: pd.DataFrame) -> int:
-    """Sum CW without double-counting duplicate rows for the same deal (e.g. 122 vs 61)."""
+    """Count closed-won deals without double-counting stacked tabs or duplicate rows (e.g. 122 vs 61)."""
     if df.empty or "closed_won" not in df.columns:
         return 0
-    cw = pd.to_numeric(df["closed_won"], errors="coerce").fillna(0)
-    cw_bin = (cw > 0).astype(int)
-    keys = _opp_key_columns_for_post_lead(df)
+    cw_bin = (pd.to_numeric(df["closed_won"], errors="coerce").fillna(0) > 0).astype(int)
+    k = _composite_cw_opportunity_key_series(df)
+    ks = k.astype(str).replace("nan", "")
+    tmp = pd.DataFrame({"_k": ks, "_cw": cw_bin})
+    if (tmp["_k"] == "").all():
+        dims = _dim_cols_for_cw_dedupe(df)
+        use = [c for c in dims if c in df.columns]
+        if use:
+            d = df.drop_duplicates(subset=use, keep="first")
+            return int((pd.to_numeric(d["closed_won"], errors="coerce").fillna(0) > 0).sum())
+        return int(cw_bin.sum())
+    return int(tmp.groupby("_k", dropna=False)["_cw"].max().sum())
+
+
+def _post_lead_slice_for_kpi(df: pd.DataFrame) -> pd.DataFrame:
+    """Rows used for post-lead CW KPIs: cross-tab dedupe, then exact-row dedupe (fixes 61 vs 122), then per-opp dedupe."""
+    post_df = _dedupe_post_lead_rows(_mpo_tab_subset(df, list(_POST_LEAD_SOURCE_TAB_PATTERNS)))
+    if post_df.empty:
+        return post_df
+    # Same tab concatenated twice (e.g. extras reload) → identical rows; drop before summing CW.
+    post_df = post_df.drop_duplicates(ignore_index=True)
+    keys = _opp_key_columns_for_post_lead(post_df)
     if keys:
-        tmp = df.loc[:, keys].copy()
-        tmp["_cw"] = cw_bin
-        return int(tmp.groupby(keys, dropna=False)["_cw"].max().sum())
-    return int(cw_bin.sum())
+        sub = post_df.copy()
+        for c in keys:
+            sub[c] = sub[c].map(_norm_key_cell)
+        post_df = sub.drop_duplicates(subset=keys, keep="first")
+    return post_df
 
 
 
@@ -546,6 +699,7 @@ _NORM_TO_FIELD: dict[str, str] = {
     "opportunity_id": "opportunity_id",
     "opportunity_name": "opportunity_name",
     "opportunity_id_18": "opportunity_id_18",
+    "18_character_id": "opportunity_id_18",
     "record_id": "record_id",
     "case_id": "case_id",
     "opp_id": "opp_id",
@@ -1259,7 +1413,7 @@ def compute_mpo_totals(
         ["cost", "clicks", "impressions"],
     )
     leads_df = _mpo_pick_source(df, [r"raw\s*leads?"], ["leads", "qualified"])
-    post_df = _dedupe_post_lead_rows(_mpo_tab_subset(df, list(_POST_LEAD_SOURCE_TAB_PATTERNS)))
+    post_df = _post_lead_slice_for_kpi(df)
     cw_df = _mpo_pick_source(df, [r"raw\s*cw"], ["tcv", "first_month_lf"])
 
     total_spend = float(spend_df["cost"].sum()) if "cost" in spend_df.columns else 0.0
@@ -1269,7 +1423,7 @@ def compute_mpo_totals(
     total_qualified = int(leads_df["qualified"].sum()) if "qualified" in leads_df.columns else 0
     total_cw = _sum_closed_won_unique_opportunities(post_df)
     if total_cw == 0 and "closed_won" in df.columns:
-        pl_only = _dedupe_post_lead_rows(_mpo_tab_subset(df, list(_POST_LEAD_SOURCE_TAB_PATTERNS)))
+        pl_only = _post_lead_slice_for_kpi(df)
         if not pl_only.empty:
             total_cw = _sum_closed_won_unique_opportunities(pl_only)
     total_new = int(post_df["new"].sum()) if "new" in post_df.columns else 0
@@ -1286,7 +1440,7 @@ def compute_mpo_totals(
     if total_spend == 0.0 and gid0_spend_sum > 0.0:
         total_spend = gid0_spend_sum
     if total_cw == 0 and "closed_won" in df.columns:
-        pl_only = _dedupe_post_lead_rows(_mpo_tab_subset(df, list(_POST_LEAD_SOURCE_TAB_PATTERNS)))
+        pl_only = _post_lead_slice_for_kpi(df)
         if not pl_only.empty:
             total_cw = _sum_closed_won_unique_opportunities(pl_only)
 
@@ -1303,7 +1457,7 @@ def compute_mpo_totals(
         total_clicks = int(df["clicks"].sum()) if "clicks" in df.columns else 0
         total_leads = int(df["leads"].sum()) if "leads" in df.columns else 0
         total_qualified = int(df["qualified"].sum()) if "qualified" in df.columns else 0
-        pl_only = _dedupe_post_lead_rows(_mpo_tab_subset(df, list(_POST_LEAD_SOURCE_TAB_PATTERNS)))
+        pl_only = _post_lead_slice_for_kpi(df)
         total_cw = (
             _sum_closed_won_unique_opportunities(pl_only)
             if (not pl_only.empty and "closed_won" in pl_only.columns)
@@ -1706,7 +1860,7 @@ def render_page_marketing_performance(
         spend_g = _agg_for_master(df, ["cost", "clicks", "impressions"])
     if post_g.empty or ("closed_won" in post_g.columns and float(post_g["closed_won"].sum()) == 0.0):
         post_g = _agg_for_master(
-            _dedupe_post_lead_rows(_mpo_tab_subset(df, list(_POST_LEAD_SOURCE_TAB_PATTERNS))),
+            _post_lead_slice_for_kpi(df),
             ["closed_won", "pitching", "new", "working", "total_live", "negotiation", "commitment", "closed_lost"],
         )
 
@@ -1852,6 +2006,32 @@ def render_page_channels(df_loaded: pd.DataFrame, start_date: date, end_date: da
         st.plotly_chart(fig2, use_container_width=True, key=f"{key_suffix}_pl_trend")
 
 
+def _extras_skip_tabs_already_loaded(
+    df_loaded: pd.DataFrame,
+    extras: list[pd.DataFrame],
+) -> list[pd.DataFrame]:
+    """Drop extra worksheet frames whose ``source_tab`` is already in ``df_loaded``.
+
+    ``load_all_worksheets_combined`` already reads every tab; ``load_first_matching_worksheet_normalized``
+    reloads the same titles and would **duplicate rows** (e.g. Closed Won ≈ 2×) if concatenated again.
+    """
+    if df_loaded.empty or "source_tab" not in df_loaded.columns:
+        return extras
+    existing = set(df_loaded["source_tab"].dropna().astype(str).str.strip().unique())
+    out: list[pd.DataFrame] = []
+    for extra in extras:
+        if extra.empty:
+            continue
+        if "source_tab" not in extra.columns:
+            out.append(extra)
+            continue
+        tabs = set(extra["source_tab"].dropna().astype(str).str.strip().unique())
+        if tabs & existing:
+            continue
+        out.append(extra)
+    return out
+
+
 def render_main_dashboard(
     start_date: date,
     end_date: date,
@@ -1893,6 +2073,7 @@ def render_main_dashboard(
         leads_named = load_first_matching_worksheet_normalized(sheet_id, (r"^leads?$", r"raw\s*leads?"), _fp)
         post_named = load_first_matching_worksheet_normalized(sheet_id, (r"post\s*leads?", r"raw.*post.*qual"), _fp)
         extras = [x for x in (spend_named, leads_named, post_named) if not x.empty]
+        extras = _extras_skip_tabs_already_loaded(df_loaded, extras)
         if extras:
             if df_loaded.empty:
                 df_loaded = pd.concat(extras, ignore_index=True)
