@@ -1280,14 +1280,18 @@ def main() -> None:
     }
     .refresh-note { color: #6b7280; font-size: 7px; }
     .stButton > button {
-        border: 1px solid #e5e7eb;
-        border-radius: 6px;
-        background: #fff;
-        color: #374151;
+        border: 1px solid #b7d9d5;
+        border-radius: 999px;
+        background: #eef8f7;
+        color: #19766f;
         font-size: 7px;
-        padding: 1px 8px;
+        width: 22px;
+        min-width: 22px;
         height: 22px;
+        padding: 0;
+        line-height: 1;
     }
+    .stButton > button:hover { border-color: #4f8483; color: #0f766e; }
     .looker-page-h1 { font-size: 1.0rem; font-weight: 400; color: #202124; margin: 8px 0 16px 0; }
     .looker-table-title { font-size: 0.72rem; font-weight: 600; color: #202124; margin: 20px 0 8px 0; }
     .looker-kpi-big {
@@ -1397,14 +1401,14 @@ def main() -> None:
             unsafe_allow_html=True,
         )
     with hr:
-        b1, b2, b3 = st.columns([1, 1, 1.7])
+        b1, b2, b3 = st.columns([1, 1, 1])
         with b1:
             if st.button("?", key="hdr_help_btn"):
                 st.info("Help panel coming soon.")
         with b2:
             st.button("MA", key="hdr_user_btn")
         with b3:
-            if st.button("Sign out", key="hdr_signout_btn"):
+            if st.button("↗", key="hdr_signout_btn"):
                 st.info("Signed out.")
     st.markdown("</div>", unsafe_allow_html=True)
 
