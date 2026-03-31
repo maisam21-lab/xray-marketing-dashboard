@@ -408,6 +408,8 @@ _POST_LEAD_SOURCE_TAB_PATTERNS: tuple[str, ...] = (
     # Historical KPI scope: extra patterns pulled a second tab and doubled CW (e.g. 61 -> 122).
     r"raw.*post.*qual",
     r"post\s*leads?",
+    r"post\s*lead",
+    r"post\s*qual",
 )
 
 
@@ -624,7 +626,6 @@ def _post_lead_slice_for_kpi(df: pd.DataFrame) -> pd.DataFrame:
             sub[c] = sub[c].map(_norm_key_cell)
         post_df = sub.drop_duplicates(subset=keys, keep="first")
     return post_df
-
 
 
 # Normalized header → canonical column (covers X-Ray export names + ME X-Ray Excel template)
