@@ -802,7 +802,7 @@ def _kpi_block(
     total_commitment: int,
     total_closed_lost: int,
 ) -> None:
-    """Render grouped KPI cards in 3 dynamic sections."""
+    """Old card design with new KPI titles."""
     q_rate = (total_cw / total_qualified * 100) if total_qualified else 0.0
     sql_rate = (total_qualified / total_leads * 100) if total_leads else 0.0
     cpcw = (total_spend / total_cw) if total_cw else 0.0
@@ -811,62 +811,43 @@ def _kpi_block(
     cpcw_lf = (total_spend / total_first_month_lf) if total_first_month_lf else 0.0
     spend_tcv_pct = (total_spend / total_tcv * 100) if total_tcv else 0.0
 
-    def _mini_card(col, label: str, value: str) -> None:
-        col.markdown(
-            f"""
-            <div class="mini-kpi-card">
-              <div class="mini-kpi-label">{label}</div>
-              <div class="mini-kpi-value">{value}</div>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    sections: list[tuple[str, list[tuple[str, str]]]] = [
-        (
-            "Closed Won",
-            [
-                ("CW (Inc Approved)", f"{total_cw:,}"),
-                ("Spend", _format_currency(total_spend)),
-                ("CPCW", f"${cpcw:,.2f}" if total_cw else "0"),
-                ("Actual TCV", _format_currency(total_tcv) if total_tcv else "$0.0"),
-                ("CpCW:LF", f"{cpcw_lf:.2f}" if total_first_month_lf else "0"),
-                ("Cost/TCV%", f"{spend_tcv_pct:.2f}%" if total_tcv else "0"),
-            ],
-        ),
-        (
-            "Leads",
-            [
-                ("Total Leads", f"{total_leads:,}"),
-                ("Qualified", f"{total_qualified:,}"),
-                ("New + Working", f"{total_new_working:,}"),
-                ("SQL%", f"{sql_rate:.2f}%"),
-                ("CPL", f"${cpl:,.2f}" if total_leads else "$0"),
-                ("CPSQL", f"${cpsql:,.2f}" if total_qualified else "$0"),
-            ],
-        ),
-        (
-            "Qualified Leads",
-            [
-                ("Total Live", f"{total_total_live:,}"),
-                ("Negotiation", f"{total_negotiation:,}"),
-                ("Commitment", f"{total_commitment:,}"),
-                ("Closed Lost", f"{total_closed_lost:,}"),
-                ("Q Win Rate%", f"{q_rate:.2f}%"),
-            ],
-        ),
+    r1 = st.columns(6)
+    row1 = [
+        ("CW (Inc Approved)", f"{total_cw:,}"),
+        ("Spend", _format_currency(total_spend)),
+        ("CPCW", f"${cpcw:,.2f}" if total_cw else "—"),
+        ("Actual TCV", _format_currency(total_tcv) if total_tcv else "—"),
+        ("CpCW:LF", f"{cpcw_lf:.2f}" if total_first_month_lf else "—"),
+        ("Spend / TCV %", f"{spend_tcv_pct:.2f}%" if total_tcv else "—"),
     ]
+    for i, c in enumerate(r1):
+        with c:
+            st.metric(row1[i][0], row1[i][1])
 
-    sec_cols = st.columns(len(sections))
-    for i, (section_title, cards) in enumerate(sections):
-        with sec_cols[i]:
-            st.markdown(f'<div class="kpi-section-title">{section_title}</div>', unsafe_allow_html=True)
-            for idx in range(0, len(cards), 2):
-                row_cards = cards[idx : idx + 2]
-                row_cols = st.columns(2)
-                _mini_card(row_cols[0], row_cards[0][0], row_cards[0][1])
-                if len(row_cards) > 1:
-                    _mini_card(row_cols[1], row_cards[1][0], row_cards[1][1])
+    r2 = st.columns(6)
+    row2 = [
+        ("Total Leads", f"{total_leads:,}"),
+        ("Qualified", f"{total_qualified:,}"),
+        ("New + Working", f"{total_new_working:,}"),
+        ("SQL %", f"{sql_rate:.2f}%"),
+        ("CPL", f"${cpl:,.2f}" if total_leads else "—"),
+        ("CPSQL", f"${cpsql:,.2f}" if total_qualified else "—"),
+    ]
+    for i, c in enumerate(r2):
+        with c:
+            st.metric(row2[i][0], row2[i][1])
+
+    r3 = st.columns(5)
+    row3 = [
+        ("Total Live", f"{total_total_live:,}"),
+        ("Negotiation", f"{total_negotiation:,}"),
+        ("Commitment", f"{total_commitment:,}"),
+        ("Closed Lost", f"{total_closed_lost:,}"),
+        ("Q Win Rate%", f"{q_rate:.2f}%"),
+    ]
+    for i, c in enumerate(r3):
+        with c:
+            st.metric(row3[i][0], row3[i][1])
 
 
 def _master_performance_table(
@@ -1457,25 +1438,6 @@ def main() -> None:
     [data-testid="stMetricLabel"] { color: #64748B !important; }
     .stCaption { color: #64748B !important; }
     .stAlert { border-radius: 8px; border-left: 4px solid #4f8483; }
-    .kpi-section-title {
-        font-size: 16px;
-        font-weight: 700;
-        color: #1f2937;
-        margin: 4px 0 8px 0;
-        text-align: center;
-    }
-    .mini-kpi-card {
-        background: #88c2bf;
-        border: 2px solid #2e6d69;
-        border-radius: 16px;
-        box-shadow: 0 1px 2px rgba(0,0,0,.2);
-        padding: 8px 8px 6px 8px;
-        min-height: 62px;
-        text-align: center;
-        margin: 5px 0;
-    }
-    .mini-kpi-label { font-size: 8px; color: #2c5d5b; line-height: 1.05; margin-bottom: 3px; }
-    .mini-kpi-value { font-size: 36px; color: #1e3d3b; line-height: 1.0; font-weight: 500; }
     /* Replace red-like status accents with app green palette */
     [data-testid="stAlert"] svg, [data-testid="stNotification"] svg { color: #4f8483 !important; fill: #4f8483 !important; }
     [data-baseweb="tag"][class*="danger"], [class*="danger"], [class*="error"] { color: #19766f !important; }
