@@ -607,6 +607,57 @@ def _sum_closed_won_unique_opportunities(df: pd.DataFrame) -> int:
     return int(tmp.groupby("_k", dropna=False)["_cw"].max().sum())
 
 
+def _actual_tcv_value_column(df: pd.DataFrame) -> Optional[str]:
+    """Prefer ``actual_tcv`` (Actual TCV / TCV converted); else ``tcv``."""
+    if "actual_tcv" in df.columns:
+        return "actual_tcv"
+    if "tcv" in df.columns:
+        return "tcv"
+    return None
+
+
+def _sum_actual_tcv_closed_won_deals(df: pd.DataFrame) -> float:
+    """Sum Actual TCV for rows that count as CW (Inc Approved), once per opportunity (same keys as CW)."""
+    if df.empty or "closed_won" not in df.columns:
+        return 0.0
+    vc = _actual_tcv_value_column(df)
+    if vc is None:
+        return 0.0
+    sub = df.loc[pd.to_numeric(df["closed_won"], errors="coerce").fillna(0) > 0].copy()
+    if sub.empty:
+        return 0.0
+    sub["_v"] = pd.to_numeric(sub[vc], errors="coerce").fillna(0.0)
+    k = _composite_cw_opportunity_key_series(sub)
+    ks = k.astype(str).replace("nan", "")
+    tmp = pd.DataFrame({"_k": ks, "_v": sub["_v"]})
+    if (tmp["_k"] == "").all():
+        dims = _dim_cols_for_cw_dedupe(sub)
+        use = [c for c in dims if c in sub.columns]
+        if use:
+            d = sub.drop_duplicates(subset=use, keep="first")
+            return float(pd.to_numeric(d[vc], errors="coerce").fillna(0.0).sum())
+        return float(tmp["_v"].sum())
+    return float(tmp.groupby("_k", dropna=False)["_v"].max().sum())
+
+
+def _agg_actual_tcv_closed_won_by_month_country(post_df: pd.DataFrame) -> pd.DataFrame:
+    """Actual TCV for closed-won deals only, deduped per opp, summed by month × country (for master table)."""
+    out_cols = ["month", "country", "tcv"]
+    if post_df.empty or "closed_won" not in post_df.columns:
+        return pd.DataFrame(columns=out_cols)
+    vc = _actual_tcv_value_column(post_df)
+    if vc is None or "month" not in post_df.columns or "country" not in post_df.columns:
+        return pd.DataFrame(columns=out_cols)
+    sub = post_df.loc[pd.to_numeric(post_df["closed_won"], errors="coerce").fillna(0) > 0].copy()
+    if sub.empty:
+        return pd.DataFrame(columns=out_cols)
+    sub["_v"] = pd.to_numeric(sub[vc], errors="coerce").fillna(0.0)
+    sub["_k"] = _composite_cw_opportunity_key_series(sub)
+    g = sub.groupby(["month", "country", "_k"], as_index=False)["_v"].max()
+    g = g.groupby(["month", "country"], as_index=False)["_v"].sum()
+    return g.rename(columns={"_v": "tcv"})
+
+
 def _post_lead_slice_for_kpi(df: pd.DataFrame) -> pd.DataFrame:
     """Rows used for post-lead CW KPIs: cross-tab dedupe, then exact-row dedupe (fixes 61 vs 122), then per-opp dedupe."""
     post_df = _dedupe_post_lead_rows(_mpo_tab_subset(df, list(_POST_LEAD_SOURCE_TAB_PATTERNS)))
@@ -677,7 +728,9 @@ _NORM_TO_FIELD: dict[str, str] = {
     "month": "report_month",
     "tcv": "tcv",
     "tcv_usd": "tcv",
-    "tcv_converted": "tcv",
+    # Post-lead: Salesforce TCV (converted) / "Actual TCV" column — used for Actual TCV KPI (Closed Won + Approved).
+    "tcv_converted": "actual_tcv",
+    "actual_tcv": "actual_tcv",
     "1st_month_lf": "first_month_lf",
     "monthly_lf_usd": "first_month_lf",
     "cpcw": "cpcw",
@@ -714,6 +767,7 @@ _NUM_FIELDS = frozenset(
         "pitching",
         "closed_won",
         "tcv",
+        "actual_tcv",
         "first_month_lf",
         "cpcw",
         "cpcw_lf",
@@ -1432,7 +1486,9 @@ def compute_mpo_totals(
     total_negotiation = int(post_df["negotiation"].sum()) if "negotiation" in post_df.columns else 0
     total_commitment = int(post_df["commitment"].sum()) if "commitment" in post_df.columns else 0
     total_closed_lost = int(post_df["closed_lost"].sum()) if "closed_lost" in post_df.columns else 0
-    total_tcv = float(cw_df["tcv"].sum()) if "tcv" in cw_df.columns else 0.0
+    total_tcv = _sum_actual_tcv_closed_won_deals(post_df)
+    if total_tcv == 0.0 and _actual_tcv_value_column(post_df) is None:
+        total_tcv = float(cw_df["tcv"].sum()) if "tcv" in cw_df.columns else 0.0
     total_first_month_lf = float(cw_df["first_month_lf"].sum()) if "first_month_lf" in cw_df.columns else 0.0
 
     if total_spend == 0.0 and "cost" in df.columns:
@@ -1469,7 +1525,9 @@ def compute_mpo_totals(
         total_negotiation = int(df["negotiation"].sum()) if "negotiation" in df.columns else 0
         total_commitment = int(df["commitment"].sum()) if "commitment" in df.columns else 0
         total_closed_lost = int(df["closed_lost"].sum()) if "closed_lost" in df.columns else 0
-        total_tcv = float(df["tcv"].sum()) if "tcv" in df.columns else 0.0
+        total_tcv = _sum_actual_tcv_closed_won_deals(pl_only)
+        if total_tcv == 0.0 and _actual_tcv_value_column(pl_only) is None:
+            total_tcv = float(df["tcv"].sum()) if "tcv" in df.columns else 0.0
         total_first_month_lf = float(df["first_month_lf"].sum()) if "first_month_lf" in df.columns else 0.0
 
     ctr = (total_clicks / total_impr * 100) if total_impr else 0
@@ -1658,6 +1716,11 @@ def _kpi_block(
         "Cost per Closed Won (CPCW): total marketing spend divided by the number of "
         "Closed Won (Inc Approved) deals. Lower is better."
     )
+    _actual_tcv_help = (
+        "Sum of **Actual TCV** (Salesforce TCV converted) on the post-lead tab for opportunities "
+        "in the same Closed Won / Approved stage filter as CW (Inc Approved). "
+        "If that column is missing, falls back to TCV from the RAW CW tab."
+    )
     sections: list[tuple[str, list[tuple[Any, ...]]]] = [
         (
             "Closed Won",
@@ -1665,7 +1728,7 @@ def _kpi_block(
                 ("CW (Inc Approved)", f"{total_cw:,}", _cw_help),
                 ("Spend", _format_spend_k(total_spend)),
                 ("CPCW", f"${cpcw:,.2f}" if total_cw else "—", _cpcw_help),
-                ("Actual TCV", _format_currency(total_tcv) if total_tcv else "—"),
+                ("Actual TCV", _format_currency(total_tcv) if total_tcv else "—", _actual_tcv_help),
                 ("CpCW:LF", f"{cpcw_lf:.2f}" if total_first_month_lf else "—"),
                 ("Spend / TCV %", f"{spend_tcv_pct:.2f}%" if total_tcv else "—"),
             ],
@@ -1835,8 +1898,8 @@ def render_page_marketing_performance(
     # Business mapping by tab:
     # - Spend / traffic: Raw Spend
     # - Leads / Qualified: Raw Leads
-    # - CW (inc approved) + pipeline stages: Raw Post Qualification
-    # - TCV / 1st Month LF: RAW CW
+    # - CW (inc approved) + pipeline + Actual TCV (converted): Raw Post Qualification
+    # - 1st Month LF: RAW CW (TCV total for scorecard comes from post-lead Actual TCV on closed-won rows)
     gid0_spend_sum = float(st.session_state.get("_gid0_spend_sum", 0.0) or 0.0)
     kpi_kwargs, spend_df, leads_df, post_df, cw_df = compute_mpo_totals(df, gid0_spend_sum=gid0_spend_sum)
 
@@ -1857,7 +1920,21 @@ def render_page_marketing_performance(
     spend_g = _agg_for_master(spend_df, ["cost", "clicks", "impressions"])
     leads_g = _agg_for_master(leads_df, ["leads", "qualified"])
     post_g = _agg_for_master(post_df, ["closed_won", "pitching", "new", "working", "total_live", "negotiation", "commitment", "closed_lost"])
-    cw_g = _agg_for_master(cw_df, ["tcv", "first_month_lf"])
+    atcv_g = _agg_actual_tcv_closed_won_by_month_country(post_df)
+    lf_g = _agg_for_master(cw_df, ["first_month_lf"])
+    if _actual_tcv_value_column(post_df) is not None:
+        if lf_g.empty:
+            cw_g = atcv_g.copy()
+        else:
+            cw_g = atcv_g.merge(lf_g, on=["month", "country"], how="outer")
+        if "tcv" not in cw_g.columns:
+            cw_g["tcv"] = 0.0
+        cw_g["tcv"] = pd.to_numeric(cw_g["tcv"], errors="coerce").fillna(0.0)
+        if "first_month_lf" not in cw_g.columns:
+            cw_g["first_month_lf"] = 0.0
+        cw_g["first_month_lf"] = pd.to_numeric(cw_g["first_month_lf"], errors="coerce").fillna(0.0)
+    else:
+        cw_g = _agg_for_master(cw_df, ["tcv", "first_month_lf"])
 
     # Master-view fallbacks for spend and CW.
     if spend_g.empty or ("cost" in spend_g.columns and float(spend_g["cost"].sum()) == 0.0):
