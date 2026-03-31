@@ -643,11 +643,19 @@ def load_all_worksheets_combined(sheet_id: str, _secret_fp: str) -> pd.DataFrame
                     secret_creds,
                     worksheet_gid=int(ws_gid),
                 )
-            raw = _preprocess_excel_sheet(raw, title)
-            df = _normalize(raw)
         except Exception:
-            tab_stats.append((title, -1))
-            continue
+            # If strict read fails, retry with loose grid reader before skipping the tab.
+            try:
+                raw = _read_sheet_auth_loose(
+                    sheet_id,
+                    secret_creds,
+                    worksheet_gid=int(ws_gid),
+                )
+            except Exception:
+                tab_stats.append((title, -1))
+                continue
+        raw = _preprocess_excel_sheet(raw, title)
+        df = _normalize(raw)
         if df.empty:
             tab_stats.append((title, 0))
             continue
