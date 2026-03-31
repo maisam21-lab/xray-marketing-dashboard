@@ -359,27 +359,25 @@ def _closed_won_kpi_mask(
     raw_stage: pd.Series,
     approval_optional: Optional[pd.Series] = None,
 ) -> pd.Series:
-    """KPI Closed Won (Inc Approved): **Closed Won** in Stage **and** an **approved** signal.
+    """KPI matches Excel **Stage** filter: **Closed Won** OR **Approved** (separate picklist values).
 
-    - Stage must include ``closed won``, not ``closed lost``; exclude ``not approved`` / ``unapproved`` in Stage.
-    - **Approved** if the word *approved* appears in Stage (e.g. ``Closed Won - Approved``), **or** an optional
-      **approval** column explicitly accepts the row (Approved / Yes / …).
-    - Plain ``Closed Won`` alone (no *approved* in Stage and no approving approval column) does **not** count.
+    Same idea as selecting both *Approved* and *Closed Won* in a stage slicer—not requiring both words in one cell.
+    Excludes **Closed Lost** and stage text that reads as not approved. Optional **approval** column can still
+    veto rows that explicitly reject.
     """
-    s = raw_stage.astype(str).str.lower()
-    cw = s.str.contains("closed won", na=False) & ~s.str.contains("closed lost", na=False)
-    not_unappr = ~s.str.contains("not approved", na=False) & ~s.str.contains("unapproved", na=False)
-    appr_in_stage = s.str.contains(r"\bapproved\b", na=False)
+    s = raw_stage.astype(str).str.lower().str.strip()
+    not_rejected = ~s.str.contains("not approved", na=False) & ~s.str.contains("unapproved", na=False)
+    is_closed_won = s.str.contains("closed won", na=False) & ~s.str.contains("closed lost", na=False)
+    is_approved_stage = s.eq("approved")
+    base = not_rejected & (is_closed_won | is_approved_stage)
     if approval_optional is None:
-        return cw & not_unappr & appr_in_stage
+        return base
     ao = approval_optional.astype(str).str.lower()
     col_accept = (
         ao.str.contains("approved", na=False) & ~ao.str.contains("not approved", na=False)
     ) | ao.str.strip().isin(["yes", "y", "true", "1"])
     col_reject = ao.str.contains("not approved", na=False) | ao.str.contains("rejected", na=False)
-    appr_ok = appr_in_stage | col_accept
-    appr_ok = appr_ok & (~col_reject | appr_in_stage)
-    return cw & not_unappr & appr_ok
+    return base & (~col_reject | col_accept)
 
 
 def _is_closed_won_stage_text(val: Any) -> bool:
