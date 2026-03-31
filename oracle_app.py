@@ -1023,7 +1023,8 @@ def render_page_marketing_performance(
     # - Leads / Qualified: Raw Leads
     # - CW (inc approved) + pipeline stages: Raw Post Qualification
     # - TCV / 1st Month LF: RAW CW
-    spend_df = _pick_source(df, [r"raw\s*spend"], ["cost", "clicks", "impressions"])
+    # Spend should come from the Spend sheet (market x month), including name variants.
+    spend_df = _pick_source(df, [r"raw\s*spend", r"^\s*spend\s*$", r"sum\s*spend", r"\bspend\b"], ["cost", "clicks", "impressions"])
     leads_df = _pick_source(df, [r"raw\s*leads?"], ["leads", "qualified"])
     post_df = _pick_source(
         df,
