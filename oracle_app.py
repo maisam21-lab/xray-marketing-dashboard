@@ -985,25 +985,36 @@ def render_page_marketing_performance(
             mask = mask | s.str.contains(k.lower(), na=False, regex=True)
         return frame[mask].copy()
 
+    def _pick_source(frame: pd.DataFrame, patterns: list[str], metric_cols: list[str]) -> pd.DataFrame:
+        """Prefer mapped tabs, but fall back to full frame if mapped slice is empty/zero."""
+        subset = _tab_subset(frame, patterns)
+        if subset.empty:
+            return frame
+        present_cols = [c for c in metric_cols if c in subset.columns]
+        if not present_cols:
+            return frame
+        subset_total = 0.0
+        frame_total = 0.0
+        for c in present_cols:
+            subset_total += float(pd.to_numeric(subset[c], errors="coerce").fillna(0).sum())
+            frame_total += float(pd.to_numeric(frame.get(c, 0), errors="coerce").fillna(0).sum())
+        if subset_total == 0.0 and frame_total > 0.0:
+            return frame
+        return subset
+
     # Business mapping by tab:
     # - Spend / traffic: Raw Spend
     # - Leads / Qualified: Raw Leads
     # - CW (inc approved) + pipeline stages: Raw Post Qualification
     # - TCV / 1st Month LF: RAW CW
-    spend_df = _tab_subset(df, [r"raw\s*spend"])
-    leads_df = _tab_subset(df, [r"raw\s*leads?"])
-    post_df = _tab_subset(df, [r"raw.*post.*qual"])
-    cw_df = _tab_subset(df, [r"raw\s*cw"])
-
-    # Fallbacks in case any expected tab is missing.
-    if spend_df.empty:
-        spend_df = df
-    if leads_df.empty:
-        leads_df = df
-    if post_df.empty:
-        post_df = df
-    if cw_df.empty:
-        cw_df = df
+    spend_df = _pick_source(df, [r"raw\s*spend"], ["cost", "clicks", "impressions"])
+    leads_df = _pick_source(df, [r"raw\s*leads?"], ["leads", "qualified"])
+    post_df = _pick_source(
+        df,
+        [r"raw.*post.*qual"],
+        ["closed_won", "pitching", "new", "working", "total_live", "negotiation", "commitment", "closed_lost"],
+    )
+    cw_df = _pick_source(df, [r"raw\s*cw"], ["tcv", "first_month_lf"])
 
 
     total_spend = float(spend_df["cost"].sum()) if "cost" in spend_df.columns else 0.0
