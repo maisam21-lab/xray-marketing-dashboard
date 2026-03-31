@@ -1264,7 +1264,7 @@ def main() -> None:
     }
     .looker-header-title { font-size: 0.58rem; font-weight: 700; color: #111827; margin: 0; line-height: 1.05; }
     .looker-header-logo {
-        width: auto; height: 24px; object-fit: contain;
+        width: auto; height: 30px; object-fit: contain;
         margin-right: 6px; vertical-align: middle; border: none;
         background: transparent; border-radius: 0;
     }
