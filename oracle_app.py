@@ -384,7 +384,7 @@ def _preprocess_excel_sheet(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
     if "Market" in df.columns:
         m = df["Market"].astype(str)
         df = df[~m.str.contains("TOTAL", case=False, na=False)]
-    if t == "raw leads":
+    if ("raw" in t and "lead" in t and "post" not in t):
         # Convert lead rows into additive metrics so they can be combined with spend.
         if "Leads" not in df.columns:
             df["Leads"] = 1
@@ -393,7 +393,7 @@ def _preprocess_excel_sheet(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
             df["Qualified"] = status.str.contains("qualified", na=False).astype(int)
         if "Date Formatted" in df.columns and "Date" not in df.columns:
             df["Date"] = pd.to_datetime(df["Date Formatted"], errors="coerce")
-    if t == "raw post qualification":
+    if ("raw" in t and "post" in t and "qual" in t):
         # Stage rows become pipeline counters (post-lead funnel).
         stage = df.get("Stage", pd.Series(index=df.index, dtype=str)).astype(str).str.lower().str.strip()
         if "Qualified" not in df.columns:
@@ -416,7 +416,7 @@ def _preprocess_excel_sheet(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
                 df["Date"] = pd.to_datetime(df["Formatted Date"], errors="coerce")
             elif "Created Date" in df.columns:
                 df["Date"] = pd.to_datetime(df["Created Date"], errors="coerce")
-    if t == "raw cw":
+    if ("raw" in t and "cw" in t):
         # RAW CW can contain repeated rows for the same opportunity; dedupe before aggregation.
         dedupe_cols = [c for c in ("Opportunity Name", "Close Date", "Kitchen Country", "Stage") if c in df.columns]
         if dedupe_cols:
@@ -976,21 +976,24 @@ def render_page_marketing_performance(
 
     st.caption("Filters apply to scorecards, master table, and charts below.")
 
-    def _tab_subset(frame: pd.DataFrame, tab_keyword: str) -> pd.DataFrame:
+    def _tab_subset(frame: pd.DataFrame, tab_keywords: list[str]) -> pd.DataFrame:
         if "source_tab" not in frame.columns:
             return frame
         s = frame["source_tab"].astype(str).str.lower()
-        return frame[s.str.contains(tab_keyword.lower(), na=False)].copy()
+        mask = pd.Series(False, index=frame.index)
+        for k in tab_keywords:
+            mask = mask | s.str.contains(k.lower(), na=False, regex=True)
+        return frame[mask].copy()
 
     # Business mapping by tab:
     # - Spend / traffic: Raw Spend
     # - Leads / Qualified: Raw Leads
     # - CW (inc approved) + pipeline stages: Raw Post Qualification
     # - TCV / 1st Month LF: RAW CW
-    spend_df = _tab_subset(df, "raw spend")
-    leads_df = _tab_subset(df, "raw leads")
-    post_df = _tab_subset(df, "raw post qualification")
-    cw_df = _tab_subset(df, "raw cw")
+    spend_df = _tab_subset(df, [r"raw\s*spend"])
+    leads_df = _tab_subset(df, [r"raw\s*leads?"])
+    post_df = _tab_subset(df, [r"raw.*post.*qual"])
+    cw_df = _tab_subset(df, [r"raw\s*cw"])
 
     # Fallbacks in case any expected tab is missing.
     if spend_df.empty:
