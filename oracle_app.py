@@ -1265,9 +1265,9 @@ def main() -> None:
     }
     .looker-header-title { font-size: 0.74rem; font-weight: 700; color: #111827; margin: 0; }
     .looker-header-logo {
-        width: 38px; height: 38px; border-radius: 6px; object-fit: cover;
-        margin-right: 10px; vertical-align: middle; border: 1px solid #d3e3e3;
-        background: #ffffff;
+        width: auto; height: 34px; object-fit: contain;
+        margin-right: 10px; vertical-align: middle; border: none;
+        background: transparent; border-radius: 0;
     }
     .looker-header-actions { font-size: 8px; color: #6b7280; display:flex; align-items:center; gap:8px; }
     .live-pill {
