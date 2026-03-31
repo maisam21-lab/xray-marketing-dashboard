@@ -1748,8 +1748,7 @@ def _kpi_block(
     q_rate = (total_cw / total_qualified * 100) if total_qualified else 0.0
     sql_rate = (total_qualified / total_leads * 100) if total_leads else 0.0
     cpcw = (total_spend / total_cw) if total_cw else 0.0
-    # Training deck formulas:
-    # CpCW:LF = CpCW / 1st Month LF(avg) == Marketing Spend / total 1st Month LF
+    # Training deck: Cost per Closed Won – License Fee = Spend / total 1st Month LF (RAW CW tab).
     cpcw_lf = (total_spend / total_first_month_lf) if total_first_month_lf else 0.0
     spend_tcv_pct = (total_spend / total_tcv * 100) if total_tcv else 0.0
 
@@ -1765,6 +1764,10 @@ def _kpi_block(
         "with the Closed Won / Approved stage flag. Once per opportunity (same dedupe as the CW count). "
         "If both ``Actual TCV`` and ``TCV (converted)`` exist on a row, the larger value is used—not added."
     )
+    _cpcw_lf_help = (
+        "**Cost per Closed Won – License Fee** (CpCW:LF): total marketing **Spend** divided by **1st Month LF** "
+        "(sum of first-month license fee from the RAW CW tab). Lower is better."
+    )
     sections: list[tuple[str, list[tuple[Any, ...]]]] = [
         (
             "Closed Won",
@@ -1773,7 +1776,7 @@ def _kpi_block(
                 ("Spend", _format_spend_k(total_spend)),
                 ("CPCW", f"${cpcw:,.2f}" if total_cw else "—", _cpcw_help),
                 ("Actual TCV", _format_currency(total_tcv) if total_tcv else "—", _actual_tcv_help),
-                ("CpCW:LF", f"{cpcw_lf:.2f}" if total_first_month_lf else "—"),
+                ("CpCW:LF", f"{cpcw_lf:.2f}" if total_first_month_lf else "—", _cpcw_lf_help),
                 ("Spend / TCV %", f"{spend_tcv_pct:.2f}%" if total_tcv else "—"),
             ],
         ),
