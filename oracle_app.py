@@ -27,7 +27,7 @@ DEFAULT_SOURCE_TRUTH_GID = 8109573
 DEFAULT_LOCAL_EXCEL_PATH = (os.environ.get("XRAY_EXCEL_PATH_DEFAULT") or "").strip()
 DEFAULT_LOGO_PATH = (
     os.environ.get("XRAY_LOGO_PATH_DEFAULT")
-    or r"C:\Users\MaysamAbuKashabeh\.cursor\projects\C-Users-MAYSAM-1-AppData-Local-Temp-cc91c28c-086e-4f5e-b9d9-114908bf7621\assets\c__Users_MaysamAbuKashabeh_AppData_Roaming_Cursor_User_workspaceStorage_1769338407773_images_image-286410db-a6e4-4e0e-a755-ab26b44d9bc8.png"
+    or str((Path(__file__).resolve().parent / "assets" / "logo.png"))
     or ""
 ).strip()
 
