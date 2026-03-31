@@ -226,6 +226,7 @@ _NORM_TO_FIELD: dict[str, str] = {
     "channel": "channel",
     "media_type": "channel",
     "lead_source": "channel",
+    "platform": "platform",
     "cost": "cost",
     "ad_spend": "cost",
     "spend": "cost",
@@ -278,6 +279,23 @@ _NUM_FIELDS = frozenset(
         "q_win_rate",
     }
 )
+
+
+def _to_number_series(s: pd.Series) -> pd.Series:
+    """Robust numeric parser for Sheets/CSV text like '$1,234.50', '3.4%', '(120)'."""
+    if pd.api.types.is_numeric_dtype(s):
+        return pd.to_numeric(s, errors="coerce").fillna(0)
+    txt = s.astype(str).str.strip()
+    neg_paren = txt.str.match(r"^\(.*\)$", na=False)
+    cleaned = (
+        txt.str.replace(r"[\$,]", "", regex=True)
+        .str.replace("%", "", regex=False)
+        .str.replace(r"^\((.*)\)$", r"\1", regex=True)
+        .str.replace(r"[^0-9.\-]", "", regex=True)
+    )
+    out = pd.to_numeric(cleaned, errors="coerce").fillna(0)
+    out.loc[neg_paren] = -out.loc[neg_paren]
+    return out
 
 
 def _parse_report_month_series(s: pd.Series) -> pd.Series:
@@ -388,9 +406,9 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
         if len(srcs) == 1:
             out[field] = df[srcs[0]]
         elif field in _NUM_FIELDS:
-            acc = pd.to_numeric(df[srcs[0]], errors="coerce").fillna(0)
+            acc = _to_number_series(df[srcs[0]])
             for c in srcs[1:]:
-                acc = acc + pd.to_numeric(df[c], errors="coerce").fillna(0)
+                acc = acc + _to_number_series(df[c])
             out[field] = acc
         else:
             out[field] = df[srcs[0]]
@@ -407,7 +425,7 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
 
     for c in _NUM_FIELDS:
         if c in out.columns:
-            out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0)
+            out[c] = _to_number_series(out[c])
         else:
             out[c] = 0
 
@@ -1214,8 +1232,9 @@ def main() -> None:
     header[data-testid="stHeader"] { background: #FFFFFF !important; border-bottom: 1px solid #E2E8F0; }
     header[data-testid="stHeader"] * { color: #1E293B !important; }
     .looker-header {
-        background: #FFFFFF;
-        border-bottom: 1px solid #E0E0E0;
+        background: #0F766E;
+        border: 1px solid #0b5d57;
+        border-radius: 0 10px 10px 0;
         padding: 12px 20px 14px 20px;
         margin: -1rem -1rem 12px -1rem;
         display: flex;
@@ -1223,14 +1242,15 @@ def main() -> None:
         justify-content: space-between;
         flex-wrap: wrap;
         gap: 8px;
+        color: #ecfeff;
     }
-    .looker-header-title { font-size: 1.05rem; font-weight: 600; color: #202124; margin: 0; }
+    .looker-header-title { font-size: 1.05rem; font-weight: 700; color: #ecfeff; margin: 0; }
     .looker-header-badge {
         width: 28px; height: 28px; border-radius: 50%;
         background: #1A73E8; color: #fff; display: inline-flex; align-items: center; justify-content: center;
         font-size: 14px; font-weight: 700; margin-right: 10px; vertical-align: middle;
     }
-    .looker-header-actions { font-size: 12px; color: #5F6368; }
+    .looker-header-actions { font-size: 12px; color: #ccfbf1; }
     .looker-page-h1 { font-size: 1.5rem; font-weight: 400; color: #202124; margin: 8px 0 16px 0; }
     .looker-table-title { font-size: 1rem; font-weight: 600; color: #202124; margin: 20px 0 8px 0; }
     .looker-kpi-big {
@@ -1290,6 +1310,13 @@ def main() -> None:
     }
     .stTabs [data-baseweb="tab"] { padding: 10px 18px; border-radius: 8px; font-weight: 500; color: #475569; flex-shrink: 0; }
     .stTabs [aria-selected="true"] { background: #0F766E !important; color: white !important; }
+    [data-testid="stMetric"] {
+        background: #f8fafc;
+        border: 1px solid #dbe6ea;
+        border-left: 4px solid #0F766E;
+        border-radius: 8px;
+        padding: 8px 10px;
+    }
     .stTabs [aria-selected="true"] span { color: white !important; }
     .streamlit-expanderHeader { background: #F8FAFC; border-radius: 8px; border-left: 4px solid #0F766E; }
     .stTextInput input, .stSelectbox > div, .stDateInput input {
