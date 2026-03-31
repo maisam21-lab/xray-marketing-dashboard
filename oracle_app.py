@@ -312,6 +312,45 @@ def _norm_header_key(name: str) -> str:
     return s
 
 
+def _resolve_post_lead_stage_column(df: pd.DataFrame) -> Optional[str]:
+    """Prefer Post Lead Stage / opportunity stage over the first generic *stage* column."""
+    if df.empty or not len(df.columns):
+        return None
+    for c in df.columns:
+        if _norm_header_key(c) == "post_lead_stage":
+            return c
+    best: list[tuple[int, str]] = []
+    for c in df.columns:
+        nk = _norm_header_key(c)
+        if "post_lead" in nk and "stage" in nk:
+            best.append((0, c))
+        elif nk in ("stagename", "stage_name", "opportunity_stage"):
+            best.append((1, c))
+    if best:
+        best.sort(key=lambda x: (x[0], x[1]))
+        return best[0][1]
+    for c in df.columns:
+        if _norm_header_key(c) == "stage":
+            return c
+    return next((c for c in df.columns if "stage" in _norm_header_key(c)), None)
+
+
+def _is_closed_won_stage_text(val: Any) -> bool:
+    """Count rows in Closed Won, including formally approved; exclude Not Approved / Closed Lost."""
+    t = str(val).lower().strip()
+    if not t or t in ("nan", "none"):
+        return False
+    if "closed lost" in t:
+        return False
+    if "closed won" in t:
+        return True
+    if "not approved" in t or "unapproved" in t:
+        return False
+    if re.search(r"\bapproved\b", t):
+        return True
+    return False
+
+
 # Normalized header → canonical column (covers X-Ray export names + ME X-Ray Excel template)
 _NORM_TO_FIELD: dict[str, str] = {
     "date": "date",
@@ -470,16 +509,16 @@ def _preprocess_excel_sheet(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
         if "Date Formatted" in df.columns and "Date" not in df.columns:
             df["Date"] = pd.to_datetime(df["Date Formatted"], errors="coerce")
     if ("raw" in t and "post" in t and "qual" in t):
-        # Stage rows become pipeline counters (post-lead funnel).
-        stage_col = next((c for c in df.columns if "stage" in _norm_header_key(c)), None)
-        stage = df.get(stage_col or "Stage", pd.Series(index=df.index, dtype=str)).astype(str).str.lower().str.strip()
+        # Stage rows become pipeline counters (post-lead funnel). Prefer Post Lead Stage column.
+        stage_col = _resolve_post_lead_stage_column(df)
+        raw_stage = df.get(stage_col or "Stage", pd.Series(index=df.index, dtype=str))
+        stage = raw_stage.astype(str).str.lower().str.strip()
         if "Qualified" not in df.columns:
             df["Qualified"] = 1
         if "Pitching" not in df.columns:
             df["Pitching"] = stage.str.contains("pitch", na=False).astype(int)
         if "Closed Won" not in df.columns:
-            # Per business rule: Closed Won count should include both "closed won" and "approved" stages.
-            df["Closed Won"] = stage.str.contains(r"closed won|approved", na=False, regex=True).astype(int)
+            df["Closed Won"] = raw_stage.map(_is_closed_won_stage_text).astype(int)
         if "Negotiation" not in df.columns:
             df["Negotiation"] = stage.str.contains("negotiation", na=False).astype(int)
         if "Commitment" not in df.columns:
@@ -524,10 +563,11 @@ def _preprocess_excel_sheet(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
 
     # Global fallback: if any sheet has a Stage-like column, derive Closed Won (inc approved).
     # This prevents CW from dropping to zero when tab naming differs in source files.
-    stage_col_any = next((c for c in df.columns if "stage" in _norm_header_key(c)), None)
+    stage_col_any = _resolve_post_lead_stage_column(df)
+    if stage_col_any is None:
+        stage_col_any = next((c for c in df.columns if "stage" in _norm_header_key(c)), None)
     if stage_col_any and "Closed Won" not in df.columns:
-        stage_any = df[stage_col_any].astype(str).str.lower().str.strip()
-        df["Closed Won"] = stage_any.str.contains(r"closed won|approved", na=False, regex=True).astype(int)
+        df["Closed Won"] = df[stage_col_any].map(_is_closed_won_stage_text).astype(int)
     return df
 
 
@@ -1145,11 +1185,14 @@ def _kpi_block(
     cpcw_lf = (total_spend / total_first_month_lf) if total_first_month_lf else 0.0
     spend_tcv_pct = (total_spend / total_tcv * 100) if total_tcv else 0.0
 
-    sections: list[tuple[str, list[tuple[str, str]]]] = [
+    _cw_help = (
+        "Deals that are in a Closed Won status, including any deals that have been formally approved."
+    )
+    sections: list[tuple[str, list[tuple[Any, ...]]]] = [
         (
             "Closed Won",
             [
-                ("CW (Inc Approved)", f"{total_cw:,}"),
+                ("CW (Inc Approved)", f"{total_cw:,}", _cw_help),
                 ("Spend", _format_spend_k(total_spend)),
                 ("CPCW", f"${cpcw:,.2f}" if total_cw else "—"),
                 ("Actual TCV", _format_currency(total_tcv) if total_tcv else "—"),
@@ -1188,12 +1231,16 @@ def _kpi_block(
                 row_cols = st.columns(2)
                 with row_cols[0]:
                     label_left = cards[idx][0]
-                    help_left = "Sum of media spend" if label_left == "Spend" else None
+                    help_left = cards[idx][2] if len(cards[idx]) > 2 else None
+                    if help_left is None and label_left == "Spend":
+                        help_left = "Sum of media spend"
                     st.metric(label_left, cards[idx][1], help=help_left)
                 if idx + 1 < len(cards):
                     with row_cols[1]:
                         label_right = cards[idx + 1][0]
-                        help_right = "Sum of media spend" if label_right == "Spend" else None
+                        help_right = cards[idx + 1][2] if len(cards[idx + 1]) > 2 else None
+                        if help_right is None and label_right == "Spend":
+                            help_right = "Sum of media spend"
                         st.metric(label_right, cards[idx + 1][1], help=help_right)
 
 
