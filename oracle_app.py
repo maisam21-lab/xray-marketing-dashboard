@@ -1668,6 +1668,19 @@ def _format_currency(v: float) -> str:
     return f"${v:,.2f}"
 
 
+def _format_cpcw_lf_ratio(v: float) -> str:
+    """Dimensionless ratio (Closed Won ÷ LF Spend); no $ — show enough decimals so small values are visible."""
+    if not isinstance(v, (int, float)) or v != v:  # NaN
+        return "—"
+    if v <= 0:
+        return "—"
+    if v >= 0.01:
+        return f"{v:.2f}"
+    if v >= 1e-6:
+        return f"{v:.4f}"
+    return f"{v:.6g}"
+
+
 def _format_spend_k(v: float) -> str:
     """Spend in thousands with K (and M for very large totals)."""
     if v == 0:
@@ -1799,8 +1812,8 @@ def _kpi_block(
     q_rate = (total_cw / total_qualified * 100) if total_qualified else 0.0
     sql_rate = (total_qualified / total_leads * 100) if total_leads else 0.0
     cpcw = (total_spend / total_cw) if total_cw else 0.0
-    # CpCW:LF = LF Spend ÷ Closed Won (LF) — cost per CW deal in Monthly LF USD (average LF per deal).
-    cpcw_lf = (total_first_month_lf / total_cw) if total_cw else 0.0
+    # CpCW:LF = ratio Closed Won (LF) ÷ LF Spend (deal count / sum Monthly LF USD).
+    cpcw_lf = (total_cw / total_first_month_lf) if total_first_month_lf else 0.0
     spend_tcv_pct = (total_spend / total_tcv * 100) if total_tcv else 0.0
 
     _cw_help = (
@@ -1816,9 +1829,8 @@ def _kpi_block(
         "If both ``Actual TCV`` and ``TCV (converted)`` exist on a row, the larger value is used—not added."
     )
     _cpcw_lf_help = (
-        "**CpCW:LF = LF Spend ÷ Closed Won (LF)** — **cost per** closed-won deal in Monthly LF terms. "
-        "**LF Spend** is the **sum of Monthly LF USD** on the post-lead sheet for the same CW (Inc Approved) deals. "
-        "**Closed Won (LF)** is the same count as **CW (Inc Approved)**. "
+        "**CpCW:LF** is a **ratio**: **Closed Won (LF) ÷ LF Spend** — same as **CW (Inc Approved)** divided by the "
+        "**sum of Monthly LF USD** on the post-lead sheet for those deals. "
         "If Monthly LF is missing on post-lead, LF Spend falls back to the RAW CW tab sum."
     )
     sections: list[tuple[str, list[tuple[Any, ...]]]] = [
@@ -1831,7 +1843,7 @@ def _kpi_block(
                 ("Actual TCV", _format_currency(total_tcv) if total_tcv else "—", _actual_tcv_help),
                 (
                     "CpCW:LF",
-                    _format_currency(cpcw_lf) if total_cw else "—",
+                    _format_cpcw_lf_ratio(cpcw_lf) if total_first_month_lf else "—",
                     _cpcw_lf_help,
                 ),
                 ("Spend / TCV %", f"{spend_tcv_pct:.2f}%" if total_tcv else "—"),
@@ -1916,7 +1928,7 @@ def _master_performance_table(
     if "lf" in g.columns:
         g["1st Month LF"] = g["lf"]
         g["CPCW:LF"] = g.apply(
-            lambda r: (r["lf"] / r["cw"]) if r["cw"] and r["cw"] > 0 else float("nan"),
+            lambda r: (r["cw"] / r["lf"]) if r["lf"] and r["lf"] > 0 else float("nan"),
             axis=1,
         )
     if "tcv" in g.columns:
@@ -1959,7 +1971,9 @@ def _master_performance_table(
     def _fmt_for_metric(metric_name: str) -> Any:
         if metric_name == "Spend":
             return lambda x: _format_spend_k(float(x)) if pd.notna(x) else "—"
-        if metric_name in {"CPCW", "CPCW:LF", "CPL", "Actual TCV", "1st Month LF"}:
+        if metric_name == "CPCW:LF":
+            return lambda x: _format_cpcw_lf_ratio(float(x)) if pd.notna(x) else "—"
+        if metric_name in {"CPCW", "CPL", "Actual TCV", "1st Month LF"}:
             return lambda x: f"${x:,.2f}" if pd.notna(x) else "—"
         if metric_name in {"SQL %", "Cost/TCV%"}:
             return lambda x: f"{x:.2f}%" if pd.notna(x) else "—"
@@ -1977,7 +1991,8 @@ def _master_performance_table(
     styler = pvt.style.format(fmt_map)
     for c in [x for x in pvt.columns if x not in {"Month", "Market"}]:
         metric_name = c
-        good_low = metric_name in {"CPCW", "CPCW:LF", "Cost/TCV%", "CPL"}
+        # CPCW:LF is CW÷LF (ratio); higher is better. CPCW/Cost%/CPL are cost metrics; lower is better.
+        good_low = metric_name in {"CPCW", "Cost/TCV%", "CPL"}
         styler = styler.apply(lambda s, col=c, gl=good_low: _heatmap_bg(pvt[col], good_low=gl), subset=[c])
     st.dataframe(styler, use_container_width=True, hide_index=True, key=f"{key_suffix}_df_master_pivot")
 
