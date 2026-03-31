@@ -976,22 +976,48 @@ def render_page_marketing_performance(
 
     st.caption("Filters apply to scorecards, master table, and charts below.")
 
+    def _tab_subset(frame: pd.DataFrame, tab_keyword: str) -> pd.DataFrame:
+        if "source_tab" not in frame.columns:
+            return frame
+        s = frame["source_tab"].astype(str).str.lower()
+        return frame[s.str.contains(tab_keyword.lower(), na=False)].copy()
 
-    total_spend = float(df["cost"].sum())
-    total_impr = int(df["impressions"].sum())
-    total_clicks = int(df["clicks"].sum())
-    total_leads = int(df["leads"].sum())
-    total_qualified = int(df["qualified"].sum())
-    total_pitching = int(df["pitching"].sum())
-    total_cw = int(df["closed_won"].sum())
-    total_new = int(df["new"].sum()) if "new" in df.columns else 0
-    total_working = int(df["working"].sum()) if "working" in df.columns else 0
-    total_total_live = int(df["total_live"].sum()) if "total_live" in df.columns else 0
-    total_negotiation = int(df["negotiation"].sum()) if "negotiation" in df.columns else 0
-    total_commitment = int(df["commitment"].sum()) if "commitment" in df.columns else 0
-    total_closed_lost = int(df["closed_lost"].sum()) if "closed_lost" in df.columns else 0
-    total_tcv = float(df["tcv"].sum()) if "tcv" in df.columns else 0.0
-    total_first_month_lf = float(df["first_month_lf"].sum()) if "first_month_lf" in df.columns else 0.0
+    # Business mapping by tab:
+    # - Spend / traffic: Raw Spend
+    # - Leads / Qualified: Raw Leads
+    # - CW (inc approved) + pipeline stages: Raw Post Qualification
+    # - TCV / 1st Month LF: RAW CW
+    spend_df = _tab_subset(df, "raw spend")
+    leads_df = _tab_subset(df, "raw leads")
+    post_df = _tab_subset(df, "raw post qualification")
+    cw_df = _tab_subset(df, "raw cw")
+
+    # Fallbacks in case any expected tab is missing.
+    if spend_df.empty:
+        spend_df = df
+    if leads_df.empty:
+        leads_df = df
+    if post_df.empty:
+        post_df = df
+    if cw_df.empty:
+        cw_df = df
+
+
+    total_spend = float(spend_df["cost"].sum()) if "cost" in spend_df.columns else 0.0
+    total_impr = int(spend_df["impressions"].sum()) if "impressions" in spend_df.columns else 0
+    total_clicks = int(spend_df["clicks"].sum()) if "clicks" in spend_df.columns else 0
+    total_leads = int(leads_df["leads"].sum()) if "leads" in leads_df.columns else 0
+    total_qualified = int(leads_df["qualified"].sum()) if "qualified" in leads_df.columns else 0
+    total_pitching = int(post_df["pitching"].sum()) if "pitching" in post_df.columns else 0
+    total_cw = int(post_df["closed_won"].sum()) if "closed_won" in post_df.columns else 0
+    total_new = int(post_df["new"].sum()) if "new" in post_df.columns else 0
+    total_working = int(post_df["working"].sum()) if "working" in post_df.columns else 0
+    total_total_live = int(post_df["total_live"].sum()) if "total_live" in post_df.columns else 0
+    total_negotiation = int(post_df["negotiation"].sum()) if "negotiation" in post_df.columns else 0
+    total_commitment = int(post_df["commitment"].sum()) if "commitment" in post_df.columns else 0
+    total_closed_lost = int(post_df["closed_lost"].sum()) if "closed_lost" in post_df.columns else 0
+    total_tcv = float(cw_df["tcv"].sum()) if "tcv" in cw_df.columns else 0.0
+    total_first_month_lf = float(cw_df["first_month_lf"].sum()) if "first_month_lf" in cw_df.columns else 0.0
     ctr = (total_clicks / total_impr * 100) if total_impr else 0
     cpc = (total_spend / total_clicks) if total_clicks else 0.0
     cpl = (total_spend / total_leads) if total_leads else 0.0
@@ -1018,7 +1044,29 @@ def render_page_marketing_performance(
         total_closed_lost=total_closed_lost,
     )
 
-    _master_performance_table(df, key_suffix=key_suffix)
+    def _agg_for_master(frame: pd.DataFrame, metrics: list[str]) -> pd.DataFrame:
+        if frame.empty or "month" not in frame.columns or "country" not in frame.columns:
+            return pd.DataFrame(columns=["month", "country"] + metrics)
+        cols = [c for c in metrics if c in frame.columns]
+        if not cols:
+            return pd.DataFrame(columns=["month", "country"] + metrics)
+        out = frame.groupby(["month", "country"], as_index=False)[cols].sum()
+        for c in metrics:
+            if c not in out.columns:
+                out[c] = 0.0
+        return out[["month", "country"] + metrics]
+
+    spend_g = _agg_for_master(spend_df, ["cost", "clicks", "impressions"])
+    leads_g = _agg_for_master(leads_df, ["leads", "qualified"])
+    post_g = _agg_for_master(post_df, ["closed_won", "pitching", "new", "working", "total_live", "negotiation", "commitment", "closed_lost"])
+    cw_g = _agg_for_master(cw_df, ["tcv", "first_month_lf"])
+
+    master_df = spend_g.merge(leads_g, on=["month", "country"], how="outer")
+    master_df = master_df.merge(post_g, on=["month", "country"], how="outer")
+    master_df = master_df.merge(cw_g, on=["month", "country"], how="outer")
+    master_df = master_df.fillna(0)
+
+    _master_performance_table(master_df, key_suffix=key_suffix)
 
 
 def render_page_market_mom(
