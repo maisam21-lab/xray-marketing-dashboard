@@ -1150,12 +1150,12 @@ def render_main_dashboard(
     start_date: date,
     end_date: date,
 ) -> None:
-    """Load Google Sheets or ME X-Ray Excel template, then route to Looker-named report pages."""
+    """Load Google Sheets workbook (all tabs), then route to report pages."""
     sheet_id = _extract_sheet_id(_default_sheet_id_from_secrets())
     _fp = _secret_fingerprint(_service_account_from_streamlit_secrets())
-    truth_gid = _default_truth_gid_from_secrets()
     try:
-        df_loaded = load_source_of_truth_tab(sheet_id, truth_gid, _fp)
+        # Source of truth is the entire spreadsheet; aggregate data across tabs.
+        df_loaded = load_all_worksheets_combined(sheet_id, _fp)
     except Exception as exc:
         st.error(f"Failed to load spreadsheet: {exc}")
         return
