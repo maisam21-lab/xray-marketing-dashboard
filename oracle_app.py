@@ -725,6 +725,51 @@ def _apply_sheet_filters(
     return df, df_for_tabs
 
 
+def _apply_marketing_performance_filters(
+    df_date: pd.DataFrame,
+    *,
+    key_suffix: str,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Performance-tab filters with Market + Month side-by-side first."""
+    c1, c2 = st.columns(2)
+
+    with c1:
+        market_opts = sorted([x for x in df_date["country"].dropna().unique().tolist() if x and x != "Unknown"])
+        selected_markets = st.multiselect(
+            "Market",
+            ["All Markets"] + market_opts,
+            default=["All Markets"],
+            key=f"{key_suffix}_market",
+        )
+
+    with c2:
+        month_opts = sorted([x for x in df_date["month"].dropna().unique().tolist() if x and x != "NaT"])
+        selected_months = st.multiselect(
+            "Month",
+            ["All Months"] + month_opts,
+            default=["All Months"],
+            key=f"{key_suffix}_month",
+        )
+
+    df = df_date.copy()
+    if "All Markets" not in selected_markets and selected_markets:
+        df = df[df["country"].isin(selected_markets)]
+    if "All Months" not in selected_months and selected_months:
+        df = df[df["month"].isin(selected_months)]
+
+    platform_opts = sorted([x for x in df_date["platform"].dropna().unique().tolist() if x and x != "Unknown"])
+    selected_platforms = st.multiselect(
+        "Platform",
+        ["All Platforms"] + platform_opts,
+        default=["All Platforms"],
+        key=f"{key_suffix}_platform",
+    )
+    if "All Platforms" not in selected_platforms and selected_platforms:
+        df = df[df["platform"].isin(selected_platforms)]
+
+    return df, df.copy()
+
+
 def _kpi_block(
     *,
     total_spend: float,
@@ -885,7 +930,7 @@ def render_page_marketing_performance(
         return
 
     st.markdown('<h1 class="looker-page-h1">Marketing Performance Overview</h1>', unsafe_allow_html=True)
-    df, _ = _apply_sheet_filters(df_date, key_suffix=key_suffix)
+    df, _ = _apply_marketing_performance_filters(df_date, key_suffix=key_suffix)
 
     c1, c2 = st.columns([3, 1])
     with c1:
@@ -1243,7 +1288,7 @@ def main() -> None:
     st.markdown(
         """
     <style>
-    .stApp { background: #f4f6f8; font-family: 'Segoe UI', system-ui, sans-serif; font-size: 0.618rem !important; }
+    .stApp { background: #f4f6f8; font-family: 'Segoe UI', system-ui, sans-serif; font-size: 0.56rem !important; }
     section[data-testid="stSidebar"] { display: none !important; }
     [data-testid="collapsedControl"] { display: none !important; }
     header[data-testid="stHeader"] { background: #FFFFFF !important; border-bottom: 1px solid #E2E8F0; }
