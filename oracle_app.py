@@ -1044,6 +1044,46 @@ def render_page_marketing_performance(
     )
     cw_df = _pick_source(df, [r"raw\s*cw"], ["tcv", "first_month_lf"])
 
+    # Temporary runtime debug panel for live mapping verification.
+    with st.expander("Mapping Debug (temporary)", expanded=True):
+        if "source_tab" in df.columns:
+            tab_counts = (
+                df["source_tab"]
+                .astype(str)
+                .value_counts(dropna=False)
+                .rename_axis("source_tab")
+                .reset_index(name="rows")
+            )
+            st.markdown("**Rows by source_tab**")
+            st.dataframe(tab_counts, use_container_width=True, hide_index=True, key=f"{key_suffix}_dbg_tabs")
+        else:
+            st.warning("No `source_tab` column detected in filtered data.")
+
+        dbg_rows = pd.DataFrame(
+            [
+                {"slice": "filtered_df_total", "rows": int(len(df))},
+                {"slice": "spend_df", "rows": int(len(spend_df))},
+                {"slice": "leads_df", "rows": int(len(leads_df))},
+                {"slice": "post_df", "rows": int(len(post_df))},
+                {"slice": "cw_df", "rows": int(len(cw_df))},
+            ]
+        )
+        st.markdown("**Rows by mapped slice**")
+        st.dataframe(dbg_rows, use_container_width=True, hide_index=True, key=f"{key_suffix}_dbg_slices")
+
+        # CW signal check from any Stage-like columns in filtered frame.
+        stage_cols = [c for c in df.columns if "stage" in _norm_header_key(c)]
+        if stage_cols:
+            stage_col = stage_cols[0]
+            stage_series = df[stage_col].astype(str).str.lower().str.strip()
+            cw_match_count = int(stage_series.str.contains(r"closed won|approved", na=False, regex=True).sum())
+            st.info(
+                f"Stage debug: using column `{stage_col}`; "
+                f"rows matching 'closed won|approved' = {cw_match_count}"
+            )
+        else:
+            st.warning("No Stage-like column detected in filtered data.")
+
 
     total_spend = float(spend_df["cost"].sum()) if "cost" in spend_df.columns else 0.0
     total_impr = int(spend_df["impressions"].sum()) if "impressions" in spend_df.columns else 0
