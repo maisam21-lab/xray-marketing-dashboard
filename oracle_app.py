@@ -866,7 +866,6 @@ def render_page_marketing_performance(
         with st.expander("Applied filters", expanded=False):
             st.caption("Country, platform, and source tab mirror Looker’s control strip.")
 
-    st.caption("All worksheet tabs are auto-combined into one model; no manual tab selection is required.")
 
     total_spend = float(df["cost"].sum())
     total_impr = int(df["impressions"].sum())
@@ -882,16 +881,6 @@ def render_page_marketing_performance(
     cpl = (total_spend / total_leads) if total_leads else 0.0
     cpsql = (total_spend / total_qualified) if total_qualified else 0.0
 
-    # Quick health check so "no numbers" issues are visible immediately.
-    if total_spend == 0 and total_leads == 0 and total_cw == 0:
-        st.warning(
-            "Loaded rows but key totals are zero (Spend, Leads, Closed Won). "
-            "Check selected source tabs and verify raw sheets contain numeric values."
-        )
-    st.caption(
-        f"Data health — rows: {len(df):,} | spend: {total_spend:,.2f} | "
-        f"leads: {total_leads:,} | qualified: {total_qualified:,} | closed won: {total_cw:,}"
-    )
 
     _kpi_block(
         total_spend=total_spend,
@@ -1226,7 +1215,7 @@ def main() -> None:
     st.markdown(
         """
     <style>
-    .stApp { background: #f4f6f8; font-family: 'Segoe UI', system-ui, sans-serif; font-size: 0.772rem !important; }
+    .stApp { background: #f4f6f8; font-family: 'Segoe UI', system-ui, sans-serif; font-size: 0.618rem !important; }
     section[data-testid="stSidebar"] { display: none !important; }
     [data-testid="collapsedControl"] { display: none !important; }
     header[data-testid="stHeader"] { background: #FFFFFF !important; border-bottom: 1px solid #E2E8F0; }
@@ -1244,15 +1233,15 @@ def main() -> None:
         gap: 8px;
         color: #1f2937;
     }
-    .looker-header-title { font-size: 1.05rem; font-weight: 700; color: #111827; margin: 0; }
+    .looker-header-title { font-size: 0.84rem; font-weight: 700; color: #111827; margin: 0; }
     .looker-header-badge {
         width: 28px; height: 28px; border-radius: 50%;
         background: #1A73E8; color: #fff; display: inline-flex; align-items: center; justify-content: center;
         font-size: 14px; font-weight: 700; margin-right: 10px; vertical-align: middle;
     }
-    .looker-header-actions { font-size: 12px; color: #6b7280; }
-    .looker-page-h1 { font-size: 1.5rem; font-weight: 400; color: #202124; margin: 8px 0 16px 0; }
-    .looker-table-title { font-size: 1rem; font-weight: 600; color: #202124; margin: 20px 0 8px 0; }
+    .looker-header-actions { font-size: 9.6px; color: #6b7280; }
+    .looker-page-h1 { font-size: 1.2rem; font-weight: 400; color: #202124; margin: 8px 0 16px 0; }
+    .looker-table-title { font-size: 0.8rem; font-weight: 600; color: #202124; margin: 20px 0 8px 0; }
     .looker-kpi-big {
         background: linear-gradient(180deg, #0D9488 0%, #0F766E 100%);
         color: #fff;
@@ -1317,8 +1306,8 @@ def main() -> None:
         border-radius: 8px;
         padding: 6px 10px;
     }
-    [data-testid="stMetricLabel"] { font-size: 11px !important; color: #4b5563 !important; }
-    [data-testid="stMetricValue"] { font-size: 1.8rem !important; color: #1f2937 !important; }
+    [data-testid="stMetricLabel"] { font-size: 8.8px !important; color: #4b5563 !important; }
+    [data-testid="stMetricValue"] { font-size: 1.44rem !important; color: #1f2937 !important; }
     .stRadio [role="radiogroup"] { gap: 14px; }
     .stSelectbox > label, .stRadio > label, .stTextInput > label { font-size: 11px !important; color: #6b7280 !important; }
     .stTabs [aria-selected="true"] span { color: white !important; }
@@ -1345,7 +1334,7 @@ def main() -> None:
         <span class="looker-header-badge">K</span>
         <h1 class="looker-header-title">KitchenPark Marketing Dashboard</h1>
       </div>
-      <div class="looker-header-actions">● Delayed &nbsp;&nbsp; Refreshed 31 min ago</div>
+      <div class="looker-header-actions"></div>
     </div>
     """,
         unsafe_allow_html=True,
