@@ -1681,6 +1681,12 @@ def _format_cpcw_lf_ratio(v: float) -> str:
     return f"{v:.6g}"
 
 
+def _is_cpcw_lf_metric_name(name: str) -> bool:
+    """Match CPCW:LF column labels from Sheets/Excel (ASCII or fullwidth colon, stray spaces)."""
+    n = str(name).strip().replace("\uFF1A", ":")
+    return n == "CPCW:LF"
+
+
 def _format_spend_k(v: float) -> str:
     """Spend in thousands with K (and M for very large totals)."""
     if v == 0:
@@ -1971,7 +1977,7 @@ def _master_performance_table(
     def _fmt_for_metric(metric_name: str) -> Any:
         if metric_name == "Spend":
             return lambda x: _format_spend_k(float(x)) if pd.notna(x) else "—"
-        if metric_name == "CPCW:LF":
+        if _is_cpcw_lf_metric_name(metric_name):
             return lambda x: _format_cpcw_lf_ratio(float(x)) if pd.notna(x) else "—"
         if metric_name in {"CPCW", "CPL", "Actual TCV", "1st Month LF"}:
             return lambda x: f"${x:,.2f}" if pd.notna(x) else "—"
@@ -1981,14 +1987,23 @@ def _master_performance_table(
             return lambda x: f"{x:,.0f}" if pd.notna(x) else "—"
         return lambda x: f"{x:,.2f}" if pd.notna(x) else "—"
 
+    # Pre-format CPCW:LF as plain strings so Streamlit/Arrow does not infer currency ($) on floats.
+    pvt_display = pvt.copy()
+    for _col in list(pvt_display.columns):
+        if _is_cpcw_lf_metric_name(_col) and _col in pvt.columns:
+            pvt_display[_col] = pvt[_col].apply(
+                lambda x: _format_cpcw_lf_ratio(float(x)) if pd.notna(x) else "—"
+            )
+
     fmt_map: dict[str, Any] = {}
-    for c in pvt.columns:
+    for c in pvt_display.columns:
         if c in {"Month", "Market"}:
             continue
-        metric_name = c
-        fmt_map[c] = _fmt_for_metric(metric_name)
+        if _is_cpcw_lf_metric_name(c):
+            continue
+        fmt_map[c] = _fmt_for_metric(c)
 
-    styler = pvt.style.format(fmt_map)
+    styler = pvt_display.style.format(fmt_map)
     for c in [x for x in pvt.columns if x not in {"Month", "Market"}]:
         metric_name = c
         # CPCW:LF is CW÷LF (ratio); higher is better. CPCW/Cost%/CPL are cost metrics; lower is better.
