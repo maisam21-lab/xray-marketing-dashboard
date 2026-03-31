@@ -751,6 +751,41 @@ def load_named_worksheet_normalized(sheet_id: str, worksheet_name: str, _secret_
 
 
 @st.cache_data(ttl=300)
+def load_spend_worksheet_fallback(sheet_id: str, _secret_fp: str) -> pd.DataFrame:
+    """Find a spend-like worksheet by title, load by gid, preprocess + normalize."""
+    meta = list_worksheet_meta(sheet_id, _secret_fp)
+    secret_creds = _service_account_from_streamlit_secrets()
+    if not secret_creds:
+        return pd.DataFrame()
+    spend_candidates = [(t, gid) for t, gid in meta if "spend" in str(t).strip().lower()]
+    if not spend_candidates:
+        return pd.DataFrame()
+    title, ws_gid = spend_candidates[0]
+    try:
+        raw = _read_sheet_auth(
+            sheet_id,
+            secret_creds,
+            worksheet_name=None,
+            worksheet_gid=int(ws_gid),
+        )
+        if raw.empty or len(raw.columns) == 0:
+            raw = _read_sheet_auth_loose(sheet_id, secret_creds, worksheet_gid=int(ws_gid))
+    except Exception:
+        try:
+            raw = _read_sheet_auth_loose(sheet_id, secret_creds, worksheet_gid=int(ws_gid))
+        except Exception:
+            return pd.DataFrame()
+    if raw.empty or len(raw.columns) == 0:
+        return pd.DataFrame()
+    raw = _preprocess_excel_sheet(raw, str(title))
+    out = _normalize(raw)
+    if out.empty:
+        return out
+    out["source_tab"] = str(title)
+    return out
+
+
+@st.cache_data(ttl=300)
 def load_excel_all_sheets(_content_hash: str, xlsx_bytes: bytes) -> pd.DataFrame:
     """Load and combine core ME X-Ray tabs (spend, leads, post-leads) into one dataset."""
     bio = io.BytesIO(xlsx_bytes)
@@ -1393,6 +1428,8 @@ def render_main_dashboard(
                 needs_spend_inject = False
         if needs_spend_inject:
             spend_norm = load_named_worksheet_normalized(sheet_id, "Spend", _fp)
+            if spend_norm.empty:
+                spend_norm = load_spend_worksheet_fallback(sheet_id, _fp)
             if not spend_norm.empty:
                 if df_loaded.empty:
                     df_loaded = spend_norm
