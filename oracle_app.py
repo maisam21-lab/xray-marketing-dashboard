@@ -924,12 +924,7 @@ def render_page_marketing_performance(
     st.markdown('<h1 class="looker-page-h1">Marketing Performance Overview</h1>', unsafe_allow_html=True)
     df, _ = _apply_marketing_performance_filters(df_date, key_suffix=key_suffix)
 
-    c1, c2 = st.columns([3, 1])
-    with c1:
-        st.caption("Filters apply to scorecards, master table, and charts below.")
-    with c2:
-        with st.expander("Applied filters", expanded=False):
-            st.caption("Country, platform, and source tab mirror Looker’s control strip.")
+    st.caption("Filters apply to scorecards, master table, and charts below.")
 
 
     total_spend = float(df["cost"].sum())
@@ -1374,6 +1369,9 @@ def main() -> None:
     [data-testid="stMetricLabel"] { color: #64748B !important; }
     .stCaption { color: #64748B !important; }
     .stAlert { border-radius: 8px; border-left: 4px solid #4f8483; }
+    /* Replace red-like status accents with app green palette */
+    [data-testid="stAlert"] svg, [data-testid="stNotification"] svg { color: #4f8483 !important; fill: #4f8483 !important; }
+    [data-baseweb="tag"][class*="danger"], [class*="danger"], [class*="error"] { color: #19766f !important; }
     </style>
     """,
         unsafe_allow_html=True,
