@@ -880,6 +880,51 @@ def load_spend_gid0_normalized(sheet_id: str, _secret_fp: str) -> pd.DataFrame:
 
 
 @st.cache_data(ttl=300)
+def load_first_matching_worksheet_normalized(
+    sheet_id: str,
+    name_patterns: tuple[str, ...],
+    _secret_fp: str,
+) -> pd.DataFrame:
+    """Load first worksheet whose title matches any regex pattern."""
+    meta = list_worksheet_meta(sheet_id, _secret_fp)
+    secret_creds = _service_account_from_streamlit_secrets()
+    if not secret_creds:
+        return pd.DataFrame()
+
+    picked: Optional[tuple[str, int]] = None
+    for title, ws_gid in meta:
+        tl = str(title).strip().lower()
+        if any(re.search(p, tl) for p in name_patterns):
+            picked = (title, ws_gid)
+            break
+    if not picked:
+        return pd.DataFrame()
+
+    title, ws_gid = picked
+    try:
+        raw = _read_sheet_auth(
+            sheet_id,
+            secret_creds,
+            worksheet_name=None,
+            worksheet_gid=int(ws_gid),
+        )
+        if raw.empty or len(raw.columns) == 0:
+            raw = _read_sheet_auth_loose(sheet_id, secret_creds, worksheet_gid=int(ws_gid))
+    except Exception:
+        try:
+            raw = _read_sheet_auth_loose(sheet_id, secret_creds, worksheet_gid=int(ws_gid))
+        except Exception:
+            return pd.DataFrame()
+    if raw.empty or len(raw.columns) == 0:
+        return pd.DataFrame()
+    out = _normalize(_preprocess_excel_sheet(raw, str(title)))
+    if out.empty:
+        return out
+    out["source_tab"] = str(title)
+    return out
+
+
+@st.cache_data(ttl=300)
 def load_excel_all_sheets(_content_hash: str, xlsx_bytes: bytes) -> pd.DataFrame:
     """Load and combine core ME X-Ray tabs (spend, leads, post-leads) into one dataset."""
     bio = io.BytesIO(xlsx_bytes)
@@ -1542,6 +1587,17 @@ def render_main_dashboard(
                 df_loaded = spend_gid0
             else:
                 df_loaded = pd.concat([df_loaded, spend_gid0], ignore_index=True)
+
+        # Explicitly ensure core business tabs are loaded by title-match.
+        spend_named = load_first_matching_worksheet_normalized(sheet_id, (r"^spend$", r"raw\s*spend", r"sum\s*spend"), _fp)
+        leads_named = load_first_matching_worksheet_normalized(sheet_id, (r"^leads?$", r"raw\s*leads?"), _fp)
+        post_named = load_first_matching_worksheet_normalized(sheet_id, (r"post\s*leads?", r"raw.*post.*qual"), _fp)
+        extras = [x for x in (spend_named, leads_named, post_named) if not x.empty]
+        if extras:
+            if df_loaded.empty:
+                df_loaded = pd.concat(extras, ignore_index=True)
+            else:
+                df_loaded = pd.concat([df_loaded] + extras, ignore_index=True)
     except Exception as exc:
         st.error(f"Failed to load spreadsheet: {exc}")
         return
