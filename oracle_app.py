@@ -757,16 +757,6 @@ def _apply_marketing_performance_filters(
     if "All Months" not in selected_months and selected_months:
         df = df[df["month"].isin(selected_months)]
 
-    platform_opts = sorted([x for x in df_date["platform"].dropna().unique().tolist() if x and x != "Unknown"])
-    selected_platforms = st.multiselect(
-        "Platform",
-        ["All Platforms"] + platform_opts,
-        default=["All Platforms"],
-        key=f"{key_suffix}_platform",
-    )
-    if "All Platforms" not in selected_platforms and selected_platforms:
-        df = df[df["platform"].isin(selected_platforms)]
-
     return df, df.copy()
 
 
