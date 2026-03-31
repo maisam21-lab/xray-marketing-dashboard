@@ -351,6 +351,29 @@ def _is_closed_won_stage_text(val: Any) -> bool:
     return False
 
 
+def _is_post_lead_pipeline_tab(tab_name: str) -> bool:
+    """True for Post Lead / Post Qualification sheets; False for Raw Leads (name variants)."""
+    t = tab_name.strip().lower()
+    if re.search(r"raw\s*leads?", t):
+        return False
+    if "raw" in t and "post" in t and "qual" in t:
+        return True
+    if re.search(r"post\s*lead", t):
+        return True
+    if "post" in t and "qual" in t:
+        return True
+    return False
+
+# Tabs whose rows contribute to CW / post-lead funnel (must not include RAW CW or Spend).
+_POST_LEAD_SOURCE_TAB_PATTERNS: tuple[str, ...] = (
+    r"raw.*post.*qual",
+    r"post\s*leads?",
+    r"post\s*lead",
+    r"post\s*qual",
+)
+
+
+
 # Normalized header → canonical column (covers X-Ray export names + ME X-Ray Excel template)
 _NORM_TO_FIELD: dict[str, str] = {
     "date": "date",
@@ -508,7 +531,7 @@ def _preprocess_excel_sheet(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
             df["Qualified"] = status.str.contains("qualified", na=False).astype(int)
         if "Date Formatted" in df.columns and "Date" not in df.columns:
             df["Date"] = pd.to_datetime(df["Date Formatted"], errors="coerce")
-    if ("raw" in t and "post" in t and "qual" in t):
+    if _is_post_lead_pipeline_tab(t):
         # Stage rows become pipeline counters (post-lead funnel). Prefer Post Lead Stage column.
         stage_col = _resolve_post_lead_stage_column(df)
         raw_stage = df.get(stage_col or "Stage", pd.Series(index=df.index, dtype=str))
@@ -538,6 +561,19 @@ def _preprocess_excel_sheet(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
             )
             if date_col:
                 df["Date"] = pd.to_datetime(df[date_col], errors="coerce")
+        # One row per opportunity so Closed Won is not double-counted.
+        _opp_keys = [
+            c
+            for c in df.columns
+            if _norm_header_key(c)
+            in {
+                "opportunity_id",
+                "opportunity_id_18",
+                "opportunity_name",
+            }
+        ]
+        if _opp_keys:
+            df = df.drop_duplicates(subset=_opp_keys, keep="first")
     if ("raw" in t and "cw" in t):
         # RAW CW can contain repeated rows for the same opportunity; dedupe before aggregation.
         dedupe_cols = [c for c in ("Opportunity Name", "Close Date", "Kitchen Country", "Stage") if c in df.columns]
@@ -599,7 +635,11 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
         elif field in _NUM_FIELDS:
             acc = _to_number_series(df[srcs[0]])
             for c in srcs[1:]:
-                acc = acc + _to_number_series(df[c])
+                nxt = _to_number_series(df[c])
+                if field == "closed_won":
+                    acc = acc.combine(nxt, max)
+                else:
+                    acc = acc + nxt
             out[field] = acc
         else:
             out[field] = df[srcs[0]]
@@ -1396,11 +1436,8 @@ def render_page_marketing_performance(
     # Spend should come from the Spend sheet (market x month), including name variants.
     spend_df = _pick_source(df, [r"raw\s*spend", r"^\s*spend\s*$", r"sum\s*spend", r"\bspend\b"], ["cost", "clicks", "impressions"])
     leads_df = _pick_source(df, [r"raw\s*leads?"], ["leads", "qualified"])
-    post_df = _pick_source(
-        df,
-        [r"raw.*post.*qual", r"post\s*leads?"],
-        ["closed_won", "pitching", "new", "working", "total_live", "negotiation", "commitment", "closed_lost"],
-    )
+    # Never fall back to the full workbook here — _pick_source would mix RAW CW into post-lead totals.
+    post_df = _tab_subset(df, list(_POST_LEAD_SOURCE_TAB_PATTERNS))
     cw_df = _pick_source(df, [r"raw\s*cw"], ["tcv", "first_month_lf"])
 
     total_spend = float(spend_df["cost"].sum()) if "cost" in spend_df.columns else 0.0
@@ -1411,7 +1448,9 @@ def render_page_marketing_performance(
     total_pitching = int(post_df["pitching"].sum()) if "pitching" in post_df.columns else 0
     total_cw = int(post_df["closed_won"].sum()) if "closed_won" in post_df.columns else 0
     if total_cw == 0 and "closed_won" in df.columns:
-        total_cw = int(df["closed_won"].sum())
+        pl_only = _tab_subset(df, list(_POST_LEAD_SOURCE_TAB_PATTERNS))
+        if not pl_only.empty:
+            total_cw = int(pl_only["closed_won"].sum())
     total_new = int(post_df["new"].sum()) if "new" in post_df.columns else 0
     total_working = int(post_df["working"].sum()) if "working" in post_df.columns else 0
     total_total_live = int(post_df["total_live"].sum()) if "total_live" in post_df.columns else 0
@@ -1428,7 +1467,9 @@ def render_page_marketing_performance(
     if total_spend == 0.0 and gid0_spend_sum > 0.0:
         total_spend = gid0_spend_sum
     if total_cw == 0 and "closed_won" in df.columns:
-        total_cw = int(df["closed_won"].sum())
+        pl_only = _tab_subset(df, list(_POST_LEAD_SOURCE_TAB_PATTERNS))
+        if not pl_only.empty:
+            total_cw = int(pl_only["closed_won"].sum())
 
     # Cloud safety net: if mapped sources still resolve to zeros, fall back to full filtered frame.
     if (
@@ -1445,7 +1486,12 @@ def render_page_marketing_performance(
         total_leads = int(df["leads"].sum()) if "leads" in df.columns else 0
         total_qualified = int(df["qualified"].sum()) if "qualified" in df.columns else 0
         total_pitching = int(df["pitching"].sum()) if "pitching" in df.columns else 0
-        total_cw = int(df["closed_won"].sum()) if "closed_won" in df.columns else 0
+        pl_only = _tab_subset(df, list(_POST_LEAD_SOURCE_TAB_PATTERNS))
+        total_cw = (
+            int(pl_only["closed_won"].sum())
+            if (not pl_only.empty and "closed_won" in pl_only.columns)
+            else 0
+        )
         total_new = int(df["new"].sum()) if "new" in df.columns else 0
         total_working = int(df["working"].sum()) if "working" in df.columns else 0
         total_total_live = int(df["total_live"].sum()) if "total_live" in df.columns else 0
@@ -1501,7 +1547,10 @@ def render_page_marketing_performance(
     if spend_g.empty or ("cost" in spend_g.columns and float(spend_g["cost"].sum()) == 0.0):
         spend_g = _agg_for_master(df, ["cost", "clicks", "impressions"])
     if post_g.empty or ("closed_won" in post_g.columns and float(post_g["closed_won"].sum()) == 0.0):
-        post_g = _agg_for_master(df, ["closed_won", "pitching", "new", "working", "total_live", "negotiation", "commitment", "closed_lost"])
+        post_g = _agg_for_master(
+            _tab_subset(df, list(_POST_LEAD_SOURCE_TAB_PATTERNS)),
+            ["closed_won", "pitching", "new", "working", "total_live", "negotiation", "commitment", "closed_lost"],
+        )
 
     master_df = spend_g.merge(leads_g, on=["month", "country"], how="outer")
     master_df = master_df.merge(post_g, on=["month", "country"], how="outer")
