@@ -312,6 +312,9 @@ _NORM_TO_FIELD: dict[str, str] = {
     "sum_spend": "cost",
     "spend_usd": "cost",
     "amount_spent": "cost",
+    "amount": "cost",
+    "amount_usd": "cost",
+    "total_amount": "cost",
     "spent": "cost",
     "marketing_spend": "cost",
     "cost_usd": "cost",
@@ -533,12 +536,12 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
         else:
             out[field] = df[srcs[0]]
 
-    # Hard fallback for spend: if explicit mapping missed it, infer from any spend/cost-like header.
+    # Hard fallback for spend: if explicit mapping missed it, infer from any spend/cost/amount-like header.
     if "cost" not in out.columns:
         spend_like_cols = []
         for c in df.columns:
             nk = _norm_header_key(c)
-            if ("spend" in nk or "cost" in nk) and nk not in {"cost_tcv", "cost_tcv_pct"}:
+            if ("spend" in nk or "cost" in nk or "amount" in nk) and nk not in {"cost_tcv", "cost_tcv_pct"}:
                 spend_like_cols.append(c)
         if spend_like_cols:
             inferred = _to_number_series(df[spend_like_cols[0]])
