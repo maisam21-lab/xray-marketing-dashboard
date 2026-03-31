@@ -668,7 +668,7 @@ def _format_currency(v: float) -> str:
 
 
 def _heatmap_bg(series: pd.Series, *, good_low: bool = True) -> list[str]:
-    """Return rgba background strings for column (min=green-ish, max=red-ish or inverse)."""
+    """Return teal/blue heatmap backgrounds (no red tones)."""
     s = pd.to_numeric(series, errors="coerce")
     lo, hi = float(s.min(skipna=True)), float(s.max(skipna=True))
     if pd.isna(lo) or pd.isna(hi) or hi <= lo:
@@ -681,15 +681,17 @@ def _heatmap_bg(series: pd.Series, *, good_low: bool = True) -> list[str]:
         t = (float(x) - lo) / (hi - lo)
         if not good_low:
             t = 1.0 - t
-        # green #dcfce7 -> yellow #fef9c3 -> rose #fecaca
+        # teal/blue scale only (no red): light teal -> aqua -> soft blue
         if t <= 0.5:
-            g = 0.85 + 0.15 * (t * 2)
-            r = 0.86 - 0.1 * (t * 2)
+            r = 0.87 - 0.12 * (t * 2)
+            g = 0.95 - 0.08 * (t * 2)
+            b = 0.93 - 0.04 * (t * 2)
         else:
             u = (t - 0.5) * 2
-            r = 0.76 + 0.2 * u
-            g = 0.85 - 0.35 * u
-        out.append(f"background-color: rgba({int(r * 255)},{int(g * 255)},{int(0.75 * 255)},0.65)")
+            r = 0.75 - 0.10 * u
+            g = 0.87 - 0.16 * u
+            b = 0.89 + 0.04 * u
+        out.append(f"background-color: rgba({int(r * 255)},{int(g * 255)},{int(b * 255)},0.65)")
     return out
 
 
