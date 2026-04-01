@@ -1669,7 +1669,7 @@ def _format_currency(v: float) -> str:
 
 
 def _format_cpcw_lf_ratio(v: float) -> str:
-    """Dimensionless ratio (Closed Won ÷ LF Spend); no $ — show enough decimals so small values are visible."""
+    """CpCW:LF ratio (CpCW ÷ 1st Month LF), shown without $; keep precision for small values."""
     if not isinstance(v, (int, float)) or v != v:  # NaN
         return "—"
     if v <= 0:
@@ -1818,8 +1818,8 @@ def _kpi_block(
     q_rate = (total_cw / total_qualified * 100) if total_qualified else 0.0
     sql_rate = (total_qualified / total_leads * 100) if total_leads else 0.0
     cpcw = (total_spend / total_cw) if total_cw else 0.0
-    # CpCW:LF = ratio Closed Won (LF) ÷ LF Spend (deal count / sum Monthly LF USD).
-    cpcw_lf = (total_cw / total_first_month_lf) if total_first_month_lf else 0.0
+    # CpCW:LF Ratio = CpCW ÷ 1st Month Licence Fee.
+    cpcw_lf = (cpcw / total_first_month_lf) if (total_cw and total_first_month_lf) else 0.0
     spend_tcv_pct = (total_spend / total_tcv * 100) if total_tcv else 0.0
 
     _cw_help = (
@@ -1835,9 +1835,9 @@ def _kpi_block(
         "If both ``Actual TCV`` and ``TCV (converted)`` exist on a row, the larger value is used—not added."
     )
     _cpcw_lf_help = (
-        "**CpCW:LF** is a **ratio**: **Closed Won (LF) ÷ LF Spend** — same as **CW (Inc Approved)** divided by the "
-        "**sum of Monthly LF USD** on the post-lead sheet for those deals. "
-        "If Monthly LF is missing on post-lead, LF Spend falls back to the RAW CW tab sum."
+        "**CpCW:LF Ratio = CpCW ÷ 1st Month Licence Fee**. "
+        "Where **CpCW = Marketing Spend ÷ Total Closed Wons** and "
+        "**1st Month Licence Fee** is the summed Monthly LF USD for those CW deals."
     )
     sections: list[tuple[str, list[tuple[Any, ...]]]] = [
         (
@@ -1934,7 +1934,9 @@ def _master_performance_table(
     if "lf" in g.columns:
         g["1st Month LF"] = g["lf"]
         g["CPCW:LF"] = g.apply(
-            lambda r: (r["cw"] / r["lf"]) if r["lf"] and r["lf"] > 0 else float("nan"),
+            lambda r: ((r["spend"] / r["cw"]) / r["lf"])
+            if (r["cw"] and r["cw"] > 0 and r["lf"] and r["lf"] > 0)
+            else float("nan"),
             axis=1,
         )
     if "tcv" in g.columns:
@@ -2006,8 +2008,8 @@ def _master_performance_table(
     styler = pvt_display.style.format(fmt_map)
     for c in [x for x in pvt.columns if x not in {"Month", "Market"}]:
         metric_name = c
-        # CPCW:LF is CW÷LF (ratio); higher is better. CPCW/Cost%/CPL are cost metrics; lower is better.
-        good_low = metric_name in {"CPCW", "Cost/TCV%", "CPL"}
+        # CPCW:LF is CpCW÷LF; lower is better (same direction as cost metrics).
+        good_low = metric_name in {"CPCW", "CPCW:LF", "Cost/TCV%", "CPL"}
         styler = styler.apply(lambda s, col=c, gl=good_low: _heatmap_bg(pvt[col], good_low=gl), subset=[c])
     st.dataframe(styler, use_container_width=True, hide_index=True, key=f"{key_suffix}_df_master_pivot")
 
