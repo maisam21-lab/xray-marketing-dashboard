@@ -729,7 +729,7 @@ def _post_lead_slice_for_kpi(df: pd.DataFrame) -> pd.DataFrame:
     post_df["_prio_tcv"] = pd.to_numeric(atc_s, errors="coerce").fillna(0.0)
     lf_s = post_df.get("first_month_lf", pd.Series(0.0, index=post_df.index))
     post_df["_prio_lf"] = pd.to_numeric(lf_s, errors="coerce").fillna(0.0)
-    # Same opp on multiple funnel rows: prefer higher CW, then Actual TCV, then Monthly LF (for CpCW:LF denominator).
+    # Same opp on multiple funnel rows: prefer higher CW, then Actual TCV, then Monthly LF (LF in SUM(Spend)/SUM(LF)).
     if "source_tab" in post_df.columns:
         tp = post_df["source_tab"].astype(str).str.lower().map(
             lambda x: 0 if re.search(r"raw.*post.*qual", x) else 1
@@ -1670,9 +1670,9 @@ def _format_currency(v: float) -> str:
 
 
 def _format_cpcw_lf_ratio(v: float) -> str:
-    """CpCW:LF ratio (CpCW ÷ 1st Month LF), 2 decimal places truncated (not rounded).
+    """CPCW:LF = SUM(Spend) ÷ SUM(1st Month LF); 2 decimal places truncated (not rounded).
 
-    Uses Decimal so float noise (e.g. 0.96×100 → 95.999…) does not collapse to wrong digits or 0.00.
+    Uses Decimal so float noise does not collapse to wrong digits or 0.00.
     """
     if not isinstance(v, (int, float)) or v != v:  # NaN
         return "—"
@@ -1820,8 +1820,8 @@ def _kpi_block(
     q_rate = (total_cw / total_qualified * 100) if total_qualified else 0.0
     sql_rate = (total_qualified / total_leads * 100) if total_leads else 0.0
     cpcw = (total_spend / total_cw) if total_cw else 0.0
-    # CpCW:LF Ratio = CpCW ÷ 1st Month Licence Fee.
-    cpcw_lf = (cpcw / total_first_month_lf) if (total_cw and total_first_month_lf) else 0.0
+    # Match tracker / Looker: CPCW:LF = SUM(Spend) / SUM(1st Month LF) — not CPCW ÷ LF.
+    cpcw_lf = (total_spend / total_first_month_lf) if total_first_month_lf else 0.0
     spend_tcv_pct = (total_spend / total_tcv * 100) if total_tcv else 0.0
 
     _cw_help = (
@@ -1837,9 +1837,8 @@ def _kpi_block(
         "If both ``Actual TCV`` and ``TCV (converted)`` exist on a row, the larger value is used—not added."
     )
     _cpcw_lf_help = (
-        "**CpCW:LF Ratio = CpCW ÷ 1st Month Licence Fee**. "
-        "Where **CpCW = Marketing Spend ÷ Total Closed Wons** and "
-        "**1st Month Licence Fee** is the summed Monthly LF USD for those CW deals."
+        "**CPCW:LF = SUM(Spend) ÷ SUM(1st Month LF)** — same as the tracker calculated field "
+        "(Number, not currency). **CPCW** separately is **SUM(Spend) ÷ SUM(CW (Inc Approved))**."
     )
     sections: list[tuple[str, list[tuple[Any, ...]]]] = [
         (
@@ -1936,9 +1935,7 @@ def _master_performance_table(
     if "lf" in g.columns:
         g["1st Month LF"] = g["lf"]
         g["CPCW:LF"] = g.apply(
-            lambda r: ((r["spend"] / r["cw"]) / r["lf"])
-            if (r["cw"] and r["cw"] > 0 and r["lf"] and r["lf"] > 0)
-            else float("nan"),
+            lambda r: (r["spend"] / r["lf"]) if r["lf"] and r["lf"] > 0 else float("nan"),
             axis=1,
         )
     if "tcv" in g.columns:
@@ -2010,7 +2007,7 @@ def _master_performance_table(
     styler = pvt_display.style.format(fmt_map)
     for c in [x for x in pvt.columns if x not in {"Month", "Market"}]:
         metric_name = c
-        # CPCW:LF is CpCW÷LF; lower is better (same direction as cost metrics).
+        # CPCW:LF is Spend÷LF; lower is better (same direction as cost metrics).
         good_low = metric_name in {"CPCW", "CPCW:LF", "Cost/TCV%", "CPL"}
         styler = styler.apply(lambda s, col=c, gl=good_low: _heatmap_bg(pvt[col], good_low=gl), subset=[c])
     st.dataframe(styler, use_container_width=True, hide_index=True, key=f"{key_suffix}_df_master_pivot")
