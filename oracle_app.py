@@ -608,48 +608,6 @@ def _sum_closed_won_unique_opportunities(df: pd.DataFrame) -> int:
     return int(tmp.groupby("_k", dropna=False)["_cw"].max().sum())
 
 
-_MPO_SPEND_TAB_PATTERNS: tuple[str, ...] = (
-    r"raw\s*spend",
-    r"^\s*spend\s*$",
-    r"sum\s*spend",
-    r"\bspend\b",
-)
-
-
-def _cw_opportunity_key_set_for_closed_won(post_df: pd.DataFrame) -> set[str]:
-    """Composite keys for opportunities that count as CW (Inc Approved), same logic as the deal count."""
-    if post_df.empty or "closed_won" not in post_df.columns:
-        return set()
-    cw_bin = (pd.to_numeric(post_df["closed_won"], errors="coerce").fillna(0) > 0).astype(int)
-    k = _composite_cw_opportunity_key_series(post_df).astype(str).replace("nan", "")
-    tmp = pd.DataFrame({"_k": k, "_cw": cw_bin})
-    if (tmp["_k"].fillna("").astype(str).str.strip() == "").all():
-        return set()
-    g = tmp.groupby("_k", dropna=False)["_cw"].max()
-    return {str(x) for x in g.index[g > 0].tolist()}
-
-
-def _sum_spend_linked_to_cw_deals(df: pd.DataFrame, post_df: pd.DataFrame) -> float:
-    """Sum ``cost`` on spend-tab rows whose composite opp key is in the CW (Inc Approved) key set.
-
-    Requires opportunity id/name (or dim bucket) on Raw Spend rows aligned with post-lead keys.
-    Returns ``0.0`` when spend rows have no matchable keys or no overlap with CW deals.
-    """
-    cw_keys = _cw_opportunity_key_set_for_closed_won(post_df)
-    if df.empty or not cw_keys or "cost" not in df.columns:
-        return 0.0
-    spend_rows = _mpo_tab_subset(df, list(_MPO_SPEND_TAB_PATTERNS))
-    if spend_rows.empty:
-        return 0.0
-    cost = pd.to_numeric(spend_rows["cost"], errors="coerce").fillna(0.0)
-    spend_rows = spend_rows.loc[cost > 0].copy()
-    if spend_rows.empty:
-        return 0.0
-    row_keys = _composite_cw_opportunity_key_series(spend_rows).astype(str).replace("nan", "")
-    mask = row_keys.str.strip().ne("") & row_keys.isin(cw_keys)
-    return float(pd.to_numeric(spend_rows.loc[mask, "cost"], errors="coerce").fillna(0.0).sum())
-
-
 def _actual_tcv_value_column(df: pd.DataFrame) -> Optional[str]:
     """Use the **Actual TCV** / TCV (converted) field only (not generic ``tcv``)."""
     if "actual_tcv" in df.columns:
@@ -1594,12 +1552,11 @@ def compute_mpo_totals(
     """Marketing Performance KPI totals and source slices (same logic as the MPO tab; usable offline).
 
     Returns ``(kpi_kwargs, spend_df, leads_df, post_df, cw_df)`` where ``kpi_kwargs`` matches
-    :func:`_kpi_block`. ``total_spend`` is program spend (CPL/CPC); ``total_spend_cw_kpis`` is
-    CW-linked spend when Raw Spend rows match CW opportunity keys, else the same as program spend.
+    :func:`_kpi_block` keyword arguments.
     """
     spend_df = _mpo_pick_source(
         df,
-        list(_MPO_SPEND_TAB_PATTERNS),
+        [r"raw\s*spend", r"^\s*spend\s*$", r"sum\s*spend", r"\bspend\b"],
         ["cost", "clicks", "impressions"],
     )
     leads_df = _mpo_pick_source(df, [r"raw\s*leads?"], ["leads", "qualified"])
@@ -1669,9 +1626,6 @@ def compute_mpo_totals(
         if total_first_month_lf == 0.0 and "first_month_lf" in df.columns:
             total_first_month_lf = float(pd.to_numeric(df["first_month_lf"], errors="coerce").fillna(0).sum())
 
-    total_spend_cw_linked = _sum_spend_linked_to_cw_deals(df, post_df)
-    total_spend_cw_kpis = total_spend_cw_linked if total_spend_cw_linked > 0 else total_spend
-
     ctr = (total_clicks / total_impr * 100) if total_impr else 0
     cpc = (total_spend / total_clicks) if total_clicks else 0.0
     cpl = (total_spend / total_leads) if total_leads else 0.0
@@ -1679,8 +1633,6 @@ def compute_mpo_totals(
 
     kpi_kwargs: dict[str, Any] = {
         "total_spend": total_spend,
-        "total_spend_cw_kpis": total_spend_cw_kpis,
-        "total_spend_cw_linked": total_spend_cw_linked,
         "total_impr": total_impr,
         "total_clicks": total_clicks,
         "ctr": ctr,
@@ -1847,8 +1799,6 @@ def _apply_marketing_performance_filters(
 def _kpi_block(
     *,
     total_spend: float,
-    total_spend_cw_kpis: float,
-    total_spend_cw_linked: float,
     total_impr: int,
     total_clicks: int,
     ctr: float,
@@ -1869,12 +1819,10 @@ def _kpi_block(
     """Old card design grouped under 3 sections."""
     q_rate = (total_cw / total_qualified * 100) if total_qualified else 0.0
     sql_rate = (total_qualified / total_leads * 100) if total_leads else 0.0
-    # Closed Won block: spend / CPCW / CpCW:LF use CW-linked spend when Raw Spend rows match CW opps.
-    spend_cw = total_spend_cw_kpis
-    cpcw = (spend_cw / total_cw) if total_cw else 0.0
+    cpcw = (total_spend / total_cw) if total_cw else 0.0
     # Match tracker / Looker: CPCW:LF = SUM(Spend) / SUM(1st Month LF) — not CPCW ÷ LF.
-    cpcw_lf = (spend_cw / total_first_month_lf) if total_first_month_lf else 0.0
-    spend_tcv_pct = (spend_cw / total_tcv * 100) if total_tcv else 0.0
+    cpcw_lf = (total_spend / total_first_month_lf) if total_first_month_lf else 0.0
+    spend_tcv_pct = (total_spend / total_tcv * 100) if total_tcv else 0.0
 
     _cw_help = (
         "Deals that are in a Closed Won status, including any deals that have been formally approved."
@@ -1890,27 +1838,14 @@ def _kpi_block(
     )
     _cpcw_lf_help = (
         "**CPCW:LF = SUM(Spend) ÷ SUM(1st Month LF)** — same as the tracker calculated field "
-        "(Number, not currency). **Spend** in this section is **CW-linked** when Raw Spend rows match CW deals; "
-        "otherwise program spend. **CPCW** uses that same spend numerator."
+        "(Number, not currency). **CPCW** separately is **SUM(Spend) ÷ SUM(CW (Inc Approved))**."
     )
-    _spend_help_cw = (
-        "**CW-linked spend** when Raw Spend rows include an opportunity key matching **CW (Inc Approved)**; "
-        "otherwise **total program spend** for the current filters."
-    )
-    if (
-        total_spend_cw_linked > 0
-        and total_spend > 0
-        and abs(total_spend_cw_linked - total_spend) > 1e-6
-    ):
-        _spend_help_cw += (
-            f" Right now: **{_format_spend_k(total_spend_cw_linked)}** linked vs **{_format_spend_k(total_spend)}** program total."
-        )
     sections: list[tuple[str, list[tuple[Any, ...]]]] = [
         (
             "Closed Won",
             [
                 ("CW (Inc Approved)", f"{total_cw:,}", _cw_help),
-                ("Spend", _format_spend_k(spend_cw), _spend_help_cw),
+                ("Spend", _format_spend_k(total_spend)),
                 ("CPCW", f"${cpcw:,.2f}" if total_cw else "—", _cpcw_help),
                 ("Actual TCV", _format_currency(total_tcv) if total_tcv else "—", _actual_tcv_help),
                 (
@@ -1954,14 +1889,14 @@ def _kpi_block(
                     label_left = cards[idx][0]
                     help_left = cards[idx][2] if len(cards[idx]) > 2 else None
                     if help_left is None and label_left == "Spend":
-                        help_left = _spend_help_cw
+                        help_left = "Sum of media spend"
                     st.metric(label_left, cards[idx][1], help=help_left)
                 if idx + 1 < len(cards):
                     with row_cols[1]:
                         label_right = cards[idx + 1][0]
                         help_right = cards[idx + 1][2] if len(cards[idx + 1]) > 2 else None
                         if help_right is None and label_right == "Spend":
-                            help_right = _spend_help_cw
+                            help_right = "Sum of media spend"
                         st.metric(label_right, cards[idx + 1][1], help=help_right)
 
 
