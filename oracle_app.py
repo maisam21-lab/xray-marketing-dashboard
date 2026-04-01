@@ -1669,12 +1669,13 @@ def _format_currency(v: float) -> str:
 
 
 def _format_cpcw_lf_ratio(v: float) -> str:
-    """CpCW:LF ratio (CpCW ÷ 1st Month LF), shown without $ with tracker-style precision."""
+    """CpCW:LF ratio (CpCW ÷ 1st Month LF), shown with 2 digits without rounding."""
     if not isinstance(v, (int, float)) or v != v:  # NaN
         return "—"
     if v <= 0:
         return "—"
-    return f"{v:.2f}"
+    truncated = int(float(v) * 100) / 100
+    return f"{truncated:.2f}"
 
 
 def _is_cpcw_lf_metric_name(name: str) -> bool:
