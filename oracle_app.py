@@ -14,6 +14,7 @@ import os
 import re
 import base64
 from datetime import date, datetime, time, timedelta
+from decimal import ROUND_DOWN, Decimal
 from pathlib import Path
 from typing import Any, Optional, Union
 
@@ -1669,13 +1670,17 @@ def _format_currency(v: float) -> str:
 
 
 def _format_cpcw_lf_ratio(v: float) -> str:
-    """CpCW:LF ratio (CpCW ÷ 1st Month LF), shown with 2 digits without rounding."""
+    """CpCW:LF ratio (CpCW ÷ 1st Month LF), 2 decimal places truncated (not rounded).
+
+    Uses Decimal so float noise (e.g. 0.96×100 → 95.999…) does not collapse to wrong digits or 0.00.
+    """
     if not isinstance(v, (int, float)) or v != v:  # NaN
         return "—"
     if v <= 0:
         return "—"
-    truncated = int(float(v) * 100) / 100
-    return f"{truncated:.2f}"
+    d = Decimal(str(v))
+    q = d.quantize(Decimal("0.01"), rounding=ROUND_DOWN)
+    return format(q, "f")
 
 
 def _is_cpcw_lf_metric_name(name: str) -> bool:
