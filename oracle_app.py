@@ -1516,6 +1516,7 @@ def _kpi_block(
         "Qualified falls back to the leads tab when the post tab has no real Qualified column. "
         "The CW card above may still use Market/Month filters."
     )
+    _cost_tcv_help = "Looker / X-Ray: SUM(Spend) ÷ SUM(Actual TCV), shown as a percent (same as Cost/TCV%)."
     sections: list[tuple[str, list[tuple[Any, ...]]]] = [
         (
             "Closed Won",
@@ -1525,7 +1526,7 @@ def _kpi_block(
                 ("CPCW", f"${cpcw:,.2f}" if total_cw else "—"),
                 ("Actual TCV", _format_currency(total_tcv) if total_tcv else "—"),
                 ("CpCW:LF", f"{cpcw_lf:.2f}" if total_first_month_lf else "—"),
-                ("Spend / TCV %", f"{spend_tcv_pct:.2f}%" if total_tcv else "—"),
+                ("Cost/TCV%", f"{spend_tcv_pct:.2f}%" if total_tcv else "—", _cost_tcv_help),
             ],
         ),
         (
