@@ -1543,6 +1543,15 @@ def render_page_marketing_performance(
     spend_df = _pick_source(df, [r"raw\s*spend", r"^\s*spend\s*$", r"sum\s*spend", r"\bspend\b"], ["cost", "clicks", "impressions"])
     leads_df = _pick_source(df_loaded, [r"raw\s*leads?"], ["leads", "qualified"])
     leads_gid = _default_leads_gid_from_secrets()
+    # Strict source of truth for Total Leads: read the canonical leads worksheet by gid.
+    try:
+        _sid = _extract_sheet_id(_default_sheet_id_from_secrets())
+        _fp2 = _secret_fingerprint(_service_account_from_streamlit_secrets())
+        leads_by_gid = load_marketing_data(_sid, int(leads_gid), _fp2)
+        if not leads_by_gid.empty:
+            leads_df = leads_by_gid
+    except Exception:
+        pass
     if "worksheet_gid" in df_loaded.columns:
         wg = pd.to_numeric(df_loaded["worksheet_gid"], errors="coerce")
         by_gid = df_loaded.loc[wg == int(leads_gid)].copy()
