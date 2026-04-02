@@ -510,6 +510,7 @@ _NORM_TO_FIELD: dict[str, str] = {
     "q_win_rate": "q_win_rate",
     "new": "new",
     "working": "working",
+    "qualifying": "qualifying",
     "total_live": "total_live",
     "negotiation": "negotiation",
     "commitment": "commitment",
@@ -545,6 +546,7 @@ _NUM_FIELDS = frozenset(
         "q_win_rate",
         "new",
         "working",
+        "qualifying",
         "total_live",
         "negotiation",
         "commitment",
@@ -623,6 +625,11 @@ def _preprocess_excel_sheet(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
             df["Qualified"] = 1
         if "Pitching" not in df.columns:
             df["Pitching"] = stage.str.contains("pitch", na=False).astype(int)
+        if "Qualifying" not in df.columns:
+            # Distinct from "Qualified" / SQL — stage name contains "qualifying" but not "qualified" alone.
+            df["Qualifying"] = (
+                stage.str.contains("qualifying", na=False) & ~stage.str.contains("qualified", na=False)
+            ).astype(int)
         if "Closed Won" not in df.columns:
             df["Closed Won"] = raw_stage.map(_is_closed_won_stage_text).astype(int)
         if "Negotiation" not in df.columns:
@@ -1593,8 +1600,9 @@ def render_page_marketing_performance(
     total_working = int(post_df["working"].sum()) if "working" in post_df.columns else 0
     total_negotiation = int(post_df["negotiation"].sum()) if "negotiation" in post_df.columns else 0
     total_commitment = int(post_df["commitment"].sum()) if "commitment" in post_df.columns else 0
-    # Total Live (CRM): SUM(Pitching) + SUM(Negotiation) + SUM(Commitment) — not the broader sheet `total_live` flag.
-    total_total_live = total_pitching + total_negotiation + total_commitment
+    total_qualifying = int(post_df["qualifying"].sum()) if "qualifying" in post_df.columns else 0
+    # Total Live (CRM): Qualifying + Pitching + Negotiation + Commitment — not the broader sheet `total_live` flag.
+    total_total_live = total_qualifying + total_pitching + total_negotiation + total_commitment
     total_closed_lost = int(post_df["closed_lost"].sum()) if "closed_lost" in post_df.columns else 0
     total_tcv = float(cw_df["tcv"].sum()) if "tcv" in cw_df.columns else 0.0
     total_first_month_lf = float(cw_df["first_month_lf"].sum()) if "first_month_lf" in cw_df.columns else 0.0
@@ -1636,7 +1644,8 @@ def render_page_marketing_performance(
         total_working = int(df["working"].sum()) if "working" in df.columns else 0
         total_negotiation = int(df["negotiation"].sum()) if "negotiation" in df.columns else 0
         total_commitment = int(df["commitment"].sum()) if "commitment" in df.columns else 0
-        total_total_live = total_pitching + total_negotiation + total_commitment
+        total_qualifying = int(df["qualifying"].sum()) if "qualifying" in df.columns else 0
+        total_total_live = total_qualifying + total_pitching + total_negotiation + total_commitment
         total_closed_lost = int(df["closed_lost"].sum()) if "closed_lost" in df.columns else 0
         total_tcv = float(df["tcv"].sum()) if "tcv" in df.columns else 0.0
         total_first_month_lf = float(df["first_month_lf"].sum()) if "first_month_lf" in df.columns else 0.0
@@ -1706,13 +1715,16 @@ def render_page_marketing_performance(
 
     spend_g = _agg_for_master(spend_df, ["cost", "clicks", "impressions"])
     leads_g = _agg_for_master(leads_df, ["leads", "qualified"])
-    post_g = _agg_for_master(post_df, ["closed_won", "pitching", "new", "working", "negotiation", "commitment", "closed_lost"])
+    post_g = _agg_for_master(
+        post_df, ["closed_won", "pitching", "new", "working", "qualifying", "negotiation", "commitment", "closed_lost"]
+    )
     if not post_g.empty:
         post_g = post_g.copy()
+        _q = pd.to_numeric(post_g["qualifying"], errors="coerce").fillna(0) if "qualifying" in post_g.columns else 0
         _p = pd.to_numeric(post_g["pitching"], errors="coerce").fillna(0) if "pitching" in post_g.columns else 0
         _n = pd.to_numeric(post_g["negotiation"], errors="coerce").fillna(0) if "negotiation" in post_g.columns else 0
         _c = pd.to_numeric(post_g["commitment"], errors="coerce").fillna(0) if "commitment" in post_g.columns else 0
-        post_g["total_live"] = _p + _n + _c
+        post_g["total_live"] = _q + _p + _n + _c
     cw_g = _agg_for_master(cw_df, ["tcv", "first_month_lf"])
 
     # Master-view fallbacks for spend and CW.
@@ -1721,14 +1733,15 @@ def render_page_marketing_performance(
     if post_g.empty or ("closed_won" in post_g.columns and float(post_g["closed_won"].sum()) == 0.0):
         post_g = _agg_for_master(
             _dedupe_post_lead_rows(_tab_subset(df, list(_POST_LEAD_SOURCE_TAB_PATTERNS))),
-            ["closed_won", "pitching", "new", "working", "negotiation", "commitment", "closed_lost"],
+            ["closed_won", "pitching", "new", "working", "qualifying", "negotiation", "commitment", "closed_lost"],
         )
         if not post_g.empty:
             post_g = post_g.copy()
+            _q = pd.to_numeric(post_g["qualifying"], errors="coerce").fillna(0) if "qualifying" in post_g.columns else 0
             _p = pd.to_numeric(post_g["pitching"], errors="coerce").fillna(0) if "pitching" in post_g.columns else 0
             _n = pd.to_numeric(post_g["negotiation"], errors="coerce").fillna(0) if "negotiation" in post_g.columns else 0
             _c = pd.to_numeric(post_g["commitment"], errors="coerce").fillna(0) if "commitment" in post_g.columns else 0
-            post_g["total_live"] = _p + _n + _c
+            post_g["total_live"] = _q + _p + _n + _c
 
     master_df = spend_g.merge(leads_g, on=["month", "country"], how="outer")
     master_df = master_df.merge(post_g, on=["month", "country"], how="outer")
