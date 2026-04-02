@@ -1198,6 +1198,10 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
             out[dim] = out[dim].astype(str).replace("nan", "").replace("None", "")
 
     out["month"] = out["date"].dt.to_period("M").astype(str)
+    _bad_m = out["month"].astype(str).str.strip().str.lower().isin(["", "nan", "nat", "none"])
+    if bool(_bad_m.any()) and "report_month" in out.columns:
+        rm_fix = _parse_report_month_series(out["report_month"].ffill())
+        out.loc[_bad_m, "month"] = rm_fix.loc[_bad_m].dt.to_period("M").astype(str)
     attrs["fields_mapped"] = sorted(field_to_sources.keys())
     out.attrs.update(attrs)
     return out
@@ -1219,6 +1223,101 @@ def _filter_by_date_range(df: pd.DataFrame, start: date, end: date) -> pd.DataFr
     # Keep undated rows so stage-based metrics (e.g., post-qualification CW) don't get zeroed.
     mask = ((s >= start_ts) & (s <= end_ts)) | s.isna()
     return df.loc[mask].copy()
+
+
+def _filter_spend_for_dashboard(df: pd.DataFrame, start: date, end: date) -> pd.DataFrame:
+    """Prefer ``month``-period filtering for spend (sheet dates often mis-parse); fall back to calendar ``date``."""
+    if df.empty:
+        return df
+    start_p = pd.Period(start, freq="M")
+    end_p = pd.Period(end, freq="M")
+
+    def _month_in_range(m: Any) -> bool:
+        if m is None or (isinstance(m, float) and pd.isna(m)):
+            return True
+        ms = str(m).strip().lower()
+        if not ms or ms in ("nat", "nan", "none"):
+            return True
+        try:
+            p = pd.Period(str(m), freq="M")
+            return bool(start_p <= p <= end_p)
+        except Exception:
+            return True
+
+    sub_m = pd.DataFrame()
+    if "month" in df.columns:
+        sub_m = df.loc[df["month"].map(_month_in_range)].copy()
+        if _normalized_spend_cost_sum(sub_m) > 0.0:
+            return sub_m
+
+    sub_d = _filter_by_date_range(df, start, end)
+    if _normalized_spend_cost_sum(sub_d) > 0.0:
+        return sub_d
+
+    if not sub_m.empty:
+        return sub_m
+    return sub_d if not sub_d.empty else df
+
+
+def _impute_master_df_cost_from_spend_pool(
+    master_df: pd.DataFrame,
+    spend_pool: pd.DataFrame,
+    *,
+    start_date: date,
+    end_date: date,
+) -> pd.DataFrame:
+    """When outer-merge leaves ``cost`` at zero but the spend tab has dollars, allocate by month using CW weights."""
+    if master_df.empty or spend_pool.empty or "cost" not in master_df.columns:
+        return master_df
+    cur = float(pd.to_numeric(master_df["cost"], errors="coerce").fillna(0).sum())
+    if cur > 1e-6:
+        return master_df
+    if "cost" not in spend_pool.columns or "month" not in spend_pool.columns:
+        return master_df
+
+    sp = _normalize_master_merge_frame(spend_pool.copy())
+    sp["month"] = sp["month"].map(_month_norm_key)
+    start_p = pd.Period(start_date, freq="M")
+    end_p = pd.Period(end_date, freq="M")
+
+    def _m_dashboard(m: Any) -> bool:
+        if not m or str(m).strip().lower() in ("", "nat", "nan"):
+            return True
+        try:
+            p = pd.Period(str(m), freq="M")
+            return bool(start_p <= p <= end_p)
+        except Exception:
+            return True
+
+    sp_f = sp.loc[sp["month"].map(_m_dashboard)].copy()
+    if sp_f.empty or _normalized_spend_cost_sum(sp_f) < 1e-9:
+        sp_f = sp
+    cost_num = pd.to_numeric(sp_f["cost"], errors="coerce").fillna(0)
+    by_m = cost_num.groupby(sp_f["month"], dropna=False).sum()
+    month_totals: dict[str, float] = {str(k): float(v) for k, v in by_m.items() if float(v) > 1e-9}
+    if not month_totals:
+        return master_df
+
+    out = master_df.copy()
+    out["month"] = out["month"].map(_month_norm_key)
+    for mk, total in month_totals.items():
+        if total < 1e-9:
+            continue
+        m_ix = out.index[out["month"].astype(str) == mk]
+        if len(m_ix) == 0:
+            continue
+        sub = out.loc[m_ix]
+        cw = pd.to_numeric(sub["closed_won"], errors="coerce").fillna(0).astype(float)
+        if (cw > 1e-9).any():
+            use_ix = sub.index[cw > 1e-9]
+        else:
+            use_ix = m_ix
+        w = pd.to_numeric(out.loc[use_ix, "closed_won"], errors="coerce").fillna(0).astype(float)
+        if float(w.sum()) < 1e-9:
+            w = pd.Series(1.0, index=use_ix, dtype=float)
+        share = w / float(w.sum())
+        out.loc[use_ix, "cost"] = (share * total).values
+    return out
 
 
 @st.cache_data(ttl=300)
@@ -2326,11 +2425,12 @@ def render_page_marketing_performance(
     # Spend only from the canonical Spend worksheet (gid=0) on the ME X-Ray workbook:
     # https://docs.google.com/spreadsheets/d/1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8/edit?gid=0
     spend_gid0_wks = load_spend_gid0_normalized(sheet_id, _fp_mpo)
-    spend_sheet_master = _filter_by_date_range(spend_gid0_wks, start_date, end_date)
+    spend_pool_full = spend_gid0_wks.copy() if not spend_gid0_wks.empty else pd.DataFrame()
+    spend_sheet_master = _filter_spend_for_dashboard(spend_gid0_wks, start_date, end_date)
     if spend_sheet_master.empty and "worksheet_gid" in df_loaded.columns:
         _g0 = df_loaded.loc[pd.to_numeric(df_loaded["worksheet_gid"], errors="coerce") == 0].copy()
         if not _g0.empty:
-            spend_sheet_master = _filter_by_date_range(_g0, start_date, end_date)
+            spend_sheet_master = _filter_spend_for_dashboard(_g0, start_date, end_date)
     # If gid=0 is not the Spend layout (or dates filter everything out) but another tab is named Spend / Raw Spend, use it.
     if _normalized_spend_cost_sum(spend_sheet_master) == 0.0:
         alt_spend = load_first_matching_worksheet_normalized(
@@ -2338,9 +2438,18 @@ def render_page_marketing_performance(
             (r"^spend$", r"raw\s*spend", r"sum\s*spend"),
             _fp_mpo,
         )
-        alt_spend = _filter_by_date_range(alt_spend, start_date, end_date)
-        if _normalized_spend_cost_sum(alt_spend) > 0.0:
-            spend_sheet_master = alt_spend
+        if not alt_spend.empty and _normalized_spend_cost_sum(alt_spend) > _normalized_spend_cost_sum(spend_pool_full):
+            spend_pool_full = alt_spend.copy()
+        alt_f = _filter_spend_for_dashboard(alt_spend, start_date, end_date)
+        if _normalized_spend_cost_sum(alt_f) > 0.0:
+            spend_sheet_master = alt_f
+    if _normalized_spend_cost_sum(spend_sheet_master) == 0.0:
+        fb_spend = load_spend_worksheet_fallback(sheet_id, _fp_mpo)
+        if not fb_spend.empty and _normalized_spend_cost_sum(fb_spend) > _normalized_spend_cost_sum(spend_pool_full):
+            spend_pool_full = fb_spend.copy()
+        fb_f = _filter_spend_for_dashboard(fb_spend, start_date, end_date)
+        if _normalized_spend_cost_sum(fb_f) > 0.0:
+            spend_sheet_master = fb_f
     spend_df = _spend_slice_for_dashboard_filters(spend_sheet_master, df)
 
     def _tab_subset(frame: pd.DataFrame, tab_keywords: list[str]) -> pd.DataFrame:
@@ -2415,6 +2524,8 @@ def render_page_marketing_performance(
     cw_kpi = _cw_dataframe_for_kpis(cw_df, df)
 
     total_spend = float(spend_df["cost"].sum()) if "cost" in spend_df.columns else 0.0
+    if total_spend <= 0.0 and _normalized_spend_cost_sum(spend_sheet_master) > 0.0:
+        total_spend = float(pd.to_numeric(spend_sheet_master["cost"], errors="coerce").fillna(0).sum())
     total_impr = int(spend_df["impressions"].sum()) if "impressions" in spend_df.columns else 0
     total_clicks = int(spend_df["clicks"].sum()) if "clicks" in spend_df.columns else 0
     total_leads = _lead_rows_count(leads_df)
@@ -2581,10 +2692,16 @@ def render_page_marketing_performance(
         master_df = df.copy()
     else:
         metric_probe = [c for c in ("cost", "leads", "qualified", "closed_won", "tcv", "first_month_lf") if c in master_df.columns]
-        if metric_probe:
-            probe_total = float(master_df[metric_probe].sum(numeric_only=True).sum())
-            if probe_total == 0.0:
-                master_df = df.copy()
+        probe_total = float(master_df[metric_probe].sum(numeric_only=True).sum()) if metric_probe else 1.0
+        if probe_total == 0.0:
+            master_df = df.copy()
+        elif not spend_pool_full.empty:
+            master_df = _impute_master_df_cost_from_spend_pool(
+                master_df,
+                spend_pool_full,
+                start_date=start_date,
+                end_date=end_date,
+            )
 
     _master_performance_table(master_df, key_suffix=key_suffix)
 
