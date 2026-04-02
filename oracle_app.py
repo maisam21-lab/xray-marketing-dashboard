@@ -426,6 +426,29 @@ def _tab_subset_by_patterns(frame: pd.DataFrame, tab_keywords: list[str]) -> pd.
     return frame[mask].copy()
 
 
+def _disambiguate_raw_cw_tabs(frame: pd.DataFrame) -> pd.DataFrame:
+    """When several tabs match RAW CW patterns, keep one worksheet so TCV/LF are not double-counted.
+
+    Prefer a tab whose title matches ``raw cw``; drop other matches (e.g. ``CW Summary`` + ``RAW CW``).
+    If none are explicitly ``raw cw``, prefer non-summary titles, then the tab with the most rows
+    (deal-level exports are usually larger than rollups).
+    """
+    if frame.empty or "source_tab" not in frame.columns:
+        return frame
+    tabs = frame["source_tab"].dropna().astype(str).str.strip()
+    ut = tabs.unique().tolist()
+    if len(ut) <= 1:
+        return frame
+    raw_named = [u for u in ut if re.search(r"raw\s*cw", u.lower())]
+    pool = raw_named if raw_named else list(ut)
+    if len(pool) > 1:
+        non_sum = [u for u in pool if "summary" not in u.lower()]
+        if non_sum:
+            pool = non_sum
+    best = max(pool, key=lambda tab: int((tabs == tab).sum()))
+    return frame.loc[tabs.eq(best)].copy()
+
+
 def _resolve_cw_tcv_dataframe(df_loaded: pd.DataFrame, df_filtered: pd.DataFrame) -> pd.DataFrame:
     """TCV / 1st Month LF from the RAW CW tab(s) on the full workbook (not Market/Month-filtered), like Looker."""
     gid = _optional_raw_cw_gid_from_secrets()
@@ -437,7 +460,7 @@ def _resolve_cw_tcv_dataframe(df_loaded: pd.DataFrame, df_filtered: pd.DataFrame
     if not df_loaded.empty:
         t = _tab_subset_by_patterns(df_loaded, list(_RAW_CW_TAB_PATTERNS))
         if not t.empty:
-            return t
+            return _disambiguate_raw_cw_tabs(t)
     # Fallback: filtered frame + loose pattern
     if df_filtered.empty:
         return df_filtered
@@ -448,7 +471,7 @@ def _resolve_cw_tcv_dataframe(df_loaded: pd.DataFrame, df_filtered: pd.DataFrame
             mask = mask | s.str.contains(k.lower(), na=False, regex=True)
         sub = df_filtered.loc[mask].copy()
         if not sub.empty:
-            return sub
+            return _disambiguate_raw_cw_tabs(sub)
     return df_filtered
 
 
@@ -835,6 +858,8 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
             field_to_sources.setdefault(field, []).append(col)
 
     out = pd.DataFrame(index=df.index)
+    # These often appear as two headers for the same measure (e.g. Actual TCV + TCV USD); summing doubles row TCV/LF.
+    _DEDUPE_NUMERIC_MAX_FIELDS = frozenset({"tcv", "first_month_lf"})
     for field, srcs in field_to_sources.items():
         if len(srcs) == 1:
             out[field] = df[srcs[0]]
@@ -843,6 +868,8 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
             for c in srcs[1:]:
                 nxt = _to_number_series(df[c])
                 if field == "closed_won":
+                    acc = acc.combine(nxt, max)
+                elif field in _DEDUPE_NUMERIC_MAX_FIELDS:
                     acc = acc.combine(nxt, max)
                 else:
                     acc = acc + nxt
