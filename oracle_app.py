@@ -450,7 +450,7 @@ def _disambiguate_raw_cw_tabs(frame: pd.DataFrame) -> pd.DataFrame:
 
 
 def _resolve_cw_tcv_dataframe(df_loaded: pd.DataFrame, df_filtered: pd.DataFrame) -> pd.DataFrame:
-    """TCV / 1st Month LF from the RAW CW tab(s) on the full workbook (not Market/Month-filtered), like Looker."""
+    """Resolve rows from the RAW CW worksheet(s). KPI totals apply ``_cw_dataframe_for_kpis`` (closed won + filters)."""
     gid = _optional_raw_cw_gid_from_secrets()
     if gid is not None and not df_loaded.empty and "worksheet_gid" in df_loaded.columns:
         wg = pd.to_numeric(df_loaded["worksheet_gid"], errors="coerce")
@@ -473,6 +473,56 @@ def _resolve_cw_tcv_dataframe(df_loaded: pd.DataFrame, df_filtered: pd.DataFrame
         if not sub.empty:
             return _disambiguate_raw_cw_tabs(sub)
     return df_filtered
+
+
+def _is_raw_cw_style_tab(tab_name: str) -> bool:
+    """Worksheets that hold deal-level TCV / LF (not only tabs literally named RAW CW)."""
+    t = tab_name.strip().lower()
+    if "raw" in t and "cw" in t:
+        return True
+    if re.match(r"^\s*cw\s*$", t):
+        return True
+    if re.search(r"cw\s*summary", t):
+        return True
+    return False
+
+
+def _cw_dataframe_for_kpis(cw_df: pd.DataFrame, df_dashboard: pd.DataFrame) -> pd.DataFrame:
+    """Looker-style scope for Actual TCV and 1st Month LF: **closed-won rows only**, same Month × Market as the dashboard.
+
+    ``closed_won`` includes ``Is_CW`` / ``is_cw`` after normalization. If flags would zero out TCV incorrectly,
+    we fall back to the unfiltered CW frame (misaligned sheet).
+    """
+    out = cw_df.copy() if not cw_df.empty else cw_df
+    if out.empty:
+        return out
+    if "closed_won" in out.columns:
+        s = pd.to_numeric(out["closed_won"], errors="coerce").fillna(0)
+        if float(s.sum()) > 0:
+            filt = out.loc[s > 0].copy()
+            if "tcv" in filt.columns and "tcv" in out.columns:
+                t_f = float(pd.to_numeric(filt["tcv"], errors="coerce").fillna(0).sum())
+                t_all = float(pd.to_numeric(out["tcv"], errors="coerce").fillna(0).sum())
+                if t_f == 0.0 and t_all > 0.0:
+                    pass
+                else:
+                    out = filt
+            else:
+                out = filt
+    if (
+        not df_dashboard.empty
+        and not out.empty
+        and "month" in out.columns
+        and "country" in out.columns
+        and "month" in df_dashboard.columns
+        and "country" in df_dashboard.columns
+    ):
+        pairs = df_dashboard[["month", "country"]].drop_duplicates()
+        if not pairs.empty:
+            merged = out.merge(pairs, on=["month", "country"], how="inner")
+            if not merged.empty:
+                out = merged
+    return out
 
 
 def _dedupe_post_lead_rows(df: pd.DataFrame) -> pd.DataFrame:
@@ -802,14 +852,15 @@ def _preprocess_excel_sheet(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
             if date_col:
                 df["Date"] = pd.to_datetime(df[date_col], errors="coerce")
         # Do not drop duplicate opportunity rows here — SUM(Pitching)+… must match the sheet; CW uses unique opps in code.
-    if ("raw" in t and "cw" in t):
-        # RAW CW can contain repeated rows for the same opportunity; dedupe before aggregation.
+    if _is_raw_cw_style_tab(t):
+        # RAW CW / CW deal tabs can contain repeated rows for the same opportunity; dedupe before aggregation.
         dedupe_cols = [c for c in ("Opportunity Name", "Close Date", "Kitchen Country", "Stage") if c in df.columns]
         if dedupe_cols:
             df = df.drop_duplicates(subset=dedupe_cols, keep="first")
         stage_col = next((c for c in df.columns if "stage" in _norm_header_key(c)), None)
         stage = df.get(stage_col or "Stage", pd.Series(index=df.index, dtype=str)).astype(str).str.lower().str.strip()
-        if "Closed Won" not in df.columns:
+        _has_is_cw_raw = any(_norm_header_key(c) == "is_cw" for c in df.columns)
+        if "Closed Won" not in df.columns and not _has_is_cw_raw:
             df["Closed Won"] = stage.str.contains("closed won", na=False).astype(int)
         if "Date" not in df.columns:
             if "Close Date" in df.columns:
@@ -1544,6 +1595,10 @@ def _kpi_block(
         "The CW card above may still use Market/Month filters."
     )
     _cost_tcv_help = "Looker / X-Ray: SUM(Spend) ÷ SUM(Actual TCV), shown as a percent (same as Cost/TCV%)."
+    _actual_tcv_help = (
+        "Sum of Actual TCV on the RAW CW tab for **closed-won deals only** (stage or Is_CW), "
+        "scoped to the same Market and Month filters as Spend."
+    )
     sections: list[tuple[str, list[tuple[Any, ...]]]] = [
         (
             "Closed Won",
@@ -1551,7 +1606,7 @@ def _kpi_block(
                 ("CW (Inc Approved)", f"{total_cw:,}", _cw_help),
                 ("Spend", _format_spend_k(total_spend)),
                 ("CPCW", f"${cpcw:,.2f}" if total_cw else "—"),
-                ("Actual TCV", _format_currency(total_tcv) if total_tcv else "—"),
+                ("Actual TCV", _format_currency(total_tcv) if total_tcv else "—", _actual_tcv_help),
                 ("CpCW:LF", f"{cpcw_lf:.2f}" if total_first_month_lf else "—"),
                 ("Cost/TCV%", f"{spend_tcv_pct:.2f}%" if total_tcv else "—", _cost_tcv_help),
             ],
@@ -1800,6 +1855,7 @@ def render_page_marketing_performance(
     if post_df_kpi.empty:
         post_df_kpi = post_df
     cw_df = _resolve_cw_tcv_dataframe(df_loaded, df)
+    cw_kpi = _cw_dataframe_for_kpis(cw_df, df)
 
     total_spend = float(spend_df["cost"].sum()) if "cost" in spend_df.columns else 0.0
     total_impr = int(spend_df["impressions"].sum()) if "impressions" in spend_df.columns else 0
@@ -1820,8 +1876,8 @@ def render_page_marketing_performance(
     # Total Live (CRM): Qualifying + Pitching + Negotiation + Commitment — not the broader sheet `total_live` flag.
     total_total_live = total_qualifying + total_pitching + total_negotiation + total_commitment
     total_closed_lost = int(post_df_kpi["closed_lost"].sum()) if "closed_lost" in post_df_kpi.columns else 0
-    total_tcv = float(cw_df["tcv"].sum()) if "tcv" in cw_df.columns else 0.0
-    total_first_month_lf = float(cw_df["first_month_lf"].sum()) if "first_month_lf" in cw_df.columns else 0.0
+    total_tcv = float(cw_kpi["tcv"].sum()) if "tcv" in cw_kpi.columns else 0.0
+    total_first_month_lf = float(cw_kpi["first_month_lf"].sum()) if "first_month_lf" in cw_kpi.columns else 0.0
     total_new_working = _new_working_count_from_leads(leads_df)
 
     # Per-metric safety fallbacks.
@@ -1880,8 +1936,10 @@ def render_page_marketing_performance(
         total_qualifying = int(_pk["qualifying"].sum()) if "qualifying" in _pk.columns else 0
         total_total_live = total_qualifying + total_pitching + total_negotiation + total_commitment
         total_closed_lost = int(_pk["closed_lost"].sum()) if "closed_lost" in _pk.columns else 0
-        total_tcv = float(df["tcv"].sum()) if "tcv" in df.columns else 0.0
-        total_first_month_lf = float(df["first_month_lf"].sum()) if "first_month_lf" in df.columns else 0.0
+        _cw_fb = _cw_dataframe_for_kpis(_resolve_cw_tcv_dataframe(df_loaded, df), df)
+        total_tcv = float(_cw_fb["tcv"].sum()) if "tcv" in _cw_fb.columns else 0.0
+        total_first_month_lf = float(_cw_fb["first_month_lf"].sum()) if "first_month_lf" in _cw_fb.columns else 0.0
+        cw_kpi = _cw_fb
         total_new_working = _new_working_count_from_leads(leads_df if not leads_df.empty else df)
     ctr = (total_clicks / total_impr * 100) if total_impr else 0
     cpc = (total_spend / total_clicks) if total_clicks else 0.0
@@ -1962,7 +2020,7 @@ def render_page_marketing_performance(
         _n = pd.to_numeric(post_g["negotiation"], errors="coerce").fillna(0) if "negotiation" in post_g.columns else 0
         _c = pd.to_numeric(post_g["commitment"], errors="coerce").fillna(0) if "commitment" in post_g.columns else 0
         post_g["total_live"] = _q + _p + _n + _c
-    cw_g = _agg_for_master(cw_df, ["tcv", "first_month_lf"])
+    cw_g = _agg_for_master(cw_kpi, ["tcv", "first_month_lf"])
 
     # Master-view fallbacks for spend and CW.
     if spend_g.empty or ("cost" in spend_g.columns and float(spend_g["cost"].sum()) == 0.0):
