@@ -23,6 +23,7 @@ import streamlit as st
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 DEFAULT_SOURCE_TRUTH_GID = 8109573
+DEFAULT_LEADS_WORKSHEET_GID = 743065354
 # Default empty on Streamlit Cloud; set `XRAY_EXCEL_PATH` in secrets or `XRAY_EXCEL_PATH_DEFAULT` locally.
 DEFAULT_LOCAL_EXCEL_PATH = (os.environ.get("XRAY_EXCEL_PATH_DEFAULT") or "").strip()
 DEFAULT_LOGO_PATH = (
@@ -50,6 +51,16 @@ def _default_truth_gid_from_secrets() -> int:
         return int(v) if v else DEFAULT_SOURCE_TRUTH_GID
     except Exception:
         return DEFAULT_SOURCE_TRUTH_GID
+
+
+def _default_leads_gid_from_secrets() -> int:
+    """Optional Streamlit secret XRAY_LEADS_GID overrides default leads tab gid."""
+    try:
+        s = st.secrets
+        v = (s.get("XRAY_LEADS_GID") or s.get("xray_leads_gid") or "").strip()
+        return int(v) if v else DEFAULT_LEADS_WORKSHEET_GID
+    except Exception:
+        return DEFAULT_LEADS_WORKSHEET_GID
 
 
 def _default_excel_path_from_secrets() -> str:
@@ -859,6 +870,7 @@ def load_all_worksheets_combined(sheet_id: str, _secret_fp: str) -> pd.DataFrame
             continue
         df = df.copy()
         df["source_tab"] = (title.strip() if title.strip() else "Sheet")
+        df["worksheet_gid"] = int(ws_gid)
         frames.append(df)
         tab_stats.append((title, len(df)))
     if not frames:
@@ -1116,6 +1128,7 @@ def load_first_matching_worksheet_normalized(
     if out.empty:
         return out
     out["source_tab"] = str(title)
+    out["worksheet_gid"] = int(ws_gid)
     return out
 
 
@@ -1529,6 +1542,12 @@ def render_page_marketing_performance(
     # Spend should come from the Spend sheet (market x month), including name variants.
     spend_df = _pick_source(df, [r"raw\s*spend", r"^\s*spend\s*$", r"sum\s*spend", r"\bspend\b"], ["cost", "clicks", "impressions"])
     leads_df = _pick_source(df, [r"raw\s*leads?"], ["leads", "qualified"])
+    leads_gid = _default_leads_gid_from_secrets()
+    if "worksheet_gid" in df.columns:
+        wg = pd.to_numeric(df["worksheet_gid"], errors="coerce")
+        by_gid = df.loc[wg == int(leads_gid)].copy()
+        if not by_gid.empty:
+            leads_df = by_gid
     # Never fall back to the full workbook here — _pick_source would mix RAW CW into post-lead totals.
     post_df = _dedupe_post_lead_rows(_tab_subset(df, list(_POST_LEAD_SOURCE_TAB_PATTERNS)))
     cw_df = _pick_source(df, [r"raw\s*cw"], ["tcv", "first_month_lf"])
@@ -1633,6 +1652,7 @@ def render_page_marketing_performance(
             f"| Metric | Value |\n| --- | ---: |\n"
             f"| Scorecard **Total Leads** | **{total_leads:,}** |\n"
             f"| Scorecard **Qualified** | **{total_qualified:,}** |\n"
+            f"| Configured leads gid | **{leads_gid}** |\n"
             f"| Rows in resolved lead slice | **{resolved_rows:,}** |\n"
             f"| Non-blank Lead Source (`channel`) | **{lead_source_non_blank:,}** |\n"
             f"| Non-blank UTM Source (`utm_source`) | **{utm_source_non_blank:,}** |\n"
