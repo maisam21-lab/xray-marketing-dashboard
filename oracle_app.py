@@ -626,9 +626,14 @@ def _preprocess_excel_sheet(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
         if "Pitching" not in df.columns:
             df["Pitching"] = stage.str.contains("pitch", na=False).astype(int)
         if "Qualifying" not in df.columns:
-            # Distinct from "Qualified" / SQL — stage name contains "qualifying" but not "qualified" alone.
+            # Distinct from Qualified SQL / Disqualified — match Qualifying + Qualification (Salesforce labels).
+            _qual_core = stage.str.contains("qualifying", na=False) | stage.str.contains(
+                "qualification", na=False
+            )
             df["Qualifying"] = (
-                stage.str.contains("qualifying", na=False) & ~stage.str.contains("qualified", na=False)
+                _qual_core
+                & ~stage.str.contains("qualified", na=False)
+                & ~stage.str.contains("disqualif", na=False)
             ).astype(int)
         if "Closed Won" not in df.columns:
             df["Closed Won"] = raw_stage.map(_is_closed_won_stage_text).astype(int)
@@ -1583,6 +1588,10 @@ def render_page_marketing_performance(
             leads_df = by_gid
     # Never fall back to the full workbook here — _pick_source would mix RAW CW into post-lead totals.
     post_df = _dedupe_post_lead_rows(_tab_subset(df, list(_POST_LEAD_SOURCE_TAB_PATTERNS)))
+    # Pipeline KPIs (Total Live = Q+P+N+C) must match the X-Ray **tab** totals — use full tab, not market/month slice.
+    post_df_kpi = _dedupe_post_lead_rows(_tab_subset(df_loaded, list(_POST_LEAD_SOURCE_TAB_PATTERNS)))
+    if post_df_kpi.empty:
+        post_df_kpi = post_df
     cw_df = _pick_source(df, [r"raw\s*cw"], ["tcv", "first_month_lf"])
 
     total_spend = float(spend_df["cost"].sum()) if "cost" in spend_df.columns else 0.0
@@ -1590,7 +1599,7 @@ def render_page_marketing_performance(
     total_clicks = int(spend_df["clicks"].sum()) if "clicks" in spend_df.columns else 0
     total_leads = _lead_rows_count(leads_df)
     total_qualified = _qualified_count_from_leads(leads_df)
-    total_pitching = int(post_df["pitching"].sum()) if "pitching" in post_df.columns else 0
+    total_pitching = int(post_df_kpi["pitching"].sum()) if "pitching" in post_df_kpi.columns else 0
     total_cw = _sum_closed_won_unique_opportunities(post_df)
     if total_cw == 0 and "closed_won" in df.columns:
         pl_only = _dedupe_post_lead_rows(_tab_subset(df, list(_POST_LEAD_SOURCE_TAB_PATTERNS)))
@@ -1598,12 +1607,12 @@ def render_page_marketing_performance(
             total_cw = _sum_closed_won_unique_opportunities(pl_only)
     total_new = int(post_df["new"].sum()) if "new" in post_df.columns else 0
     total_working = int(post_df["working"].sum()) if "working" in post_df.columns else 0
-    total_negotiation = int(post_df["negotiation"].sum()) if "negotiation" in post_df.columns else 0
-    total_commitment = int(post_df["commitment"].sum()) if "commitment" in post_df.columns else 0
-    total_qualifying = int(post_df["qualifying"].sum()) if "qualifying" in post_df.columns else 0
+    total_negotiation = int(post_df_kpi["negotiation"].sum()) if "negotiation" in post_df_kpi.columns else 0
+    total_commitment = int(post_df_kpi["commitment"].sum()) if "commitment" in post_df_kpi.columns else 0
+    total_qualifying = int(post_df_kpi["qualifying"].sum()) if "qualifying" in post_df_kpi.columns else 0
     # Total Live (CRM): Qualifying + Pitching + Negotiation + Commitment — not the broader sheet `total_live` flag.
     total_total_live = total_qualifying + total_pitching + total_negotiation + total_commitment
-    total_closed_lost = int(post_df["closed_lost"].sum()) if "closed_lost" in post_df.columns else 0
+    total_closed_lost = int(post_df_kpi["closed_lost"].sum()) if "closed_lost" in post_df_kpi.columns else 0
     total_tcv = float(cw_df["tcv"].sum()) if "tcv" in cw_df.columns else 0.0
     total_first_month_lf = float(cw_df["first_month_lf"].sum()) if "first_month_lf" in cw_df.columns else 0.0
     total_new_working = _new_working_count_from_leads(leads_df)
@@ -1633,7 +1642,9 @@ def render_page_marketing_performance(
         total_clicks = int(df["clicks"].sum()) if "clicks" in df.columns else 0
         total_leads = _lead_rows_count(leads_df if not leads_df.empty else df)
         total_qualified = _qualified_count_from_leads(leads_df if not leads_df.empty else df)
-        total_pitching = int(df["pitching"].sum()) if "pitching" in df.columns else 0
+        _pk = _dedupe_post_lead_rows(_tab_subset(df_loaded, list(_POST_LEAD_SOURCE_TAB_PATTERNS)))
+        _pk = _pk if not _pk.empty else df
+        total_pitching = int(_pk["pitching"].sum()) if "pitching" in _pk.columns else 0
         pl_only = _dedupe_post_lead_rows(_tab_subset(df, list(_POST_LEAD_SOURCE_TAB_PATTERNS)))
         total_cw = (
             _sum_closed_won_unique_opportunities(pl_only)
@@ -1642,11 +1653,11 @@ def render_page_marketing_performance(
         )
         total_new = int(df["new"].sum()) if "new" in df.columns else 0
         total_working = int(df["working"].sum()) if "working" in df.columns else 0
-        total_negotiation = int(df["negotiation"].sum()) if "negotiation" in df.columns else 0
-        total_commitment = int(df["commitment"].sum()) if "commitment" in df.columns else 0
-        total_qualifying = int(df["qualifying"].sum()) if "qualifying" in df.columns else 0
+        total_negotiation = int(_pk["negotiation"].sum()) if "negotiation" in _pk.columns else 0
+        total_commitment = int(_pk["commitment"].sum()) if "commitment" in _pk.columns else 0
+        total_qualifying = int(_pk["qualifying"].sum()) if "qualifying" in _pk.columns else 0
         total_total_live = total_qualifying + total_pitching + total_negotiation + total_commitment
-        total_closed_lost = int(df["closed_lost"].sum()) if "closed_lost" in df.columns else 0
+        total_closed_lost = int(_pk["closed_lost"].sum()) if "closed_lost" in _pk.columns else 0
         total_tcv = float(df["tcv"].sum()) if "tcv" in df.columns else 0.0
         total_first_month_lf = float(df["first_month_lf"].sum()) if "first_month_lf" in df.columns else 0.0
         total_new_working = _new_working_count_from_leads(leads_df if not leads_df.empty else df)
