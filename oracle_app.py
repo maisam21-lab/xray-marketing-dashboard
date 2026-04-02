@@ -1327,7 +1327,7 @@ def load_spend_worksheet_fallback(sheet_id: str, _secret_fp: str) -> pd.DataFram
 
 @st.cache_data(ttl=300)
 def load_spend_gid0_normalized(sheet_id: str, _secret_fp: str) -> pd.DataFrame:
-    """Hardwired spend source: worksheet gid=0 (as provided by business)."""
+    """Spend tab only: worksheet ``gid=0`` on the ME X-Ray workbook (default sheet id in ``DEFAULT_SHEET_ID``)."""
     secret_creds = _service_account_from_streamlit_secrets()
     if not secret_creds:
         return pd.DataFrame()
@@ -2048,6 +2048,24 @@ def render_page_marketing_performance(
 
     st.caption("Filters apply to scorecards, master table, and charts below.")
 
+    sheet_id = _extract_sheet_id(_default_sheet_id_from_secrets())
+    _fp_mpo = _secret_fingerprint(_service_account_from_streamlit_secrets())
+    # Spend only from the canonical Spend worksheet (gid=0) on the ME X-Ray workbook:
+    # https://docs.google.com/spreadsheets/d/1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8/edit?gid=0
+    spend_gid0_wks = load_spend_gid0_normalized(sheet_id, _fp_mpo)
+    spend_sheet_master = _filter_by_date_range(spend_gid0_wks, start_date, end_date)
+    spend_df = spend_sheet_master.copy()
+    if (
+        not df.empty
+        and "month" in df.columns
+        and "country" in df.columns
+        and not spend_df.empty
+    ):
+        _mc = df[["month", "country"]].drop_duplicates()
+        _sj = spend_df.merge(_mc, on=["month", "country"], how="inner")
+        if not _sj.empty:
+            spend_df = _sj
+
     def _tab_subset(frame: pd.DataFrame, tab_keywords: list[str]) -> pd.DataFrame:
         if "source_tab" not in frame.columns:
             return frame
@@ -2075,28 +2093,15 @@ def render_page_marketing_performance(
         return subset
 
     # Business mapping by tab:
-    # - Spend / traffic: Raw Spend
+    # - Spend: worksheet gid=0 on the sheet above (see ``spend_sheet_master`` / ``spend_df``).
     # - Leads / Qualified: Raw Leads
     # - CW (inc approved) + pipeline stages: Raw Post Qualification
     # - TCV / 1st Month LF: RAW CW
-    # Spend should come from the Spend sheet (market x month), including name variants.
-    _spend_tab_patterns: list[str] = [r"raw\s*spend", r"^\s*spend\s*$", r"sum\s*spend", r"\bspend\b"]
-    spend_df = _pick_source(df, _spend_tab_patterns, ["cost", "clicks", "impressions"])
-    # Master table: Spend **only** from the Spend tab, scoped by date (all markets in sheet — not Market filter).
-    spend_sheet_master = _tab_subset(df_date, _spend_tab_patterns)
-    if spend_sheet_master.empty:
-        spend_sheet_master = _filter_by_date_range(
-            _tab_subset(df_loaded, _spend_tab_patterns),
-            start_date,
-            end_date,
-        )
     leads_df = _pick_source(df_loaded, [r"raw\s*leads?"], ["leads", "qualified"])
     leads_gid = _default_leads_gid_from_secrets()
     # Strict source of truth for Total Leads: read the canonical leads worksheet by gid.
     try:
-        _sid = _extract_sheet_id(_default_sheet_id_from_secrets())
-        _fp2 = _secret_fingerprint(_service_account_from_streamlit_secrets())
-        leads_by_gid = load_marketing_data(_sid, int(leads_gid), _fp2)
+        leads_by_gid = load_marketing_data(sheet_id, int(leads_gid), _fp_mpo)
         if not leads_by_gid.empty:
             leads_df = leads_by_gid
     except Exception:
