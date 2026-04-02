@@ -1541,11 +1541,11 @@ def render_page_marketing_performance(
     # - TCV / 1st Month LF: RAW CW
     # Spend should come from the Spend sheet (market x month), including name variants.
     spend_df = _pick_source(df, [r"raw\s*spend", r"^\s*spend\s*$", r"sum\s*spend", r"\bspend\b"], ["cost", "clicks", "impressions"])
-    leads_df = _pick_source(df, [r"raw\s*leads?"], ["leads", "qualified"])
+    leads_df = _pick_source(df_loaded, [r"raw\s*leads?"], ["leads", "qualified"])
     leads_gid = _default_leads_gid_from_secrets()
-    if "worksheet_gid" in df.columns:
-        wg = pd.to_numeric(df["worksheet_gid"], errors="coerce")
-        by_gid = df.loc[wg == int(leads_gid)].copy()
+    if "worksheet_gid" in df_loaded.columns:
+        wg = pd.to_numeric(df_loaded["worksheet_gid"], errors="coerce")
+        by_gid = df_loaded.loc[wg == int(leads_gid)].copy()
         if not by_gid.empty:
             leads_df = by_gid
     # Never fall back to the full workbook here — _pick_source would mix RAW CW into post-lead totals.
