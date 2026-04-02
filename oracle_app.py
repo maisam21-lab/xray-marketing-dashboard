@@ -308,6 +308,33 @@ def _read_sheet_auth_loose(
     return pd.DataFrame(fixed_rows, columns=headers)
 
 
+def _read_sheet_grid_values(
+    sheet_id: str,
+    service_account_data: Union[bytes, dict, str],
+    worksheet_gid: int,
+) -> list[list[str]]:
+    """Raw cell grid from a worksheet (for header-row detection when ``get_all_records`` is wrong)."""
+    import gspread
+    from google.oauth2.service_account import Credentials
+
+    creds_info = _coerce_service_account_dict(service_account_data)
+    _validate_service_account_dict(creds_info)
+    creds = Credentials.from_service_account_info(
+        creds_info,
+        scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"],
+    )
+    gc = gspread.authorize(creds)
+    sh = gc.open_by_key(sheet_id)
+    ws = sh.get_worksheet_by_id(int(worksheet_gid))
+    return ws.get_all_values() or []
+
+
+def _normalized_spend_cost_sum(frame: pd.DataFrame) -> float:
+    if frame.empty or "cost" not in frame.columns:
+        return 0.0
+    return float(pd.to_numeric(frame["cost"], errors="coerce").fillna(0).sum())
+
+
 def _dataframe_from_grid_with_keyword_header(grid: list[list[str]], keyword: str) -> pd.DataFrame:
     """Build a dataframe by detecting a header row containing a keyword (e.g. 'spend')."""
     if not grid:
@@ -315,7 +342,7 @@ def _dataframe_from_grid_with_keyword_header(grid: list[list[str]], keyword: str
     kw = _norm_header_key(keyword)
     best_idx = None
     best_score = -1
-    for i, row in enumerate(grid[:25]):  # scan first rows for likely header
+    for i, row in enumerate(grid[:55]):  # title rows often push the real header down
         if not any(str(c).strip() for c in row):
             continue
         norm_cells = [_norm_header_key(c) for c in row]
@@ -1102,7 +1129,16 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
         spend_like_cols = []
         for c in df.columns:
             nk = _norm_header_key(c)
-            if ("spend" in nk or "cost" in nk or "amount" in nk) and nk not in {"cost_tcv", "cost_tcv_pct"}:
+            if nk in {"cost_tcv", "cost_tcv_pct"}:
+                continue
+            if (
+                "spend" in nk
+                or "cost" in nk
+                or "amount" in nk
+                or nk in ("investment", "budget", "media_spend")
+                or ("investment" in nk and "tcv" not in nk)
+                or ("budget" in nk and "tcv" not in nk)
+            ):
                 spend_like_cols.append(c)
         if spend_like_cols:
             inferred = _to_number_series(df[spend_like_cols[0]])
@@ -1434,10 +1470,12 @@ def load_spend_worksheet_fallback(sheet_id: str, _secret_fp: str) -> pd.DataFram
 
 @st.cache_data(ttl=300)
 def load_spend_gid0_normalized(sheet_id: str, _secret_fp: str) -> pd.DataFrame:
-    """Spend tab only: worksheet ``gid=0`` on the ME X-Ray workbook (default sheet id in ``DEFAULT_SHEET_ID``)."""
+    """Spend from worksheet ``gid=0`` (first tab URL). Tries several parses and keeps the one with real ``cost``."""
     secret_creds = _service_account_from_streamlit_secrets()
     if not secret_creds:
         return pd.DataFrame()
+
+    raws: list[pd.DataFrame] = []
     try:
         raw = _read_sheet_auth(
             sheet_id,
@@ -1446,48 +1484,92 @@ def load_spend_gid0_normalized(sheet_id: str, _secret_fp: str) -> pd.DataFrame:
             worksheet_gid=0,
         )
         if raw.empty or len(raw.columns) == 0:
-            raw = _read_sheet_auth_loose(sheet_id, secret_creds, worksheet_gid=0)
+            raw = pd.DataFrame()
+        if not raw.empty:
+            raws.append(raw)
     except Exception:
+        pass
+    try:
+        loose = _read_sheet_auth_loose(sheet_id, secret_creds, worksheet_gid=0)
+        if not loose.empty:
+            raws.append(loose)
+    except Exception:
+        pass
+    try:
+        grid = _read_sheet_grid_values(sheet_id, secret_creds, 0)
+        for kw in ("spend", "cost_usd", "cost", "amount", "investment", "budget", "media"):
+            gdf = _dataframe_from_grid_with_keyword_header(grid, kw)
+            if not gdf.empty:
+                raws.append(gdf)
+    except Exception:
+        pass
+
+    best = pd.DataFrame()
+    best_sum = 0.0
+    for raw in raws:
+        if raw.empty or len(raw.columns) == 0:
+            continue
         try:
-            raw = _read_sheet_auth_loose(sheet_id, secret_creds, worksheet_gid=0)
+            cand = _normalize(_preprocess_excel_sheet(raw.copy(), "spend"))
+            s = _normalized_spend_cost_sum(cand)
+            if s > best_sum:
+                best_sum = s
+                best = cand
         except Exception:
-            return pd.DataFrame()
-    if raw.empty or len(raw.columns) == 0:
+            continue
+
+    if best.empty:
         return pd.DataFrame()
-    # Use spend preprocessing context for better header handling.
-    out = _normalize(_preprocess_excel_sheet(raw, "spend"))
-    if out.empty:
-        return out
-    out["source_tab"] = "gid:0_spend"
-    return out
+    best["source_tab"] = "gid:0_spend"
+    return best
 
 
 @st.cache_data(ttl=300)
 def load_spend_gid0_raw_sum(sheet_id: str, _secret_fp: str) -> float:
-    """Direct raw Spend sum from gid=0 by scanning spend/cost/amount-like columns."""
+    """Direct raw Spend sum from gid=0: keyword-based grids first, then loose first-row header."""
     secret_creds = _service_account_from_streamlit_secrets()
     if not secret_creds:
         return 0.0
+
+    def _scan_frame_for_spend_sum(raw: pd.DataFrame) -> float:
+        if raw.empty or len(raw.columns) == 0:
+            return 0.0
+        best_sum = 0.0
+        for c in raw.columns:
+            nk = _norm_header_key(c)
+            if nk in {"cost_tcv", "cost_tcv_pct"}:
+                continue
+            if not (
+                "spend" in nk
+                or "cost" in nk
+                or "amount" in nk
+                or nk in ("investment", "budget")
+                or ("investment" in nk and "tcv" not in nk)
+                or ("budget" in nk and "tcv" not in nk)
+            ):
+                continue
+            sm = float(_to_number_series(raw[c]).sum())
+            if abs(sm) > abs(best_sum):
+                best_sum = sm
+        return best_sum
+
+    best = 0.0
+    try:
+        grid = _read_sheet_grid_values(sheet_id, secret_creds, 0)
+        for kw in ("spend", "cost_usd", "cost", "amount", "investment", "budget", "media"):
+            df = _dataframe_from_grid_with_keyword_header(grid, kw)
+            sm = _scan_frame_for_spend_sum(df)
+            if abs(sm) > abs(best):
+                best = sm
+    except Exception:
+        pass
+    if best != 0.0:
+        return best
     try:
         raw = _read_sheet_auth_loose(sheet_id, secret_creds, worksheet_gid=0)
     except Exception:
         return 0.0
-    if raw.empty or len(raw.columns) == 0:
-        return 0.0
-    spend_cols = []
-    for c in raw.columns:
-        nk = _norm_header_key(c)
-        if ("spend" in nk or "cost" in nk or "amount" in nk) and nk not in {"cost_tcv", "cost_tcv_pct"}:
-            spend_cols.append(c)
-    if not spend_cols:
-        return 0.0
-    best_sum = 0.0
-    for c in spend_cols:
-        s = _to_number_series(raw[c])
-        sm = float(s.sum())
-        if abs(sm) > abs(best_sum):
-            best_sum = sm
-    return best_sum
+    return _scan_frame_for_spend_sum(raw)
 
 
 @st.cache_data(ttl=300)
@@ -2166,6 +2248,16 @@ def render_page_marketing_performance(
         _g0 = df_loaded.loc[pd.to_numeric(df_loaded["worksheet_gid"], errors="coerce") == 0].copy()
         if not _g0.empty:
             spend_sheet_master = _filter_by_date_range(_g0, start_date, end_date)
+    # If gid=0 is not the Spend layout (or dates filter everything out) but another tab is named Spend / Raw Spend, use it.
+    if _normalized_spend_cost_sum(spend_sheet_master) == 0.0:
+        alt_spend = load_first_matching_worksheet_normalized(
+            sheet_id,
+            (r"^spend$", r"raw\s*spend", r"sum\s*spend"),
+            _fp_mpo,
+        )
+        alt_spend = _filter_by_date_range(alt_spend, start_date, end_date)
+        if _normalized_spend_cost_sum(alt_spend) > 0.0:
+            spend_sheet_master = alt_spend
     spend_df = _spend_slice_for_dashboard_filters(spend_sheet_master, df)
 
     def _tab_subset(frame: pd.DataFrame, tab_keywords: list[str]) -> pd.DataFrame:
