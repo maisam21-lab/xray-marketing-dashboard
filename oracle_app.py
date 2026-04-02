@@ -384,7 +384,11 @@ _POST_LEAD_SOURCE_TAB_PATTERNS: tuple[str, ...] = (
 
 
 def _dedupe_post_lead_rows(df: pd.DataFrame) -> pd.DataFrame:
-    """If two post-lead tabs repeat the same opportunities, count each once (prefer Raw Post Qualification)."""
+    """When the same opportunity appears on **more than one** post-qual tab, keep one row (prefer Raw Post Qualification).
+
+    Duplicate rows **within the same tab** are kept so SUM(Qualifying)+SUM(Pitching)+… matches the X-Ray sheet.
+    (CW is still de-risked via ``_sum_closed_won_unique_opportunities``.)
+    """
     if df.empty or "source_tab" not in df.columns:
         return df
     out = df.copy()
@@ -399,8 +403,19 @@ def _dedupe_post_lead_rows(df: pd.DataFrame) -> pd.DataFrame:
     key_cols = _opp_key_columns_for_post_lead(out)
     if key_cols:
         out = out.sort_values(by=["_tab_pri"] + key_cols)
-        out = out.drop_duplicates(subset=key_cols, keep="first")
-        return out.drop(columns=["_tab_pri"], errors="ignore")
+        miss = out[out[key_cols].isna().any(axis=1)].copy()
+        valid = out[~out[key_cols].isna().any(axis=1)].copy()
+        if valid.empty:
+            return miss.drop(columns=["_tab_pri"], errors="ignore")
+        parts: list[pd.DataFrame] = []
+        for _, g in valid.groupby(key_cols, dropna=False):
+            n_tabs = g["source_tab"].dropna().astype(str).str.strip().nunique()
+            if n_tabs <= 1:
+                parts.append(g)
+            else:
+                parts.append(g.sort_values("_tab_pri").head(1))
+        merged = pd.concat(parts + ([miss] if not miss.empty else []), ignore_index=True)
+        return merged.drop(columns=["_tab_pri"], errors="ignore")
     ut = out["source_tab"].dropna().astype(str).unique().tolist()
     if len(ut) <= 1:
         return out.drop(columns=["_tab_pri"], errors="ignore")
@@ -656,19 +671,7 @@ def _preprocess_excel_sheet(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
             )
             if date_col:
                 df["Date"] = pd.to_datetime(df[date_col], errors="coerce")
-        # One row per opportunity so Closed Won is not double-counted.
-        _opp_keys = [
-            c
-            for c in df.columns
-            if _norm_header_key(c)
-            in {
-                "opportunity_id",
-                "opportunity_id_18",
-                "opportunity_name",
-            }
-        ]
-        if _opp_keys:
-            df = df.drop_duplicates(subset=_opp_keys, keep="first")
+        # Do not drop duplicate opportunity rows here — SUM(Pitching)+… must match the sheet; CW uses unique opps in code.
     if ("raw" in t and "cw" in t):
         # RAW CW can contain repeated rows for the same opportunity; dedupe before aggregation.
         dedupe_cols = [c for c in ("Opportunity Name", "Close Date", "Kitchen Country", "Stage") if c in df.columns]
