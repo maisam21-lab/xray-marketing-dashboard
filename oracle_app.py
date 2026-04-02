@@ -455,11 +455,16 @@ def _is_middle_east_market(name: str) -> bool:
     return k in _MIDDLE_EAST_MARKET_KEYS
 
 
-def _market_row_sort_key(market: str) -> tuple:
-    """Middle East countries first (fixed order), then other markets A–Z, then ``Middle East`` subtotal last."""
+# Master View regional roll-up label (first row under each month for MENA markets).
+_MENA_REGION_LABEL = "MENA"
+_REGION_SUBTOTAL_NAMES = frozenset(
+    {_MENA_REGION_LABEL, "Middle East", "middle east"}
+)
+
+
+def _market_row_sort_key_mena(market: str) -> tuple:
+    """Country rows only: MENA countries in fixed order, then other markets A–Z."""
     m = str(market).strip()
-    if m == "Middle East":
-        return (2, "", "")
     k = _norm_market_key(m)
     if k == "uae":
         k = "united arab emirates"
@@ -1514,8 +1519,21 @@ def _qualified_count_from_leads(frame: pd.DataFrame) -> int:
     return int(s.eq("qualified").sum())
 
 
-def _master_view_append_me_subtotal(gm: pd.DataFrame) -> pd.DataFrame:
-    """Per month: sort markets (ME order), append a ``Middle East`` row summing ME countries only."""
+def _master_view_drop_empty_months(gm: pd.DataFrame) -> pd.DataFrame:
+    """Omit months that do not appear in the source with any spend/CW/leads/TCV/LF activity (all zeros)."""
+    if gm.empty:
+        return gm
+    gm = gm[gm["month"].notna()].copy()
+    num_cols = [c for c in ("spend", "cw", "leads", "tcv", "lf") if c in gm.columns]
+    if not num_cols:
+        return gm
+    by_m = gm.groupby("month", as_index=True)[num_cols].sum()
+    keep = by_m.index[(by_m > 0).any(axis=1)]
+    return gm[gm["month"].isin(keep)].copy()
+
+
+def _master_view_append_mena_first(gm: pd.DataFrame) -> pd.DataFrame:
+    """Per month: **MENA** aggregate row first (ME countries only), then country rows (recent month first globally)."""
     if gm.empty:
         return gm
     parts: list[pd.DataFrame] = []
@@ -1529,37 +1547,41 @@ def _master_view_append_me_subtotal(gm: pd.DataFrame) -> pd.DataFrame:
     months_sorted = sorted(gm["month"].dropna().unique(), key=_month_sort_key, reverse=True)
     for month in months_sorted:
         grp = gm[gm["month"] == month].copy()
-        grp = grp[grp["Market"].astype(str).str.strip() != "Middle East"]
+        grp = grp[~grp["Market"].astype(str).str.strip().isin(_REGION_SUBTOTAL_NAMES)]
         if grp.empty:
             continue
-        grp["_sk"] = grp["Market"].map(_market_row_sort_key)
-        grp = grp.sort_values("_sk").drop(columns="_sk")
-        me_mask = grp["Market"].map(_is_middle_east_market)
-        me_slice = grp[me_mask]
+        grp["_sk"] = grp["Market"].map(_market_row_sort_key_mena)
+        country_block = grp.sort_values("_sk").drop(columns="_sk")
+        me_mask = country_block["Market"].map(_is_middle_east_market)
+        me_slice = country_block[me_mask]
+        blocks: list[pd.DataFrame] = []
         if not me_slice.empty:
-            row: dict[str, Any] = {"month": month, "Market": "Middle East"}
+            row: dict[str, Any] = {"month": month, "Market": _MENA_REGION_LABEL}
             for c in gm.columns:
                 if c in ("month", "Market"):
                     continue
                 if c in me_slice.columns:
                     row[c] = float(pd.to_numeric(me_slice[c], errors="coerce").fillna(0).sum())
-            me_row = pd.DataFrame([row])
+            mena_df = pd.DataFrame([row])
             for c in gm.columns:
-                if c not in me_row.columns:
-                    me_row[c] = float("nan")
-            me_row = me_row[gm.columns]
-            grp = pd.concat([grp, me_row], ignore_index=True)
-        parts.append(grp)
+                if c not in mena_df.columns:
+                    mena_df[c] = float("nan")
+            mena_df = mena_df[gm.columns]
+            blocks.append(mena_df)
+        blocks.append(country_block)
+        parts.append(pd.concat(blocks, ignore_index=True))
     if not parts:
         return gm
     return pd.concat(parts, ignore_index=True)
 
 
 def _master_view_style_css(df: pd.DataFrame) -> pd.DataFrame:
-    """Looker-like fills: cyan inputs, white leads, R/G/Y ratios; bold ``Middle East`` row."""
+    """Looker-like fills: cyan inputs, white leads, R/G/Y ratios; bold MENA region row."""
     css = pd.DataFrame("", index=df.index, columns=df.columns)
-    is_me = df["Market"].astype(str).str.strip().eq("Middle East")
-    non_me = ~is_me
+    is_mena = df["Market"].astype(str).str.strip().str.lower().isin(
+        {"mena", "middle east"}
+    )
+    non_me = ~is_mena
     cyan = "background-color: #e8f4f8; color: #0f172a;"
     white = "background-color: #ffffff; color: #0f172a;"
     me_bold = "font-weight: 700;"
@@ -1596,7 +1618,7 @@ def _master_view_style_css(df: pd.DataFrame) -> pd.DataFrame:
 
     cyan_cols = {"Spend", "CW (Inc Approved)", "CPCW", "1st Month LF", "Actual TCV"}
     for i in df.index:
-        me = bool(is_me.loc[i])
+        me = bool(is_mena.loc[i])
         for col in df.columns:
             if col == "Unified Date":
                 v = df.loc[i, col]
@@ -1850,7 +1872,8 @@ def _master_performance_table(
         if c in g.columns:
             sum_map[c] = "sum"
     gm = g.groupby(["month", "Market"], as_index=False).agg(sum_map)
-    gm = _master_view_append_me_subtotal(gm)
+    gm = _master_view_drop_empty_months(gm)
+    gm = _master_view_append_mena_first(gm)
     gm["Spend"] = gm["spend"]
     gm["CW (Inc Approved)"] = gm["cw"].astype(int)
     if "lf" in gm.columns:
