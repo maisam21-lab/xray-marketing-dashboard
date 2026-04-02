@@ -448,14 +448,67 @@ def _norm_market_key(name: str) -> str:
     return re.sub(r"\s+", " ", str(name).strip().lower())
 
 
+_COUNTRY_JOIN_ALIASES: dict[str, str] = {
+    "uae": "united arab emirates",
+    "u.a.e": "united arab emirates",
+    "u.a.e.": "united arab emirates",
+    "the uae": "united arab emirates",
+    "ksa": "saudi arabia",
+    "kingdom of saudi arabia": "saudi arabia",
+    "kingdom of saudi": "saudi arabia",
+}
+
+
 def _country_join_key(name: str) -> str:
     """Align Spend vs CRM market labels (e.g. UAE ↔ United Arab Emirates) for filtering."""
     k = _norm_market_key(name)
     if k in ("", "unknown", "nan", "<na>"):
         return k
-    if k == "uae":
-        return "united arab emirates"
+    if k in _COUNTRY_JOIN_ALIASES:
+        return _COUNTRY_JOIN_ALIASES[k]
     return k
+
+
+# Canonical join-key → CRM-style label in Master View (after merge on normalized ``country``).
+_MARKET_DISPLAY_FROM_KEY: dict[str, str] = {
+    "united arab emirates": "UAE",
+    "saudi arabia": "Saudi Arabia",
+    "bahrain": "Bahrain",
+    "kuwait": "Kuwait",
+    "oman": "Oman",
+    "qatar": "Qatar",
+    "jordan": "Jordan",
+    "lebanon": "Lebanon",
+    "iraq": "Iraq",
+}
+
+
+def _market_display_from_join_key(country_key: str) -> str:
+    k = _norm_market_key(str(country_key))
+    if k in _MARKET_DISPLAY_FROM_KEY:
+        return _MARKET_DISPLAY_FROM_KEY[k]
+    if not k or k in ("unknown", "nan", "<na>"):
+        return "Unknown"
+    return " ".join(w.capitalize() for w in k.split())
+
+
+def _normalize_master_merge_frame(df: pd.DataFrame) -> pd.DataFrame:
+    """Unify ``month`` + ``country`` so spend + CRM + CW outer merges land on one row per market."""
+    if df.empty:
+        return df
+    out = df.copy()
+    if "country" in out.columns:
+        out["country"] = out["country"].map(_country_join_key)
+    if "month" in out.columns:
+        mk = out["month"].map(_month_norm_key)
+        if "date" in out.columns:
+            bad = mk.eq("") | mk.isna()
+            if bool(bad.any()):
+                d = pd.to_datetime(out["date"], errors="coerce")
+                fill = d.dt.to_period("M").astype(str)
+                mk = mk.where(~bad, fill)
+        out["month"] = mk
+    return out
 
 
 def _month_norm_key(m: Any) -> str:
@@ -1931,6 +1984,7 @@ def _master_performance_table(
     section_title: Optional[str] = "Marketing Performance Master View",
 ) -> None:
     """Unified Date column (first row per month only), Middle East subtotal, cyan input metrics, R/G/Y on ratios."""
+    df = _normalize_master_merge_frame(df)
     if section_title:
         st.markdown(f'<div class="looker-table-title">{section_title}</div>', unsafe_allow_html=True)
     agg: dict[str, tuple[str, str]] = {
@@ -1962,7 +2016,7 @@ def _master_performance_table(
     g = df.groupby(["month", "country"], as_index=False).agg(**agg).sort_values(
         ["month", "country"], ascending=[False, True]
     )
-    g["Market"] = g["country"]
+    g["Market"] = g["country"].map(_market_display_from_join_key)
     # Sum additive fields per month × market, then recompute ratios (Looker: do not SUM(CPCW:LF)).
     sum_map: dict[str, str] = {}
     for c in (
@@ -2311,10 +2365,13 @@ def render_page_marketing_performance(
                 out[c] = 0.0
         return out[["month", "country"] + metrics]
 
-    spend_g = _agg_for_master(spend_sheet_master, ["cost", "clicks", "impressions"])
-    leads_g = _agg_for_master(leads_df, ["leads", "qualified"])
+    spend_g = _agg_for_master(
+        _normalize_master_merge_frame(spend_sheet_master), ["cost", "clicks", "impressions"]
+    )
+    leads_g = _agg_for_master(_normalize_master_merge_frame(leads_df), ["leads", "qualified"])
     post_g = _agg_for_master(
-        post_df, ["closed_won", "pitching", "new", "working", "qualifying", "negotiation", "commitment", "closed_lost"]
+        _normalize_master_merge_frame(post_df),
+        ["closed_won", "pitching", "new", "working", "qualifying", "negotiation", "commitment", "closed_lost"],
     )
     if not post_g.empty:
         post_g = post_g.copy()
@@ -2323,12 +2380,14 @@ def render_page_marketing_performance(
         _n = pd.to_numeric(post_g["negotiation"], errors="coerce").fillna(0) if "negotiation" in post_g.columns else 0
         _c = pd.to_numeric(post_g["commitment"], errors="coerce").fillna(0) if "commitment" in post_g.columns else 0
         post_g["total_live"] = _q + _p + _n + _c
-    cw_g = _agg_for_master(cw_kpi, ["tcv", "first_month_lf"])
+    cw_g = _agg_for_master(_normalize_master_merge_frame(cw_kpi), ["tcv", "first_month_lf"])
 
     # Master-view fallbacks (never use full ``df`` for spend — it would pull cost from non-Spend tabs).
     if post_g.empty or ("closed_won" in post_g.columns and float(post_g["closed_won"].sum()) == 0.0):
         post_g = _agg_for_master(
-            _dedupe_post_lead_rows(_tab_subset(df, list(_POST_LEAD_SOURCE_TAB_PATTERNS))),
+            _normalize_master_merge_frame(
+                _dedupe_post_lead_rows(_tab_subset(df, list(_POST_LEAD_SOURCE_TAB_PATTERNS)))
+            ),
             ["closed_won", "pitching", "new", "working", "qualifying", "negotiation", "commitment", "closed_lost"],
         )
         if not post_g.empty:
