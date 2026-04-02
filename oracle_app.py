@@ -8,6 +8,7 @@ Run:
 from __future__ import annotations
 
 import hashlib
+import html
 import io
 import json
 import os
@@ -1574,7 +1575,7 @@ def _kpi_block(
     q_win_cw: Optional[int] = None,
     q_win_qualified: Optional[int] = None,
 ) -> None:
-    """Old card design grouped under 3 sections."""
+    """Three section columns with custom HTML/CSS KPI cards (hover + staggered animation)."""
     # Q Win Rate% — Looker / X-Ray: SUM(CW) / SUM(Qualified) on the same model (post tab SUM + post Qualified when present).
     _cw_q = int(q_win_cw) if q_win_cw is not None else int(total_cw)
     _q_d = int(q_win_qualified) if q_win_qualified is not None else int(total_qualified)
@@ -1634,25 +1635,36 @@ def _kpi_block(
         ),
     ]
 
+    def _kpi_title_attr(help_text: Optional[str]) -> str:
+        if not help_text:
+            return ""
+        t = " ".join(help_text.split())
+        return f' title="{html.escape(t, quote=True)}"'
+
+    accent_map = {"Closed Won": "cw", "Leads": "leads", "Qualified Leads": "pipe"}
     sec_cols = st.columns(3)
-    for i, (title, cards) in enumerate(sections):
+    for i, (sec_title, cards) in enumerate(sections):
+        accent = accent_map.get(sec_title, "cw")
         with sec_cols[i]:
-            st.markdown(f"#### {title}")
-            for idx in range(0, len(cards), 2):
-                row_cols = st.columns(2)
-                with row_cols[0]:
-                    label_left = cards[idx][0]
-                    help_left = cards[idx][2] if len(cards[idx]) > 2 else None
-                    if help_left is None and label_left == "Spend":
-                        help_left = "Sum of media spend"
-                    st.metric(label_left, cards[idx][1], help=help_left)
-                if idx + 1 < len(cards):
-                    with row_cols[1]:
-                        label_right = cards[idx + 1][0]
-                        help_right = cards[idx + 1][2] if len(cards[idx + 1]) > 2 else None
-                        if help_right is None and label_right == "Spend":
-                            help_right = "Sum of media spend"
-                        st.metric(label_right, cards[idx + 1][1], help=help_right)
+            parts: list[str] = [
+                f'<div class="kpi-section kpi-section--{accent}">',
+                '<div class="kpi-section-head"><span class="kpi-section-marker" aria-hidden="true"></span>',
+                f"<h3>{html.escape(sec_title)}</h3></div>",
+                '<div class="kpi-card-grid">',
+            ]
+            for j, card in enumerate(cards):
+                label = str(card[0])
+                value = str(card[1])
+                help_left: Optional[str] = card[2] if len(card) > 2 else None
+                if help_left is None and label == "Spend":
+                    help_left = "Sum of media spend"
+                parts.append(
+                    f'<div class="kpi-card" style="animation-delay:{j * 0.055:.3f}s"{_kpi_title_attr(help_left)}>'
+                    f'<div class="kpi-card-label">{html.escape(label)}</div>'
+                    f'<div class="kpi-card-value">{html.escape(value)}</div></div>'
+                )
+            parts.append("</div></div>")
+            st.markdown("".join(parts), unsafe_allow_html=True)
 
 
 def _master_performance_table(
@@ -2340,6 +2352,116 @@ def main() -> None:
     .stButton > button:hover { border-color: #4f8483; color: #0f766e; }
     .looker-page-h1 { font-size: 0.86rem; font-weight: 400; color: #202124; margin: 8px 0 16px 0; }
     .looker-table-title { font-size: 1.0rem; font-weight: 700; color: #202124; margin: 20px 0 8px 0; }
+    /* KPI scorecards: glass panels, staggered entrance, hover lift */
+    .kpi-section {
+        min-width: 0;
+        background: linear-gradient(155deg, rgba(255,255,255,0.92) 0%, rgba(248,250,252,0.88) 100%);
+        backdrop-filter: blur(12px);
+        -webkit-backdrop-filter: blur(12px);
+        border-radius: 16px;
+        padding: 14px 14px 16px;
+        border: 1px solid rgba(226, 232, 240, 0.95);
+        box-shadow: 0 4px 24px rgba(15, 23, 42, 0.06);
+        transition: box-shadow 0.35s ease, transform 0.35s ease;
+    }
+    .kpi-section:hover {
+        box-shadow: 0 14px 44px rgba(79, 132, 131, 0.11);
+        transform: translateY(-1px);
+    }
+    .kpi-section-head {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 12px;
+        padding-bottom: 10px;
+        border-bottom: 1px solid rgba(226, 232, 240, 0.95);
+    }
+    .kpi-section-marker {
+        width: 10px;
+        height: 10px;
+        border-radius: 50%;
+        flex-shrink: 0;
+        box-shadow: 0 0 0 3px rgba(79, 132, 131, 0.18);
+        animation: kpi-marker-pulse 2.4s ease-in-out infinite;
+    }
+    .kpi-section--cw .kpi-section-marker { background: linear-gradient(135deg, #0d9488, #4f8483); }
+    .kpi-section--leads .kpi-section-marker { background: linear-gradient(135deg, #2563eb, #38bdf8); box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.2); }
+    .kpi-section--pipe .kpi-section-marker { background: linear-gradient(135deg, #7c3aed, #a78bfa); box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.2); }
+    .kpi-section-head h3 {
+        margin: 0;
+        font-size: 0.92rem;
+        font-weight: 700;
+        color: #0f172a;
+        letter-spacing: -0.02em;
+    }
+    .kpi-card-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+    }
+    @media (max-width: 640px) {
+        .kpi-card-grid { grid-template-columns: 1fr; }
+    }
+    .kpi-card {
+        position: relative;
+        overflow: hidden;
+        border-radius: 12px;
+        padding: 11px 12px 13px;
+        background: linear-gradient(160deg, #ffffff 0%, #f8fafc 55%, #f1f5f9 100%);
+        border: 1px solid #e2e8f0;
+        box-shadow: 0 2px 10px rgba(15, 23, 42, 0.045);
+        transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.28s ease, border-color 0.28s ease;
+        animation: kpi-card-enter 0.6s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+    }
+    .kpi-card::before {
+        content: "";
+        position: absolute;
+        top: 0;
+        left: 0;
+        right: 0;
+        height: 3px;
+        border-radius: 12px 12px 0 0;
+        opacity: 0.9;
+    }
+    .kpi-section--cw .kpi-card::before { background: linear-gradient(90deg, #0d9488, #4f8483); }
+    .kpi-section--leads .kpi-card::before { background: linear-gradient(90deg, #2563eb, #38bdf8); }
+    .kpi-section--pipe .kpi-card::before { background: linear-gradient(90deg, #7c3aed, #c4b5fd); }
+    .kpi-card:hover {
+        transform: translateY(-4px);
+        box-shadow: 0 12px 32px rgba(15, 23, 42, 0.12);
+        border-color: #cbd5e1;
+    }
+    .kpi-card-label {
+        font-size: 10px;
+        font-weight: 600;
+        color: #64748b;
+        text-transform: uppercase;
+        letter-spacing: 0.055em;
+        line-height: 1.35;
+        margin-bottom: 6px;
+    }
+    .kpi-card-value {
+        font-size: clamp(1.02rem, 2.2vw, 1.42rem);
+        font-weight: 700;
+        color: #0f172a;
+        letter-spacing: -0.03em;
+        line-height: 1.2;
+        font-variant-numeric: tabular-nums;
+    }
+    .kpi-card[title]:not([title=""]) { cursor: help; }
+    @keyframes kpi-card-enter {
+        from { opacity: 0; transform: translateY(14px) scale(0.98); }
+        to { opacity: 1; transform: translateY(0) scale(1); }
+    }
+    @keyframes kpi-marker-pulse {
+        0%, 100% { transform: scale(1); opacity: 1; }
+        50% { transform: scale(1.12); opacity: 0.88; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+        .kpi-card { animation: none; }
+        .kpi-section-marker { animation: none; }
+        .kpi-card:hover, .kpi-section:hover { transform: none; }
+    }
     .looker-kpi-big {
         background: linear-gradient(180deg, #5c9090 0%, #4f8483 100%);
         color: #fff;
