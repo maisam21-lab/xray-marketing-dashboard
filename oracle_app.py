@@ -1485,6 +1485,7 @@ def render_page_marketing_performance(
         return
 
     st.markdown('<h1 class="looker-page-h1">Marketing Performance Overview</h1>', unsafe_allow_html=True)
+    st.caption("Build marker: mpo-debug-2026-04-02-1")
     df, _ = _apply_marketing_performance_filters(df_date, key_suffix=key_suffix)
 
     st.caption("Filters apply to scorecards, master table, and charts below.")
