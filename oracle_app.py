@@ -1612,6 +1612,30 @@ def render_page_marketing_performance(
         total_commitment=total_commitment,
         total_closed_lost=total_closed_lost,
     )
+    with st.expander("Lead tab diagnostics (debug)", expanded=False):
+        resolved_rows = int(len(leads_df))
+        lead_source_non_blank = 0
+        utm_source_non_blank = 0
+        if not leads_df.empty:
+            if "channel" in leads_df.columns:
+                _ch = leads_df["channel"].astype(str).str.strip().str.lower()
+                lead_source_non_blank = int((~_ch.isin({"", "unknown", "none", "nan", "<na>"})).sum())
+            if "utm_source" in leads_df.columns:
+                _ut = leads_df["utm_source"].astype(str).str.strip().str.lower()
+                utm_source_non_blank = int((~_ut.isin({"", "unknown", "none", "nan", "<na>"})).sum())
+        st.markdown(
+            f"| Metric | Value |\n| --- | ---: |\n"
+            f"| Scorecard **Total Leads** | **{total_leads:,}** |\n"
+            f"| Scorecard **Qualified** | **{total_qualified:,}** |\n"
+            f"| Rows in resolved lead slice | **{resolved_rows:,}** |\n"
+            f"| Non-blank Lead Source (`channel`) | **{lead_source_non_blank:,}** |\n"
+            f"| Non-blank UTM Source (`utm_source`) | **{utm_source_non_blank:,}** |\n"
+        )
+        if "source_tab" in leads_df.columns and not leads_df.empty:
+            _tabs = sorted(leads_df["source_tab"].dropna().astype(str).str.strip().unique().tolist())
+            st.caption(f"Tabs in resolved lead slice: {', '.join(_tabs[:15])}" + (f", ... (+{len(_tabs)-15} more)" if len(_tabs) > 15 else ""))
+        else:
+            st.warning("Resolved lead slice is empty.")
 
     def _agg_for_master(frame: pd.DataFrame, metrics: list[str]) -> pd.DataFrame:
         if frame.empty or "month" not in frame.columns or "country" not in frame.columns:
