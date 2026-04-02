@@ -1591,9 +1591,10 @@ def render_page_marketing_performance(
             total_cw = _sum_closed_won_unique_opportunities(pl_only)
     total_new = int(post_df["new"].sum()) if "new" in post_df.columns else 0
     total_working = int(post_df["working"].sum()) if "working" in post_df.columns else 0
-    total_total_live = int(post_df["total_live"].sum()) if "total_live" in post_df.columns else 0
     total_negotiation = int(post_df["negotiation"].sum()) if "negotiation" in post_df.columns else 0
     total_commitment = int(post_df["commitment"].sum()) if "commitment" in post_df.columns else 0
+    # Total Live (CRM): SUM(Pitching) + SUM(Negotiation) + SUM(Commitment) — not the broader sheet `total_live` flag.
+    total_total_live = total_pitching + total_negotiation + total_commitment
     total_closed_lost = int(post_df["closed_lost"].sum()) if "closed_lost" in post_df.columns else 0
     total_tcv = float(cw_df["tcv"].sum()) if "tcv" in cw_df.columns else 0.0
     total_first_month_lf = float(cw_df["first_month_lf"].sum()) if "first_month_lf" in cw_df.columns else 0.0
@@ -1633,9 +1634,9 @@ def render_page_marketing_performance(
         )
         total_new = int(df["new"].sum()) if "new" in df.columns else 0
         total_working = int(df["working"].sum()) if "working" in df.columns else 0
-        total_total_live = int(df["total_live"].sum()) if "total_live" in df.columns else 0
         total_negotiation = int(df["negotiation"].sum()) if "negotiation" in df.columns else 0
         total_commitment = int(df["commitment"].sum()) if "commitment" in df.columns else 0
+        total_total_live = total_pitching + total_negotiation + total_commitment
         total_closed_lost = int(df["closed_lost"].sum()) if "closed_lost" in df.columns else 0
         total_tcv = float(df["tcv"].sum()) if "tcv" in df.columns else 0.0
         total_first_month_lf = float(df["first_month_lf"].sum()) if "first_month_lf" in df.columns else 0.0
@@ -1705,7 +1706,13 @@ def render_page_marketing_performance(
 
     spend_g = _agg_for_master(spend_df, ["cost", "clicks", "impressions"])
     leads_g = _agg_for_master(leads_df, ["leads", "qualified"])
-    post_g = _agg_for_master(post_df, ["closed_won", "pitching", "new", "working", "total_live", "negotiation", "commitment", "closed_lost"])
+    post_g = _agg_for_master(post_df, ["closed_won", "pitching", "new", "working", "negotiation", "commitment", "closed_lost"])
+    if not post_g.empty:
+        post_g = post_g.copy()
+        _p = pd.to_numeric(post_g["pitching"], errors="coerce").fillna(0) if "pitching" in post_g.columns else 0
+        _n = pd.to_numeric(post_g["negotiation"], errors="coerce").fillna(0) if "negotiation" in post_g.columns else 0
+        _c = pd.to_numeric(post_g["commitment"], errors="coerce").fillna(0) if "commitment" in post_g.columns else 0
+        post_g["total_live"] = _p + _n + _c
     cw_g = _agg_for_master(cw_df, ["tcv", "first_month_lf"])
 
     # Master-view fallbacks for spend and CW.
@@ -1714,8 +1721,14 @@ def render_page_marketing_performance(
     if post_g.empty or ("closed_won" in post_g.columns and float(post_g["closed_won"].sum()) == 0.0):
         post_g = _agg_for_master(
             _dedupe_post_lead_rows(_tab_subset(df, list(_POST_LEAD_SOURCE_TAB_PATTERNS))),
-            ["closed_won", "pitching", "new", "working", "total_live", "negotiation", "commitment", "closed_lost"],
+            ["closed_won", "pitching", "new", "working", "negotiation", "commitment", "closed_lost"],
         )
+        if not post_g.empty:
+            post_g = post_g.copy()
+            _p = pd.to_numeric(post_g["pitching"], errors="coerce").fillna(0) if "pitching" in post_g.columns else 0
+            _n = pd.to_numeric(post_g["negotiation"], errors="coerce").fillna(0) if "negotiation" in post_g.columns else 0
+            _c = pd.to_numeric(post_g["commitment"], errors="coerce").fillna(0) if "commitment" in post_g.columns else 0
+            post_g["total_live"] = _p + _n + _c
 
     master_df = spend_g.merge(leads_g, on=["month", "country"], how="outer")
     master_df = master_df.merge(post_g, on=["month", "country"], how="outer")
