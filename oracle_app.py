@@ -1826,6 +1826,25 @@ def render_page_channels(df_loaded: pd.DataFrame, start_date: date, end_date: da
         st.plotly_chart(fig2, use_container_width=True, key=f"{key_suffix}_pl_trend")
 
 
+def _extras_skip_tabs_already_loaded(df_loaded: pd.DataFrame, extras: list[pd.DataFrame]) -> list[pd.DataFrame]:
+    """Avoid duplicate rows when `load_all_worksheets_combined` already contains the same tab titles."""
+    if df_loaded.empty or "source_tab" not in df_loaded.columns:
+        return extras
+    existing = set(df_loaded["source_tab"].dropna().astype(str).str.strip().unique())
+    out: list[pd.DataFrame] = []
+    for extra in extras:
+        if extra.empty:
+            continue
+        if "source_tab" not in extra.columns:
+            out.append(extra)
+            continue
+        tabs = set(extra["source_tab"].dropna().astype(str).str.strip().unique())
+        if tabs & existing:
+            continue
+        out.append(extra)
+    return out
+
+
 def render_main_dashboard(
     start_date: date,
     end_date: date,
@@ -1867,6 +1886,7 @@ def render_main_dashboard(
         leads_named = load_first_matching_worksheet_normalized(sheet_id, (r"^leads?$", r"raw\s*leads?"), _fp)
         post_named = load_first_matching_worksheet_normalized(sheet_id, (r"post\s*leads?", r"raw.*post.*qual"), _fp)
         extras = [x for x in (spend_named, leads_named, post_named) if not x.empty]
+        extras = _extras_skip_tabs_already_loaded(df_loaded, extras)
         if extras:
             if df_loaded.empty:
                 df_loaded = pd.concat(extras, ignore_index=True)
