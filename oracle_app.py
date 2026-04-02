@@ -483,6 +483,12 @@ _COUNTRY_JOIN_ALIASES: dict[str, str] = {
     "ksa": "saudi arabia",
     "kingdom of saudi arabia": "saudi arabia",
     "kingdom of saudi": "saudi arabia",
+    # Spend tabs often use a regional row; keep one key so it merges and can roll down to countries.
+    "middle east": "middle east",
+    "mena": "middle east",
+    "mea": "middle east",
+    "gcc": "middle east",
+    "gulf": "middle east",
 }
 
 
@@ -512,6 +518,8 @@ _MARKET_DISPLAY_FROM_KEY: dict[str, str] = {
 
 def _market_display_from_join_key(country_key: str) -> str:
     k = _norm_market_key(str(country_key))
+    if k == "middle east":
+        return _MIDDLE_EAST_REGION_LABEL
     if k in _MARKET_DISPLAY_FROM_KEY:
         return _MARKET_DISPLAY_FROM_KEY[k]
     if not k or k in ("unknown", "nan", "<na>"):
@@ -592,8 +600,11 @@ def _is_middle_east_market(name: str) -> bool:
 # Master View regional roll-up (first row under each month for ME markets).
 _MIDDLE_EAST_REGION_LABEL = "Middle East"
 _REGION_SUBTOTAL_NAMES = frozenset(
-    {_MIDDLE_EAST_REGION_LABEL, "middle east", "mena"}
+    {_MIDDLE_EAST_REGION_LABEL, "middle east", "mena", "mea", "gcc", "gulf"}
 )
+_REGION_SUBTOTAL_NAMES_LOWER = frozenset(str(x).strip().lower() for x in _REGION_SUBTOTAL_NAMES)
+# Sheet-level metrics to move from regional aggregate rows onto ME country rows when detail spend is missing.
+_REGIONAL_ROLL_METRICS = frozenset({"spend", "clicks", "impressions"})
 
 
 def _market_row_sort_key_mena(market: str) -> tuple:
@@ -1763,16 +1774,62 @@ def _master_view_append_middle_east_first(gm: pd.DataFrame) -> pd.DataFrame:
         except Exception:
             return str(m)
 
+    def _is_regional_totals_market(name: str) -> bool:
+        return _norm_market_key(name) in _REGION_SUBTOTAL_NAMES_LOWER
+
+    def _frame_numeric_sum(frame: pd.DataFrame, col: str) -> float:
+        if frame.empty or col not in frame.columns:
+            return 0.0
+        return float(pd.to_numeric(frame[col], errors="coerce").fillna(0).sum())
+
     months_sorted = sorted(gm["month"].dropna().unique(), key=_month_sort_key, reverse=True)
     for month in months_sorted:
-        grp = gm[gm["month"] == month].copy()
-        grp = grp[~grp["Market"].astype(str).str.strip().isin(_REGION_SUBTOTAL_NAMES)]
-        if grp.empty:
+        grp_all = gm[gm["month"] == month].copy()
+        reg_mask = grp_all["Market"].map(_is_regional_totals_market)
+        regional = grp_all.loc[reg_mask]
+        grp = grp_all.loc[~reg_mask]
+        if grp.empty and regional.empty:
             continue
-        grp["_sk"] = grp["Market"].map(_market_row_sort_key_mena)
-        country_block = grp.sort_values("_sk").drop(columns="_sk")
-        me_mask = country_block["Market"].map(_is_middle_east_market)
-        me_slice = country_block[me_mask]
+
+        reg_totals: dict[str, float] = {}
+        for col in _REGIONAL_ROLL_METRICS:
+            if col in gm.columns:
+                reg_totals[col] = _frame_numeric_sum(regional, col)
+
+        if not grp.empty:
+            grp = grp.copy()
+            grp["_sk"] = grp["Market"].map(_market_row_sort_key_mena)
+            country_block = grp.sort_values("_sk").drop(columns="_sk")
+        else:
+            country_block = pd.DataFrame(columns=gm.columns)
+
+        me_mask = country_block["Market"].map(_is_middle_east_market) if not country_block.empty else pd.Series(
+            dtype=bool
+        )
+        me_idx = country_block.index[me_mask] if not country_block.empty else pd.Index([], dtype=int)
+
+        # Spend (and clicks/impressions) often sit on a "Middle East" / MENA row; those rows were stripped above.
+        # Push those totals onto ME country rows when per-country spend is still zero (avoid double-counting).
+        if len(me_idx) > 0:
+            country_block = country_block.copy()
+            for col in _REGIONAL_ROLL_METRICS:
+                if col not in country_block.columns:
+                    continue
+                rtot = reg_totals.get(col, 0.0)
+                if rtot <= 0.0:
+                    continue
+                csum = _frame_numeric_sum(country_block.loc[me_idx], col)
+                if csum > 1e-6:
+                    continue
+                w = pd.to_numeric(country_block.loc[me_idx, "cw"], errors="coerce").fillna(0).astype(float)
+                if float(w.sum()) > 0.0:
+                    alloc = rtot * (w / w.sum())
+                else:
+                    alloc = pd.Series(rtot / max(len(me_idx), 1), index=me_idx, dtype=float)
+                country_block.loc[me_idx, col] = alloc.reindex(me_idx).fillna(0.0).values
+
+        me_slice = country_block[me_mask] if not country_block.empty else country_block.iloc[0:0]
+
         blocks: list[pd.DataFrame] = []
         if not me_slice.empty:
             # ``spend`` is month×market cost from the Spend sheet only; Middle East = sum across ME markets.
@@ -1788,8 +1845,21 @@ def _master_view_append_middle_east_first(gm: pd.DataFrame) -> pd.DataFrame:
                     mena_df[c] = float("nan")
             mena_df = mena_df[gm.columns]
             blocks.append(mena_df)
-        blocks.append(country_block)
-        parts.append(pd.concat(blocks, ignore_index=True))
+        elif reg_totals.get("spend", 0.0) > 0.0 or any(v > 0.0 for v in reg_totals.values()):
+            # No ME country rows this month but sheet had regional spend — show one aggregate row.
+            row = {c: float("nan") for c in gm.columns}
+            row["month"] = month
+            row["Market"] = _MIDDLE_EAST_REGION_LABEL
+            for c in _REGIONAL_ROLL_METRICS:
+                if c in row:
+                    row[c] = reg_totals.get(c, 0.0)
+            mena_df = pd.DataFrame([row])[gm.columns]
+            blocks.append(mena_df)
+
+        if not country_block.empty:
+            blocks.append(country_block)
+        if blocks:
+            parts.append(pd.concat(blocks, ignore_index=True))
     if not parts:
         return gm
     return pd.concat(parts, ignore_index=True)
