@@ -1398,10 +1398,13 @@ def _kpi_block(
     total_negotiation: int,
     total_commitment: int,
     total_closed_lost: int,
+    q_win_cw: Optional[int] = None,
 ) -> None:
     """Old card design grouped under 3 sections."""
-    # Q Win Rate% — same as Looker / X-Ray: SUM(CW Inc Approved) / SUM(Qualified).
-    q_rate = (total_cw / total_qualified * 100) if total_qualified else 0.0
+    # Q Win Rate% — Looker / X-Ray: SUM(CW) / SUM(Qualified). Numerator uses full post-qual tab when q_win_cw is set
+    # (total_cw may be market/month-filtered for CPCW; mixing scopes skews the %).
+    _cw_q = int(q_win_cw) if q_win_cw is not None else int(total_cw)
+    q_rate = (_cw_q / total_qualified * 100) if total_qualified else 0.0
     sql_rate = (total_qualified / total_leads * 100) if total_leads else 0.0
     cpcw = (total_spend / total_cw) if total_cw else 0.0
     # Training deck formulas:
@@ -1412,7 +1415,10 @@ def _kpi_block(
     _cw_help = (
         "Deals that are in a Closed Won status, including any deals that have been formally approved."
     )
-    _q_win_help = "CW (Inc Approved) ÷ Qualified — matches X-Ray / Looker Q Win Rate%."
+    _q_win_help = (
+        "CW (Inc Approved) ÷ Qualified. CW uses the full post-qualification tab (same scope as X-Ray); "
+        "the CW card may still reflect Market/Month filters."
+    )
     sections: list[tuple[str, list[tuple[Any, ...]]]] = [
         (
             "Closed Won",
@@ -1749,6 +1755,8 @@ def render_page_marketing_performance(
     cpl = (total_spend / total_leads) if total_leads else 0.0
     cpsql = (total_spend / total_qualified) if total_qualified else 0.0
 
+    _pqw = post_df_kpi if not post_df_kpi.empty else post_df
+    cw_for_qwin = _sum_closed_won_unique_opportunities(_pqw) if not _pqw.empty else total_cw
 
     _kpi_block(
         total_spend=total_spend,
@@ -1758,6 +1766,7 @@ def render_page_marketing_performance(
         total_leads=total_leads,
         total_qualified=total_qualified,
         total_cw=total_cw,
+        q_win_cw=cw_for_qwin,
         total_tcv=total_tcv,
         total_first_month_lf=total_first_month_lf,
         cpc=cpc,
