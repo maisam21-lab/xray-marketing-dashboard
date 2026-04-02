@@ -473,6 +473,39 @@ def _sum_closed_won_unique_opportunities(df: pd.DataFrame) -> int:
     return int(cw_bin.sum())
 
 
+def _sum_closed_won_sheet_style(df: pd.DataFrame) -> int:
+    """``SUM(CW)`` as in Sheets / Looker — sums the metric column across rows (includes duplicate rows)."""
+    if df.empty or "closed_won" not in df.columns:
+        return 0
+    return int(pd.to_numeric(df["closed_won"], errors="coerce").fillna(0).sum())
+
+
+def _qualified_denominator_for_qwin(post_df: pd.DataFrame, leads_df: pd.DataFrame) -> int:
+    """``SUM(Qualified)`` on post-qual when the sheet has a real 0/1 column; else Lead Status=Qualified on leads tab."""
+    q_leads = _qualified_count_from_leads(leads_df)
+    if post_df.empty or "qualified" not in post_df.columns:
+        return q_leads
+    s = pd.to_numeric(post_df["qualified"], errors="coerce").fillna(0)
+    n = len(post_df)
+    if n == 0:
+        return q_leads
+    q_sum = int(s.sum())
+    # Preprocess default for post tabs: Qualified=1 on every row → sum == row count (not SQL count).
+    if q_sum == n and float(s.max()) <= 1.0:
+        return q_leads
+    return q_sum if q_sum > 0 else q_leads
+
+
+def _q_win_rate_inputs(post_df: pd.DataFrame, leads_df: pd.DataFrame) -> tuple[int, int]:
+    """(CW numerator, Qualified denominator) to mirror X-Ray ``SUM(CW)/SUM(Qualified)``."""
+    _pq = post_df if not post_df.empty else pd.DataFrame()
+    cw_sheet = _sum_closed_won_sheet_style(_pq)
+    cw_uniq = _sum_closed_won_unique_opportunities(_pq)
+    # Sheets SUM(CW) counts duplicate rows; unique is used when there are no extras.
+    cw_num = cw_sheet if cw_sheet > cw_uniq else cw_uniq
+    qual_den = _qualified_denominator_for_qwin(_pq, leads_df)
+    return cw_num, qual_den
+
 
 # Normalized header → canonical column (covers X-Ray export names + ME X-Ray Excel template)
 _NORM_TO_FIELD: dict[str, str] = {
@@ -1399,12 +1432,13 @@ def _kpi_block(
     total_commitment: int,
     total_closed_lost: int,
     q_win_cw: Optional[int] = None,
+    q_win_qualified: Optional[int] = None,
 ) -> None:
     """Old card design grouped under 3 sections."""
-    # Q Win Rate% — Looker / X-Ray: SUM(CW) / SUM(Qualified). Numerator uses full post-qual tab when q_win_cw is set
-    # (total_cw may be market/month-filtered for CPCW; mixing scopes skews the %).
+    # Q Win Rate% — Looker / X-Ray: SUM(CW) / SUM(Qualified) on the same model (post tab SUM + post Qualified when present).
     _cw_q = int(q_win_cw) if q_win_cw is not None else int(total_cw)
-    q_rate = (_cw_q / total_qualified * 100) if total_qualified else 0.0
+    _q_d = int(q_win_qualified) if q_win_qualified is not None else int(total_qualified)
+    q_rate = (_cw_q / _q_d * 100) if _q_d else 0.0
     sql_rate = (total_qualified / total_leads * 100) if total_leads else 0.0
     cpcw = (total_spend / total_cw) if total_cw else 0.0
     # Training deck formulas:
@@ -1416,8 +1450,9 @@ def _kpi_block(
         "Deals that are in a Closed Won status, including any deals that have been formally approved."
     )
     _q_win_help = (
-        "CW (Inc Approved) ÷ Qualified. CW uses the full post-qualification tab (same scope as X-Ray); "
-        "the CW card may still reflect Market/Month filters."
+        "Matches X-Ray / Looker: SUM(CW) ÷ SUM(Qualified) on the post-qual tab (sheet-style row sums). "
+        "Qualified falls back to the leads tab when the post tab has no real Qualified column. "
+        "The CW card above may still use Market/Month filters."
     )
     sections: list[tuple[str, list[tuple[Any, ...]]]] = [
         (
@@ -1756,7 +1791,7 @@ def render_page_marketing_performance(
     cpsql = (total_spend / total_qualified) if total_qualified else 0.0
 
     _pqw = post_df_kpi if not post_df_kpi.empty else post_df
-    cw_for_qwin = _sum_closed_won_unique_opportunities(_pqw) if not _pqw.empty else total_cw
+    cw_for_qwin, qual_for_qwin = _q_win_rate_inputs(_pqw, leads_df)
 
     _kpi_block(
         total_spend=total_spend,
@@ -1767,6 +1802,7 @@ def render_page_marketing_performance(
         total_qualified=total_qualified,
         total_cw=total_cw,
         q_win_cw=cw_for_qwin,
+        q_win_qualified=qual_for_qwin,
         total_tcv=total_tcv,
         total_first_month_lf=total_first_month_lf,
         cpc=cpc,
