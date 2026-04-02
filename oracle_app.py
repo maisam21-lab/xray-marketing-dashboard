@@ -1215,6 +1215,14 @@ def _new_working_count_from_leads(frame: pd.DataFrame) -> int:
     return int(s.isin({"new", "working"}).sum())
 
 
+def _qualified_count_from_leads(frame: pd.DataFrame) -> int:
+    """Count leads where Lead Status is exactly Qualified."""
+    if frame.empty or "lead_status_text" not in frame.columns:
+        return 0
+    s = frame["lead_status_text"].astype(str).str.strip().str.lower()
+    return int(s.eq("qualified").sum())
+
+
 def _heatmap_bg(series: pd.Series, *, good_low: bool = True) -> list[str]:
     """Return teal/blue heatmap backgrounds (no red tones)."""
     s = pd.to_numeric(series, errors="coerce")
@@ -1574,7 +1582,7 @@ def render_page_marketing_performance(
     total_impr = int(spend_df["impressions"].sum()) if "impressions" in spend_df.columns else 0
     total_clicks = int(spend_df["clicks"].sum()) if "clicks" in spend_df.columns else 0
     total_leads = _lead_rows_count(leads_df)
-    total_qualified = int(leads_df["qualified"].sum()) if "qualified" in leads_df.columns else 0
+    total_qualified = _qualified_count_from_leads(leads_df)
     total_pitching = int(post_df["pitching"].sum()) if "pitching" in post_df.columns else 0
     total_cw = _sum_closed_won_unique_opportunities(post_df)
     if total_cw == 0 and "closed_won" in df.columns:
@@ -1615,7 +1623,7 @@ def render_page_marketing_performance(
         total_impr = int(df["impressions"].sum()) if "impressions" in df.columns else 0
         total_clicks = int(df["clicks"].sum()) if "clicks" in df.columns else 0
         total_leads = _lead_rows_count(leads_df if not leads_df.empty else df)
-        total_qualified = int(df["qualified"].sum()) if "qualified" in df.columns else 0
+        total_qualified = _qualified_count_from_leads(leads_df if not leads_df.empty else df)
         total_pitching = int(df["pitching"].sum()) if "pitching" in df.columns else 0
         pl_only = _dedupe_post_lead_rows(_tab_subset(df, list(_POST_LEAD_SOURCE_TAB_PATTERNS)))
         total_cw = (
