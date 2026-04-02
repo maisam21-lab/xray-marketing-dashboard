@@ -63,6 +63,16 @@ def _default_leads_gid_from_secrets() -> int:
         return DEFAULT_LEADS_WORKSHEET_GID
 
 
+def _optional_post_qual_gid_from_secrets() -> Optional[int]:
+    """Optional Streamlit secret XRAY_POST_QUAL_GID: load this tab alone for pipeline KPIs (Total Live)."""
+    try:
+        s = st.secrets
+        v = (s.get("XRAY_POST_QUAL_GID") or s.get("xray_post_qual_gid") or "").strip()
+        return int(v) if v else None
+    except Exception:
+        return None
+
+
 def _default_excel_path_from_secrets() -> str:
     """Optional Streamlit secret XRAY_EXCEL_PATH overrides default local workbook path."""
     try:
@@ -380,6 +390,9 @@ _POST_LEAD_SOURCE_TAB_PATTERNS: tuple[str, ...] = (
     # Historical KPI scope: extra patterns pulled a second tab and doubled CW (e.g. 61 -> 122).
     r"raw.*post.*qual",
     r"post\s*leads?",
+    # "Post Qualification" / "Post Qual" (no "Raw" or "Leads" in the tab title) — was excluded by the two patterns above.
+    r"post\s+qual",
+    r"post.*qualif",
 )
 
 
@@ -925,6 +938,39 @@ def load_marketing_data(
         worksheet_gid=int(worksheet_gid),
     )
     return _normalize(raw)
+
+
+def _tab_title_for_worksheet_gid(sheet_id: str, worksheet_gid: int, _secret_fp: str) -> str:
+    try:
+        for title, gid in list_worksheet_meta(sheet_id, _secret_fp):
+            if int(gid) == int(worksheet_gid):
+                return (title or "").strip() or "sheet"
+    except Exception:
+        pass
+    return "post_qual"
+
+
+@st.cache_data(ttl=300)
+def load_worksheet_by_gid_preprocessed(sheet_id: str, worksheet_gid: int, _secret_fp: str) -> pd.DataFrame:
+    """Read one tab by gid with the same preprocess + normalize path as ``load_all_worksheets_combined``."""
+    secret_creds = _service_account_from_streamlit_secrets()
+    if not secret_creds:
+        raise RuntimeError(
+            "No service account in Streamlit Secrets. Add a `[gsheet_service_account]` block "
+            "(or `GCP_SERVICE_ACCOUNT`) in this app’s Secrets, then reboot."
+        )
+    raw = _read_sheet_auth(
+        sheet_id,
+        secret_creds,
+        worksheet_name=None,
+        worksheet_gid=int(worksheet_gid),
+    )
+    title = _tab_title_for_worksheet_gid(sheet_id, worksheet_gid, _secret_fp)
+    raw = _preprocess_excel_sheet(raw, title)
+    out = _normalize(raw)
+    out["source_tab"] = title
+    out["worksheet_gid"] = int(worksheet_gid)
+    return out
 
 
 @st.cache_data(ttl=300)
@@ -1591,8 +1637,25 @@ def render_page_marketing_performance(
             leads_df = by_gid
     # Never fall back to the full workbook here — _pick_source would mix RAW CW into post-lead totals.
     post_df = _dedupe_post_lead_rows(_tab_subset(df, list(_POST_LEAD_SOURCE_TAB_PATTERNS)))
-    # Pipeline KPIs (Total Live = Q+P+N+C) must match the X-Ray **tab** totals — use full tab, not market/month slice.
-    post_df_kpi = _dedupe_post_lead_rows(_tab_subset(df_loaded, list(_POST_LEAD_SOURCE_TAB_PATTERNS)))
+    # Pipeline KPIs (Total Live = Q+P+N+C): full workbook tab(s), no market/month slice.
+    # Do NOT _dedupe_post_lead_rows here — cross-tab dedupe dropped ~10 rows vs Sheets SUM() when the same opp
+    # appeared on two post-qual tabs; Sheets totals still sum both tabs.
+    post_df_kpi = _tab_subset(df_loaded, list(_POST_LEAD_SOURCE_TAB_PATTERNS))
+    pq_gid = _optional_post_qual_gid_from_secrets()
+    if pq_gid is not None and "worksheet_gid" in df_loaded.columns:
+        wg = pd.to_numeric(df_loaded["worksheet_gid"], errors="coerce")
+        by_pq = df_loaded.loc[wg == int(pq_gid)].copy()
+        if not by_pq.empty:
+            post_df_kpi = by_pq
+    elif pq_gid is not None:
+        try:
+            _sid = _extract_sheet_id(_default_sheet_id_from_secrets())
+            _fp2 = _secret_fingerprint(_service_account_from_streamlit_secrets())
+            _direct = load_worksheet_by_gid_preprocessed(_sid, int(pq_gid), _fp2)
+            if not _direct.empty:
+                post_df_kpi = _direct
+        except Exception:
+            pass
     if post_df_kpi.empty:
         post_df_kpi = post_df
     cw_df = _pick_source(df, [r"raw\s*cw"], ["tcv", "first_month_lf"])
@@ -1645,7 +1708,22 @@ def render_page_marketing_performance(
         total_clicks = int(df["clicks"].sum()) if "clicks" in df.columns else 0
         total_leads = _lead_rows_count(leads_df if not leads_df.empty else df)
         total_qualified = _qualified_count_from_leads(leads_df if not leads_df.empty else df)
-        _pk = _dedupe_post_lead_rows(_tab_subset(df_loaded, list(_POST_LEAD_SOURCE_TAB_PATTERNS)))
+        _pk = _tab_subset(df_loaded, list(_POST_LEAD_SOURCE_TAB_PATTERNS))
+        _gpq = _optional_post_qual_gid_from_secrets()
+        if _gpq is not None and "worksheet_gid" in df_loaded.columns:
+            wg2 = pd.to_numeric(df_loaded["worksheet_gid"], errors="coerce")
+            by_pq2 = df_loaded.loc[wg2 == int(_gpq)].copy()
+            if not by_pq2.empty:
+                _pk = by_pq2
+        elif _gpq is not None:
+            try:
+                _sid2 = _extract_sheet_id(_default_sheet_id_from_secrets())
+                _fp3 = _secret_fingerprint(_service_account_from_streamlit_secrets())
+                _dir2 = load_worksheet_by_gid_preprocessed(_sid2, int(_gpq), _fp3)
+                if not _dir2.empty:
+                    _pk = _dir2
+            except Exception:
+                pass
         _pk = _pk if not _pk.empty else df
         total_pitching = int(_pk["pitching"].sum()) if "pitching" in _pk.columns else 0
         pl_only = _dedupe_post_lead_rows(_tab_subset(df, list(_POST_LEAD_SOURCE_TAB_PATTERNS)))
@@ -1963,7 +2041,11 @@ def render_main_dashboard(
         # Explicitly ensure core business tabs are loaded by title-match.
         spend_named = load_first_matching_worksheet_normalized(sheet_id, (r"^spend$", r"raw\s*spend", r"sum\s*spend"), _fp)
         leads_named = load_first_matching_worksheet_normalized(sheet_id, (r"^leads?$", r"raw\s*leads?"), _fp)
-        post_named = load_first_matching_worksheet_normalized(sheet_id, (r"post\s*leads?", r"raw.*post.*qual"), _fp)
+        post_named = load_first_matching_worksheet_normalized(
+            sheet_id,
+            (r"post\s*leads?", r"raw.*post.*qual", r"post\s+qual", r"post.*qualif"),
+            _fp,
+        )
         extras = [x for x in (spend_named, leads_named, post_named) if not x.empty]
         extras = _extras_skip_tabs_already_loaded(df_loaded, extras)
         if extras:
