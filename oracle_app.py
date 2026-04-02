@@ -554,6 +554,8 @@ _NORM_TO_FIELD: dict[str, str] = {
     "closedwon": "closed_won",
     "closed_won_deals": "closed_won",
     "cw_including_approved": "closed_won",
+    # Post-lead X-Ray / Salesforce export (binary 0/1 column)
+    "is_cw": "closed_won",
     "utm_source_gp": "utm_source",
     "utm_source": "utm_source",
     "utm_source_l": "utm_source_l",
@@ -696,7 +698,8 @@ def _preprocess_excel_sheet(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
                 & ~stage.str.contains("qualified", na=False)
                 & ~stage.str.contains("disqualif", na=False)
             ).astype(int)
-        if "Closed Won" not in df.columns:
+        _has_is_cw_col = any(_norm_header_key(c) == "is_cw" for c in df.columns)
+        if "Closed Won" not in df.columns and not _has_is_cw_col:
             df["Closed Won"] = raw_stage.map(_is_closed_won_stage_text).astype(int)
         if "Negotiation" not in df.columns:
             df["Negotiation"] = stage.str.contains("negotiation", na=False).astype(int)
@@ -746,7 +749,8 @@ def _preprocess_excel_sheet(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
     stage_col_any = _resolve_post_lead_stage_column(df)
     if stage_col_any is None:
         stage_col_any = next((c for c in df.columns if "stage" in _norm_header_key(c)), None)
-    if stage_col_any and "Closed Won" not in df.columns:
+    _has_is_cw_g = any(_norm_header_key(c) == "is_cw" for c in df.columns)
+    if stage_col_any and "Closed Won" not in df.columns and not _has_is_cw_g:
         df["Closed Won"] = df[stage_col_any].map(_is_closed_won_stage_text).astype(int)
     return df
 
