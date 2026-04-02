@@ -73,6 +73,16 @@ def _optional_post_qual_gid_from_secrets() -> Optional[int]:
         return None
 
 
+def _optional_raw_cw_gid_from_secrets() -> Optional[int]:
+    """Optional Streamlit secret XRAY_RAW_CW_GID: TCV / 1st Month LF tab (same as Looker Actual TCV & CPCW:LF)."""
+    try:
+        s = st.secrets
+        v = (s.get("XRAY_RAW_CW_GID") or s.get("xray_raw_cw_gid") or "").strip()
+        return int(v) if v else None
+    except Exception:
+        return None
+
+
 def _default_excel_path_from_secrets() -> str:
     """Optional Streamlit secret XRAY_EXCEL_PATH overrides default local workbook path."""
     try:
@@ -395,6 +405,52 @@ _POST_LEAD_SOURCE_TAB_PATTERNS: tuple[str, ...] = (
     r"post.*qualif",
 )
 
+# RAW CW / TCV tab — Actual TCV, 1st Month LF, CPCW:LF (Looker: SUM(Spend)/SUM(1st Month LF) at scorecard level).
+_RAW_CW_TAB_PATTERNS: tuple[str, ...] = (
+    r"raw\s*cw",
+    r"raw.*\bcw\b",
+    r"^\s*cw\s*$",
+    r"sum\s*cw",
+    r"cw\s*summary",
+)
+
+
+def _tab_subset_by_patterns(frame: pd.DataFrame, tab_keywords: list[str]) -> pd.DataFrame:
+    """Filter rows by ``source_tab`` regex patterns (shared by KPI + master merges)."""
+    if frame.empty or "source_tab" not in frame.columns:
+        return frame
+    s = frame["source_tab"].astype(str).str.lower()
+    mask = pd.Series(False, index=frame.index)
+    for k in tab_keywords:
+        mask = mask | s.str.contains(k.lower(), na=False, regex=True)
+    return frame[mask].copy()
+
+
+def _resolve_cw_tcv_dataframe(df_loaded: pd.DataFrame, df_filtered: pd.DataFrame) -> pd.DataFrame:
+    """TCV / 1st Month LF from the RAW CW tab(s) on the full workbook (not Market/Month-filtered), like Looker."""
+    gid = _optional_raw_cw_gid_from_secrets()
+    if gid is not None and not df_loaded.empty and "worksheet_gid" in df_loaded.columns:
+        wg = pd.to_numeric(df_loaded["worksheet_gid"], errors="coerce")
+        by_g = df_loaded.loc[wg == int(gid)].copy()
+        if not by_g.empty:
+            return by_g
+    if not df_loaded.empty:
+        t = _tab_subset_by_patterns(df_loaded, list(_RAW_CW_TAB_PATTERNS))
+        if not t.empty:
+            return t
+    # Fallback: filtered frame + loose pattern
+    if df_filtered.empty:
+        return df_filtered
+    s = df_filtered["source_tab"].astype(str).str.lower() if "source_tab" in df_filtered.columns else None
+    if s is not None:
+        mask = pd.Series(False, index=df_filtered.index)
+        for k in _RAW_CW_TAB_PATTERNS:
+            mask = mask | s.str.contains(k.lower(), na=False, regex=True)
+        sub = df_filtered.loc[mask].copy()
+        if not sub.empty:
+            return sub
+    return df_filtered
+
 
 def _dedupe_post_lead_rows(df: pd.DataFrame) -> pd.DataFrame:
     """When the same opportunity appears on **more than one** post-qual tab, keep one row (prefer Raw Post Qualification).
@@ -564,6 +620,8 @@ _NORM_TO_FIELD: dict[str, str] = {
     "tcv": "tcv",
     "tcv_usd": "tcv",
     "tcv_converted": "tcv",
+    "actual_tcv": "tcv",
+    "actual_tcv_usd": "tcv",
     "1st_month_lf": "first_month_lf",
     "monthly_lf_usd": "first_month_lf",
     "cpcw": "cpcw",
@@ -1530,45 +1588,51 @@ def _master_performance_table(
         "leads": ("leads", "sum"),
         "qualified": ("qualified", "sum"),
     }
-    if "tcv" in df.columns and float(df["tcv"].sum()) > 0:
+    if "tcv" in df.columns:
         agg["tcv"] = ("tcv", "sum")
-    if "first_month_lf" in df.columns and float(df["first_month_lf"].sum()) > 0:
+    if "first_month_lf" in df.columns:
         agg["lf"] = ("first_month_lf", "sum")
 
     g = df.groupby(["month", "country"], as_index=False).agg(**agg).sort_values(
         ["month", "country"], ascending=[False, True]
     )
-    g["Unified Date"] = g["month"].apply(lambda m: pd.Period(m, freq="M").strftime("%b %Y") if pd.notna(m) else "")
     g["Market"] = g["country"]
-    g["Spend"] = g["spend"]
-    g["CW (Inc Approved)"] = g["cw"].astype(int)
-    g["CPCW"] = g.apply(
+    # Sum additive fields per month × market, then recompute ratios (Looker: do not SUM(CPCW:LF)).
+    sum_map: dict[str, str] = {}
+    for c in ("spend", "cw", "tcv", "lf", "leads", "qualified"):
+        if c in g.columns:
+            sum_map[c] = "sum"
+    gm = g.groupby(["month", "Market"], as_index=False).agg(sum_map)
+    gm["Spend"] = gm["spend"]
+    gm["CW (Inc Approved)"] = gm["cw"].astype(int)
+    if "lf" in gm.columns:
+        gm["1st Month LF"] = gm["lf"]
+    if "tcv" in gm.columns:
+        gm["Actual TCV"] = gm["tcv"]
+    gm["Total Leads"] = gm["leads"]
+    gm["CPCW"] = gm.apply(
         lambda r: (r["spend"] / r["cw"]) if r["cw"] and r["cw"] > 0 else float("nan"),
         axis=1,
     )
-    if "lf" in g.columns:
-        g["1st Month LF"] = g["lf"]
-        g["CPCW:LF"] = g.apply(
+    if "lf" in gm.columns:
+        gm["CPCW:LF"] = gm.apply(
             lambda r: (r["spend"] / r["lf"]) if r["lf"] and r["lf"] > 0 else float("nan"),
             axis=1,
         )
-    if "tcv" in g.columns:
-        g["Actual TCV"] = g["tcv"]
-        g["Cost/TCV%"] = g.apply(
+    if "tcv" in gm.columns:
+        gm["Cost/TCV%"] = gm.apply(
             lambda r: (r["spend"] / r["tcv"] * 100) if r["tcv"] and r["tcv"] > 0 else float("nan"),
             axis=1,
         )
-    g["CPL"] = g.apply(
+    gm["CPL"] = gm.apply(
         lambda r: (r["spend"] / r["leads"]) if r["leads"] and r["leads"] > 0 else float("nan"),
         axis=1,
     )
-    g["SQL %"] = g.apply(
+    gm["SQL %"] = gm.apply(
         lambda r: (r["qualified"] / r["leads"] * 100) if r["leads"] and r["leads"] > 0 else float("nan"),
         axis=1,
     )
-    g["Total Leads"] = g["leads"]
 
-    # Keep only requested KPI headers in this order.
     metrics = [
         "Spend",
         "CW (Inc Approved)",
@@ -1580,20 +1644,22 @@ def _master_performance_table(
         "Total Leads",
     ]
     for m in metrics:
-        if m not in g.columns:
-            g[m] = float("nan")
+        if m not in gm.columns:
+            gm[m] = float("nan")
 
-    monthly_market = g.groupby(["month", "Market"], as_index=False)[metrics].sum().sort_values(["month", "Market"])
-    monthly_market["Month"] = monthly_market["month"].apply(lambda m: pd.Period(m, freq="M").strftime("%b %Y"))
-    pvt = monthly_market.drop(columns=["month"])
+    pvt = gm.copy()
+    pvt["Month"] = pvt["month"].apply(lambda m: pd.Period(m, freq="M").strftime("%b %Y") if pd.notna(m) else "")
+    pvt = pvt.drop(columns=["month"], errors="ignore")
     cols = ["Month", "Market"] + [m for m in metrics if m in pvt.columns]
-    pvt = pvt[cols]
+    pvt = pvt[cols].sort_values(["Month", "Market"])
 
     def _fmt_for_metric(metric_name: str) -> Any:
         if metric_name == "Spend":
             return lambda x: _format_spend_k(float(x)) if pd.notna(x) else "—"
         if metric_name in {"CPCW", "CPL", "Actual TCV", "1st Month LF"}:
             return lambda x: f"${x:,.2f}" if pd.notna(x) else "—"
+        if metric_name == "CPCW:LF":
+            return lambda x: f"{x:,.2f}" if pd.notna(x) else "—"
         if metric_name in {"SQL %", "Cost/TCV%"}:
             return lambda x: f"{x:.2f}%" if pd.notna(x) else "—"
         if metric_name in {"CW (Inc Approved)", "Total Leads"}:
@@ -1705,7 +1771,7 @@ def render_page_marketing_performance(
             pass
     if post_df_kpi.empty:
         post_df_kpi = post_df
-    cw_df = _pick_source(df, [r"raw\s*cw"], ["tcv", "first_month_lf"])
+    cw_df = _resolve_cw_tcv_dataframe(df_loaded, df)
 
     total_spend = float(spend_df["cost"].sum()) if "cost" in spend_df.columns else 0.0
     total_impr = int(spend_df["impressions"].sum()) if "impressions" in spend_df.columns else 0
@@ -2097,7 +2163,12 @@ def render_main_dashboard(
             (r"post\s*leads?", r"raw.*post.*qual", r"post\s+qual", r"post.*qualif"),
             _fp,
         )
-        extras = [x for x in (spend_named, leads_named, post_named) if not x.empty]
+        cw_named = load_first_matching_worksheet_normalized(
+            sheet_id,
+            tuple(_RAW_CW_TAB_PATTERNS),
+            _fp,
+        )
+        extras = [x for x in (spend_named, leads_named, post_named, cw_named) if not x.empty]
         extras = _extras_skip_tabs_already_loaded(df_loaded, extras)
         if extras:
             if df_loaded.empty:
