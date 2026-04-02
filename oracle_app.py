@@ -1400,9 +1400,8 @@ def _kpi_block(
     total_closed_lost: int,
 ) -> None:
     """Old card design grouped under 3 sections."""
-    # Q Win Rate%: CW ÷ Total Live (same bucket as the scorecard); fallback to ÷ Qualified when Total Live is 0.
-    _qwr_denom = total_total_live if total_total_live else total_qualified
-    q_rate = (total_cw / _qwr_denom * 100) if _qwr_denom else 0.0
+    # Q Win Rate% — same as Looker / X-Ray: SUM(CW Inc Approved) / SUM(Qualified).
+    q_rate = (total_cw / total_qualified * 100) if total_qualified else 0.0
     sql_rate = (total_qualified / total_leads * 100) if total_leads else 0.0
     cpcw = (total_spend / total_cw) if total_cw else 0.0
     # Training deck formulas:
@@ -1413,10 +1412,7 @@ def _kpi_block(
     _cw_help = (
         "Deals that are in a Closed Won status, including any deals that have been formally approved."
     )
-    _q_win_help = (
-        "CW (Inc Approved) ÷ Total Live, where Total Live = Qualifying + Pitching + Negotiation + Commitment. "
-        "Uses ÷ Qualified when Total Live is 0."
-    )
+    _q_win_help = "CW (Inc Approved) ÷ Qualified — matches X-Ray / Looker Q Win Rate%."
     sections: list[tuple[str, list[tuple[Any, ...]]]] = [
         (
             "Closed Won",
@@ -1897,22 +1893,10 @@ def render_page_market_mom(
     st.caption("Grand total (filtered)")
     st.dataframe(grand, use_container_width=True, hide_index=True, key=f"{key_suffix}_df_grand")
 
-    _agg_kw: dict[str, tuple[str, str]] = {
-        "cw": ("closed_won", "sum"),
-        "qualified": ("qualified", "sum"),
-    }
-    for _pc in ("qualifying", "pitching", "negotiation", "commitment"):
-        if _pc in df.columns:
-            _agg_kw[_pc] = (_pc, "sum")
-    monthly = df.groupby("month", as_index=False).agg(**_agg_kw).sort_values("month")
-    for _pc in ("qualifying", "pitching", "negotiation", "commitment"):
-        if _pc not in monthly.columns:
-            monthly[_pc] = 0
-    monthly["total_live"] = (
-        pd.to_numeric(monthly["qualifying"], errors="coerce").fillna(0)
-        + pd.to_numeric(monthly["pitching"], errors="coerce").fillna(0)
-        + pd.to_numeric(monthly["negotiation"], errors="coerce").fillna(0)
-        + pd.to_numeric(monthly["commitment"], errors="coerce").fillna(0)
+    monthly = (
+        df.groupby("month", as_index=False)
+        .agg(cw=("closed_won", "sum"), qualified=("qualified", "sum"))
+        .sort_values("month")
     )
     month_leads: list[int] = []
     for m in monthly["month"].tolist():
@@ -1924,11 +1908,7 @@ def render_page_market_mom(
         axis=1,
     )
     monthly["q_win_pct"] = monthly.apply(
-        lambda r: (
-            (r["cw"] / r["total_live"] * 100)
-            if r["total_live"]
-            else ((r["cw"] / r["qualified"] * 100) if r["qualified"] else 0.0)
-        ),
+        lambda r: (r["cw"] / r["qualified"] * 100) if r["qualified"] else 0.0,
         axis=1,
     )
 
@@ -1949,7 +1929,7 @@ def render_page_market_mom(
             x="month",
             y=["sql_pct", "q_win_pct"],
             markers=True,
-            title="SQL % and Q Win % — CW ÷ Total Live by month (fallback ÷ Qualified)",
+            title="SQL % and Q Win % (CW ÷ Qualified, by month)",
         )
         fig2.update_layout(plot_bgcolor="white", paper_bgcolor="white", margin=dict(l=8, r=8, t=45, b=8))
         st.plotly_chart(fig2, use_container_width=True, key=f"{key_suffix}_pl_lines")
