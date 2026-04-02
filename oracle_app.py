@@ -1188,6 +1188,20 @@ def _format_spend_k(v: float) -> str:
     return f"${k:.2f}K"
 
 
+def _lead_rows_count(frame: pd.DataFrame) -> int:
+    """Count lead rows by populated Lead Source (channel) or UTM Source; fall back to row count."""
+    if frame.empty:
+        return 0
+    for col in ("channel", "utm_source"):
+        if col not in frame.columns:
+            continue
+        s = frame[col].astype(str).str.strip().str.lower()
+        n = int((~s.isin({"", "unknown", "none", "nan", "<na>"})).sum())
+        if n > 0:
+            return n
+    return int(len(frame))
+
+
 def _heatmap_bg(series: pd.Series, *, good_low: bool = True) -> list[str]:
     """Return teal/blue heatmap backgrounds (no red tones)."""
     s = pd.to_numeric(series, errors="coerce")
@@ -1531,7 +1545,7 @@ def render_page_marketing_performance(
     total_spend = float(spend_df["cost"].sum()) if "cost" in spend_df.columns else 0.0
     total_impr = int(spend_df["impressions"].sum()) if "impressions" in spend_df.columns else 0
     total_clicks = int(spend_df["clicks"].sum()) if "clicks" in spend_df.columns else 0
-    total_leads = int(leads_df["leads"].sum()) if "leads" in leads_df.columns else 0
+    total_leads = _lead_rows_count(leads_df)
     total_qualified = int(leads_df["qualified"].sum()) if "qualified" in leads_df.columns else 0
     total_pitching = int(post_df["pitching"].sum()) if "pitching" in post_df.columns else 0
     total_cw = _sum_closed_won_unique_opportunities(post_df)
@@ -1571,7 +1585,7 @@ def render_page_marketing_performance(
         total_spend = float(df["cost"].sum()) if "cost" in df.columns else 0.0
         total_impr = int(df["impressions"].sum()) if "impressions" in df.columns else 0
         total_clicks = int(df["clicks"].sum()) if "clicks" in df.columns else 0
-        total_leads = int(df["leads"].sum()) if "leads" in df.columns else 0
+        total_leads = _lead_rows_count(leads_df if not leads_df.empty else df)
         total_qualified = int(df["qualified"].sum()) if "qualified" in df.columns else 0
         total_pitching = int(df["pitching"].sum()) if "pitching" in df.columns else 0
         pl_only = _dedupe_post_lead_rows(_tab_subset(df, list(_POST_LEAD_SOURCE_TAB_PATTERNS)))
@@ -1713,7 +1727,7 @@ def render_page_market_mom(
                 "Market": "—",
                 "Spend": float(df["cost"].sum()),
                 "CW (Inc Approved)": int(df["closed_won"].sum()),
-                "Total Leads": int(df["leads"].sum()),
+                "Total Leads": _lead_rows_count(df),
             }
         ]
     )
@@ -1722,13 +1736,14 @@ def render_page_market_mom(
 
     monthly = (
         df.groupby("month", as_index=False)
-        .agg(
-            cw=("closed_won", "sum"),
-            leads=("leads", "sum"),
-            qualified=("qualified", "sum"),
-        )
+        .agg(cw=("closed_won", "sum"), qualified=("qualified", "sum"))
         .sort_values("month")
     )
+    month_leads: list[int] = []
+    for m in monthly["month"].tolist():
+        gm = df[df["month"] == m]
+        month_leads.append(_lead_rows_count(gm))
+    monthly["leads"] = month_leads
     monthly["sql_pct"] = monthly.apply(
         lambda r: (r["qualified"] / r["leads"] * 100) if r["leads"] else 0.0,
         axis=1,
@@ -1781,9 +1796,14 @@ def render_page_channels(df_loaded: pd.DataFrame, start_date: date, end_date: da
     st.markdown("#### Spend & efficiency by channel / source")
     agg = (
         df.groupby(group_col, as_index=False)
-        .agg(spend=("cost", "sum"), clicks=("clicks", "sum"), leads=("leads", "sum"), cw=("closed_won", "sum"))
+        .agg(spend=("cost", "sum"), clicks=("clicks", "sum"), cw=("closed_won", "sum"))
         .sort_values("spend", ascending=False)
     )
+    grp_leads: list[int] = []
+    for k in agg[group_col].tolist():
+        gk = df[df[group_col] == k]
+        grp_leads.append(_lead_rows_count(gk))
+    agg["leads"] = grp_leads
     agg["CPL"] = agg.apply(lambda r: (r["spend"] / r["leads"]) if r["leads"] else float("nan"), axis=1)
     st.dataframe(agg, use_container_width=True, hide_index=True, key=f"{key_suffix}_df_ch")
 
