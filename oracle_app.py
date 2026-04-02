@@ -1189,17 +1189,8 @@ def _format_spend_k(v: float) -> str:
 
 
 def _lead_rows_count(frame: pd.DataFrame) -> int:
-    """Count lead rows by populated Lead Source (channel) or UTM Source; fall back to row count."""
-    if frame.empty:
-        return 0
-    for col in ("channel", "utm_source"):
-        if col not in frame.columns:
-            continue
-        s = frame[col].astype(str).str.strip().str.lower()
-        n = int((~s.isin({"", "unknown", "none", "nan", "<na>"})).sum())
-        if n > 0:
-            return n
-    return int(len(frame))
+    """Lead count = data-row count of the resolved leads slice (sheet rows, header excluded)."""
+    return int(len(frame)) if isinstance(frame, pd.DataFrame) else 0
 
 
 def _heatmap_bg(series: pd.Series, *, good_low: bool = True) -> list[str]:
