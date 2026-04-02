@@ -1673,7 +1673,6 @@ def _kpi_block(
                 label, value, tip = card[0], card[1], card[2]
                 parts.append(
                     f'<div class="kpi-card" style="animation-delay:{j * 0.055:.3f}s"{_kpi_data_tip_attr(tip)}>'
-                    f'<span class="kpi-hint-badge" aria-hidden="true">?</span>'
                     f'<div class="kpi-card-label">{html.escape(label)}</div>'
                     f'<div class="kpi-card-value">{html.escape(value)}</div></div>'
                 )
@@ -2422,7 +2421,7 @@ def main() -> None:
         position: relative;
         overflow: visible;
         border-radius: 12px;
-        padding: 11px 28px 13px 12px;
+        padding: 11px 12px 13px;
         background: linear-gradient(160deg, #ffffff 0%, #f8fafc 55%, #f1f5f9 100%);
         border: 1px solid #e2e8f0;
         box-shadow: 0 2px 10px rgba(15, 23, 42, 0.045);
@@ -2448,36 +2447,6 @@ def main() -> None:
         transform: translateY(-4px);
         box-shadow: 0 12px 32px rgba(15, 23, 42, 0.12);
         border-color: #cbd5e1;
-    }
-    .kpi-hint-badge {
-        position: absolute;
-        top: 9px;
-        right: 9px;
-        width: 17px;
-        height: 17px;
-        border-radius: 5px;
-        background: rgba(15, 23, 42, 0.06);
-        color: #64748b;
-        font-size: 11px;
-        font-weight: 800;
-        line-height: 17px;
-        text-align: center;
-        pointer-events: none;
-        transition: background 0.12s ease, color 0.12s ease, transform 0.12s ease;
-        z-index: 2;
-    }
-    .kpi-card:hover .kpi-hint-badge {
-        background: rgba(79, 132, 131, 0.18);
-        color: #0f766e;
-        transform: scale(1.06);
-    }
-    .kpi-section--leads .kpi-card:hover .kpi-hint-badge {
-        background: rgba(37, 99, 235, 0.15);
-        color: #1d4ed8;
-    }
-    .kpi-section--pipe .kpi-card:hover .kpi-hint-badge {
-        background: rgba(124, 58, 237, 0.14);
-        color: #6d28d9;
     }
     /* Crisp hover popover (CSS only; text from data-kpi-tip) */
     .kpi-card[data-kpi-tip]::after {
