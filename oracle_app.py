@@ -415,6 +415,62 @@ _RAW_CW_TAB_PATTERNS: tuple[str, ...] = (
     r"cw\s*summary",
 )
 
+# Master View: regional subtotal (same markets as typical ME X-Ray).
+_MIDDLE_EAST_MARKET_KEYS: frozenset[str] = frozenset(
+    {
+        "bahrain",
+        "kuwait",
+        "saudi arabia",
+        "uae",
+        "united arab emirates",
+        "oman",
+        "qatar",
+        "jordan",
+        "lebanon",
+        "iraq",
+    }
+)
+# Sort order within a month (normalized keys; UAE aliases unified for ordering).
+_ME_MARKET_ORDER: tuple[str, ...] = (
+    "bahrain",
+    "kuwait",
+    "saudi arabia",
+    "united arab emirates",
+    "oman",
+    "qatar",
+    "jordan",
+    "lebanon",
+    "iraq",
+)
+
+
+def _norm_market_key(name: str) -> str:
+    return re.sub(r"\s+", " ", str(name).strip().lower())
+
+
+def _is_middle_east_market(name: str) -> bool:
+    k = _norm_market_key(name)
+    if k == "uae":
+        k = "united arab emirates"
+    return k in _MIDDLE_EAST_MARKET_KEYS
+
+
+def _market_row_sort_key(market: str) -> tuple:
+    """Middle East countries first (fixed order), then other markets A–Z, then ``Middle East`` subtotal last."""
+    m = str(market).strip()
+    if m == "Middle East":
+        return (2, "", "")
+    k = _norm_market_key(m)
+    if k == "uae":
+        k = "united arab emirates"
+    if k in _MIDDLE_EAST_MARKET_KEYS:
+        try:
+            pos = _ME_MARKET_ORDER.index(k)
+        except ValueError:
+            pos = 40
+        return (0, f"{pos:02d}", m)
+    return (1, m.lower(), m)
+
 
 def _tab_subset_by_patterns(frame: pd.DataFrame, tab_keywords: list[str]) -> pd.DataFrame:
     """Filter rows by ``source_tab`` regex patterns (shared by KPI + master merges)."""
@@ -1458,32 +1514,115 @@ def _qualified_count_from_leads(frame: pd.DataFrame) -> int:
     return int(s.eq("qualified").sum())
 
 
-def _heatmap_bg(series: pd.Series, *, good_low: bool = True) -> list[str]:
-    """Return teal/blue heatmap backgrounds (no red tones)."""
-    s = pd.to_numeric(series, errors="coerce")
-    lo, hi = float(s.min(skipna=True)), float(s.max(skipna=True))
-    if pd.isna(lo) or pd.isna(hi) or hi <= lo:
-        return ["background-color: #ffffff"] * len(s)
-    out: list[str] = []
-    for x in s:
-        if pd.isna(x):
-            out.append("background-color: #f8fafc")
+def _master_view_append_me_subtotal(gm: pd.DataFrame) -> pd.DataFrame:
+    """Per month: sort markets (ME order), append a ``Middle East`` row summing ME countries only."""
+    if gm.empty:
+        return gm
+    parts: list[pd.DataFrame] = []
+
+    def _month_sort_key(m: Any) -> Any:
+        try:
+            return pd.Period(str(m), freq="M")
+        except Exception:
+            return str(m)
+
+    months_sorted = sorted(gm["month"].dropna().unique(), key=_month_sort_key, reverse=True)
+    for month in months_sorted:
+        grp = gm[gm["month"] == month].copy()
+        grp = grp[grp["Market"].astype(str).str.strip() != "Middle East"]
+        if grp.empty:
             continue
-        t = (float(x) - lo) / (hi - lo)
-        if not good_low:
-            t = 1.0 - t
-        # teal/blue scale only (no red): light teal -> aqua -> soft blue
-        if t <= 0.5:
-            r = 0.87 - 0.12 * (t * 2)
-            g = 0.95 - 0.08 * (t * 2)
-            b = 0.93 - 0.04 * (t * 2)
+        grp["_sk"] = grp["Market"].map(_market_row_sort_key)
+        grp = grp.sort_values("_sk").drop(columns="_sk")
+        me_mask = grp["Market"].map(_is_middle_east_market)
+        me_slice = grp[me_mask]
+        if not me_slice.empty:
+            row: dict[str, Any] = {"month": month, "Market": "Middle East"}
+            for c in gm.columns:
+                if c in ("month", "Market"):
+                    continue
+                if c in me_slice.columns:
+                    row[c] = float(pd.to_numeric(me_slice[c], errors="coerce").fillna(0).sum())
+            me_row = pd.DataFrame([row])
+            for c in gm.columns:
+                if c not in me_row.columns:
+                    me_row[c] = float("nan")
+            me_row = me_row[gm.columns]
+            grp = pd.concat([grp, me_row], ignore_index=True)
+        parts.append(grp)
+    if not parts:
+        return gm
+    return pd.concat(parts, ignore_index=True)
+
+
+def _master_view_style_css(df: pd.DataFrame) -> pd.DataFrame:
+    """Looker-like fills: cyan inputs, white leads, R/G/Y ratios; bold ``Middle East`` row."""
+    css = pd.DataFrame("", index=df.index, columns=df.columns)
+    is_me = df["Market"].astype(str).str.strip().eq("Middle East")
+    non_me = ~is_me
+    cyan = "background-color: #e8f4f8; color: #0f172a;"
+    white = "background-color: #ffffff; color: #0f172a;"
+    me_bold = "font-weight: 700;"
+    ratio_me = "background-color: #ffffff; font-weight: 700; color: #0f172a;"
+    empty_cell = "background-color: #fafafa; color: #94a3b8;"
+
+    def _rgy(val: Any, lo: float, hi: float) -> str:
+        try:
+            v = float(val)
+        except (TypeError, ValueError):
+            return "background-color: #fee2e2; color: #991b1b;"
+        if pd.isna(v) or v == 0.0:
+            return "background-color: #fee2e2; color: #991b1b;"
+        if v <= lo:
+            return "background-color: #dcfce7; color: #166534;"
+        if v <= hi:
+            return "background-color: #fef9c3; color: #854d0e;"
+        return "background-color: #fee2e2; color: #b91c1c;"
+
+    lf_lo = lf_hi = 1.0
+    ct_lo = ct_hi = 5.0
+    if "CPCW:LF" in df.columns:
+        s_lf = pd.to_numeric(df.loc[non_me, "CPCW:LF"], errors="coerce").dropna()
+        if len(s_lf) >= 2:
+            lf_lo, lf_hi = float(s_lf.quantile(0.33)), float(s_lf.quantile(0.66))
         else:
-            u = (t - 0.5) * 2
-            r = 0.75 - 0.10 * u
-            g = 0.87 - 0.16 * u
-            b = 0.89 + 0.04 * u
-        out.append(f"background-color: rgba({int(r * 255)},{int(g * 255)},{int(b * 255)},0.65)")
-    return out
+            lf_lo, lf_hi = 1.0, 2.5
+    if "Cost/TCV%" in df.columns:
+        s_ct = pd.to_numeric(df.loc[non_me, "Cost/TCV%"], errors="coerce").dropna()
+        if len(s_ct) >= 2:
+            ct_lo, ct_hi = float(s_ct.quantile(0.33)), float(s_ct.quantile(0.66))
+        else:
+            ct_lo, ct_hi = 5.0, 12.0
+
+    cyan_cols = {"Spend", "CW (Inc Approved)", "CPCW", "1st Month LF", "Actual TCV"}
+    for i in df.index:
+        me = bool(is_me.loc[i])
+        for col in df.columns:
+            if col == "Unified Date":
+                v = df.loc[i, col]
+                if v == "" or (isinstance(v, str) and not str(v).strip()):
+                    css.loc[i, col] = empty_cell
+                else:
+                    css.loc[i, col] = "background-color: #f1f5f9; font-weight: 600; color: #334155; border-bottom: 1px solid #e2e8f0;"
+            elif col == "Market":
+                css.loc[i, col] = (me_bold + " background-color: #ffffff; color: #0f172a;") if me else white
+            elif col in cyan_cols:
+                css.loc[i, col] = (cyan + me_bold) if me else cyan
+            elif col == "Total Leads":
+                css.loc[i, col] = (white + me_bold) if me else white
+            elif col == "CPCW:LF":
+                if me:
+                    css.loc[i, col] = ratio_me
+                else:
+                    css.loc[i, col] = _rgy(df.loc[i, col], lf_lo, lf_hi)
+            elif col == "Cost/TCV%":
+                if me:
+                    css.loc[i, col] = ratio_me
+                else:
+                    css.loc[i, col] = _rgy(df.loc[i, col], ct_lo, ct_hi)
+            else:
+                css.loc[i, col] = white
+    return css
 
 
 def _apply_sheet_filters(
@@ -1686,7 +1825,7 @@ def _master_performance_table(
     key_suffix: str,
     section_title: Optional[str] = "Marketing Performance Master View",
 ) -> None:
-    """Month × market pivot; ME X-Ray columns (TCV, LF, CPCW:LF, Cost/TCV%) when present in the data."""
+    """Unified Date column (first row per month only), Middle East subtotal, cyan input metrics, R/G/Y on ratios."""
     if section_title:
         st.markdown(f'<div class="looker-table-title">{section_title}</div>', unsafe_allow_html=True)
     agg: dict[str, tuple[str, str]] = {
@@ -1711,6 +1850,7 @@ def _master_performance_table(
         if c in g.columns:
             sum_map[c] = "sum"
     gm = g.groupby(["month", "Market"], as_index=False).agg(sum_map)
+    gm = _master_view_append_me_subtotal(gm)
     gm["Spend"] = gm["spend"]
     gm["CW (Inc Approved)"] = gm["cw"].astype(int)
     if "lf" in gm.columns:
@@ -1759,7 +1899,22 @@ def _master_performance_table(
     pvt["Month"] = pvt["month"].apply(lambda m: pd.Period(m, freq="M").strftime("%b %Y") if pd.notna(m) else "")
     pvt = pvt.drop(columns=["month"], errors="ignore")
     cols = ["Month", "Market"] + [m for m in metrics if m in pvt.columns]
-    pvt = pvt[cols].sort_values(["Month", "Market"])
+    pvt = pvt[cols]
+    pvt["Unified Date"] = ""
+
+    def _month_label_sort_key(m: Any) -> Any:
+        try:
+            return pd.Period(str(m), freq="M")
+        except Exception:
+            return str(m)
+
+    for m in sorted(pvt["Month"].dropna().unique(), key=_month_label_sort_key, reverse=True):
+        ix = pvt.index[pvt["Month"] == m].tolist()
+        if ix:
+            pvt.loc[ix[0], "Unified Date"] = m
+    pvt = pvt.drop(columns=["Month"], errors="ignore")
+    out_cols = ["Unified Date", "Market"] + [m for m in metrics if m in pvt.columns]
+    pvt = pvt[out_cols]
 
     def _fmt_for_metric(metric_name: str) -> Any:
         if metric_name == "Spend":
@@ -1774,18 +1929,23 @@ def _master_performance_table(
             return lambda x: f"{x:,.0f}" if pd.notna(x) else "—"
         return lambda x: f"{x:,.2f}" if pd.notna(x) else "—"
 
-    fmt_map: dict[str, Any] = {}
+    fmt_map: dict[str, Any] = {
+        "Unified Date": lambda x: "" if x == "" or (isinstance(x, float) and pd.isna(x)) else str(x),
+        "Market": lambda x: str(x) if pd.notna(x) else "—",
+    }
     for c in pvt.columns:
-        if c in {"Month", "Market"}:
+        if c in {"Unified Date", "Market"}:
             continue
-        metric_name = c
-        fmt_map[c] = _fmt_for_metric(metric_name)
+        fmt_map[c] = _fmt_for_metric(c)
 
-    styler = pvt.style.format(fmt_map)
-    for c in [x for x in pvt.columns if x not in {"Month", "Market"}]:
-        metric_name = c
-        good_low = metric_name in {"CPCW", "CPCW:LF", "Cost/TCV%", "CPL"}
-        styler = styler.apply(lambda s, col=c, gl=good_low: _heatmap_bg(pvt[col], good_low=gl), subset=[c])
+    css_matrix = _master_view_style_css(pvt)
+    styler = pvt.style.format(fmt_map, na_rep="—")
+    for col in css_matrix.columns:
+        styler = styler.apply(
+            lambda s, c=col: css_matrix.loc[s.index, c],
+            axis=0,
+            subset=[col],
+        )
     st.dataframe(styler, use_container_width=True, hide_index=True, key=f"{key_suffix}_df_master_pivot")
 
 
@@ -1802,7 +1962,6 @@ def render_page_marketing_performance(
         return
 
     st.markdown('<h1 class="looker-page-h1">Marketing Performance Overview</h1>', unsafe_allow_html=True)
-    st.caption("Build marker: mpo-debug-2026-04-02-1")
     df, _ = _apply_marketing_performance_filters(df_date, key_suffix=key_suffix)
 
     st.caption("Filters apply to scorecards, master table, and charts below.")
