@@ -1597,49 +1597,66 @@ def _kpi_block(
     )
     _cost_tcv_help = "Looker / X-Ray: SUM(Spend) ÷ SUM(Actual TCV), shown as a percent (same as Cost/TCV%)."
     _actual_tcv_help = (
-        "Sum of Actual TCV on the RAW CW tab for **closed-won deals only** (stage or Is_CW), "
-        "scoped to the same Market and Month filters as Spend."
+        "Sum of Actual TCV on the RAW CW tab for closed-won deals only (stage or Is_CW), "
+        "using the same Market and Month filters as Spend."
     )
-    sections: list[tuple[str, list[tuple[Any, ...]]]] = [
+    _spend_help = "Total media spend from the spend worksheet, after your Market and Month filters."
+    _cpcw_help = "Cost per closed won: total spend ÷ count of closed-won deals (unique opportunities where applicable)."
+    _cpcw_lf_help = (
+        "Spend ÷ sum of 1st Month LF for closed-won rows on RAW CW (same filters as Actual TCV). "
+        "Lower means more LF per dollar of marketing."
+    )
+    _leads_total_help = "Data rows on the canonical Raw Leads tab (or configured leads worksheet), scoped to your filters."
+    _qualified_help = "Leads whose status is Qualified on the leads tab."
+    _new_work_help = "Count of leads in New or Working status on the leads tab."
+    _sql_pct_help = "SQL % = Qualified ÷ Total Leads × 100 (same lead slice as the cards above)."
+    _cpl_help = "CPL = total spend ÷ total leads (after filters)."
+    _cpsql_help = "CPSQL = total spend ÷ qualified count (after filters)."
+    _total_live_help = (
+        "Pipeline headcount: Qualifying + Pitching + Negotiation + Commitment on the post-qualification tab "
+        "(full tab totals unless you narrow by filters on rows that carry those stages)."
+    )
+    _nego_help = "Opportunities in Negotiation stage on the post-qualification export."
+    _commit_help = "Opportunities in Commitment stage on the post-qualification export."
+    _closed_lost_help = "Opportunities in Closed Lost stage on the post-qualification export."
+    sections: list[tuple[str, list[tuple[str, str, str]]]] = [
         (
             "Closed Won",
             [
                 ("CW (Inc Approved)", f"{total_cw:,}", _cw_help),
-                ("Spend", _format_spend_k(total_spend)),
-                ("CPCW", f"${cpcw:,.2f}" if total_cw else "—"),
+                ("Spend", _format_spend_k(total_spend), _spend_help),
+                ("CPCW", f"${cpcw:,.2f}" if total_cw else "—", _cpcw_help),
                 ("Actual TCV", _format_currency(total_tcv) if total_tcv else "—", _actual_tcv_help),
-                ("CpCW:LF", f"{cpcw_lf:.2f}" if total_first_month_lf else "—"),
+                ("CpCW:LF", f"{cpcw_lf:.2f}" if total_first_month_lf else "—", _cpcw_lf_help),
                 ("Cost/TCV%", f"{spend_tcv_pct:.2f}%" if total_tcv else "—", _cost_tcv_help),
             ],
         ),
         (
             "Leads",
             [
-                ("Total Leads", f"{total_leads:,}"),
-                ("Qualified", f"{total_qualified:,}"),
-                ("New + Working", f"{total_new_working:,}"),
-                ("SQL %", f"{sql_rate:.2f}%"),
-                ("CPL", f"${cpl:,.2f}" if total_leads else "—"),
-                ("CPSQL", f"${cpsql:,.2f}" if total_qualified else "—"),
+                ("Total Leads", f"{total_leads:,}", _leads_total_help),
+                ("Qualified", f"{total_qualified:,}", _qualified_help),
+                ("New + Working", f"{total_new_working:,}", _new_work_help),
+                ("SQL %", f"{sql_rate:.2f}%", _sql_pct_help),
+                ("CPL", f"${cpl:,.2f}" if total_leads else "—", _cpl_help),
+                ("CPSQL", f"${cpsql:,.2f}" if total_qualified else "—", _cpsql_help),
             ],
         ),
         (
             "Qualified Leads",
             [
-                ("Total Live", f"{total_total_live:,}"),
-                ("Negotiation", f"{total_negotiation:,}"),
-                ("Commitment", f"{total_commitment:,}"),
-                ("Closed Lost", f"{total_closed_lost:,}"),
+                ("Total Live", f"{total_total_live:,}", _total_live_help),
+                ("Negotiation", f"{total_negotiation:,}", _nego_help),
+                ("Commitment", f"{total_commitment:,}", _commit_help),
+                ("Closed Lost", f"{total_closed_lost:,}", _closed_lost_help),
                 ("Q Win Rate%", f"{q_rate:.2f}%", _q_win_help),
             ],
         ),
     ]
 
-    def _kpi_title_attr(help_text: Optional[str]) -> str:
-        if not help_text:
-            return ""
+    def _kpi_data_tip_attr(help_text: str) -> str:
         t = " ".join(help_text.split())
-        return f' title="{html.escape(t, quote=True)}"'
+        return f' data-kpi-tip="{html.escape(t, quote=True)}"'
 
     accent_map = {"Closed Won": "cw", "Leads": "leads", "Qualified Leads": "pipe"}
     sec_cols = st.columns(3)
@@ -1653,13 +1670,10 @@ def _kpi_block(
                 '<div class="kpi-card-grid">',
             ]
             for j, card in enumerate(cards):
-                label = str(card[0])
-                value = str(card[1])
-                help_left: Optional[str] = card[2] if len(card) > 2 else None
-                if help_left is None and label == "Spend":
-                    help_left = "Sum of media spend"
+                label, value, tip = card[0], card[1], card[2]
                 parts.append(
-                    f'<div class="kpi-card" style="animation-delay:{j * 0.055:.3f}s"{_kpi_title_attr(help_left)}>'
+                    f'<div class="kpi-card" style="animation-delay:{j * 0.055:.3f}s"{_kpi_data_tip_attr(tip)}>'
+                    f'<span class="kpi-hint-badge" aria-hidden="true">?</span>'
                     f'<div class="kpi-card-label">{html.escape(label)}</div>'
                     f'<div class="kpi-card-value">{html.escape(value)}</div></div>'
                 )
@@ -2355,6 +2369,7 @@ def main() -> None:
     /* KPI scorecards: glass panels, staggered entrance, hover lift */
     .kpi-section {
         min-width: 0;
+        overflow: visible;
         background: linear-gradient(155deg, rgba(255,255,255,0.92) 0%, rgba(248,250,252,0.88) 100%);
         backdrop-filter: blur(12px);
         -webkit-backdrop-filter: blur(12px);
@@ -2398,20 +2413,23 @@ def main() -> None:
         display: grid;
         grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 10px;
+        overflow: visible;
     }
     @media (max-width: 640px) {
         .kpi-card-grid { grid-template-columns: 1fr; }
     }
     .kpi-card {
         position: relative;
-        overflow: hidden;
+        overflow: visible;
         border-radius: 12px;
-        padding: 11px 12px 13px;
+        padding: 11px 28px 13px 12px;
         background: linear-gradient(160deg, #ffffff 0%, #f8fafc 55%, #f1f5f9 100%);
         border: 1px solid #e2e8f0;
         box-shadow: 0 2px 10px rgba(15, 23, 42, 0.045);
         transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.28s ease, border-color 0.28s ease;
         animation: kpi-card-enter 0.6s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+        isolation: isolate;
+        cursor: default;
     }
     .kpi-card::before {
         content: "";
@@ -2431,6 +2449,93 @@ def main() -> None:
         box-shadow: 0 12px 32px rgba(15, 23, 42, 0.12);
         border-color: #cbd5e1;
     }
+    .kpi-hint-badge {
+        position: absolute;
+        top: 9px;
+        right: 9px;
+        width: 17px;
+        height: 17px;
+        border-radius: 5px;
+        background: rgba(15, 23, 42, 0.06);
+        color: #64748b;
+        font-size: 11px;
+        font-weight: 800;
+        line-height: 17px;
+        text-align: center;
+        pointer-events: none;
+        transition: background 0.12s ease, color 0.12s ease, transform 0.12s ease;
+        z-index: 2;
+    }
+    .kpi-card:hover .kpi-hint-badge {
+        background: rgba(79, 132, 131, 0.18);
+        color: #0f766e;
+        transform: scale(1.06);
+    }
+    .kpi-section--leads .kpi-card:hover .kpi-hint-badge {
+        background: rgba(37, 99, 235, 0.15);
+        color: #1d4ed8;
+    }
+    .kpi-section--pipe .kpi-card:hover .kpi-hint-badge {
+        background: rgba(124, 58, 237, 0.14);
+        color: #6d28d9;
+    }
+    /* Crisp hover popover (CSS only; text from data-kpi-tip) */
+    .kpi-card[data-kpi-tip]::after {
+        content: attr(data-kpi-tip);
+        position: absolute;
+        left: 50%;
+        bottom: calc(100% + 10px);
+        transform: translate3d(-50%, 6px, 0);
+        min-width: 168px;
+        max-width: min(280px, 78vw);
+        padding: 10px 12px 11px;
+        background: #ffffff;
+        color: #1e293b;
+        font-size: 11px;
+        font-weight: 500;
+        line-height: 1.5;
+        text-align: left;
+        text-transform: none;
+        letter-spacing: 0.01em;
+        white-space: normal;
+        word-wrap: break-word;
+        border-radius: 8px;
+        border: 1px solid #e2e8f0;
+        box-shadow: 0 12px 40px rgba(15, 23, 42, 0.16), 0 0 0 1px rgba(15, 23, 42, 0.04);
+        opacity: 0;
+        visibility: hidden;
+        transition: opacity 0.12s ease, transform 0.12s ease, visibility 0.12s;
+        transition-delay: 0.02s;
+        z-index: 1000;
+        pointer-events: none;
+    }
+    .kpi-section--cw .kpi-card[data-kpi-tip]::after {
+        border-top: 3px solid #4f8483;
+    }
+    .kpi-section--leads .kpi-card[data-kpi-tip]::after {
+        border-top: 3px solid #2563eb;
+    }
+    .kpi-section--pipe .kpi-card[data-kpi-tip]::after {
+        border-top: 3px solid #7c3aed;
+    }
+    .kpi-card[data-kpi-tip]:hover::after {
+        opacity: 1;
+        visibility: visible;
+        transform: translate3d(-50%, 0, 0);
+        transition-delay: 0s;
+    }
+    @media (max-width: 520px) {
+        .kpi-card[data-kpi-tip]::after {
+            left: 0;
+            right: 0;
+            transform: translate3d(0, 6px, 0);
+            max-width: none;
+            width: 100%;
+        }
+        .kpi-card[data-kpi-tip]:hover::after {
+            transform: translate3d(0, 0, 0);
+        }
+    }
     .kpi-card-label {
         font-size: 10px;
         font-weight: 600;
@@ -2448,7 +2553,6 @@ def main() -> None:
         line-height: 1.2;
         font-variant-numeric: tabular-nums;
     }
-    .kpi-card[title]:not([title=""]) { cursor: help; }
     @keyframes kpi-card-enter {
         from { opacity: 0; transform: translateY(14px) scale(0.98); }
         to { opacity: 1; transform: translateY(0) scale(1); }
