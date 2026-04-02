@@ -1586,6 +1586,7 @@ def _master_view_append_middle_east_first(gm: pd.DataFrame) -> pd.DataFrame:
         me_slice = country_block[me_mask]
         blocks: list[pd.DataFrame] = []
         if not me_slice.empty:
+            # ``spend`` is month×market cost from the Spend sheet only; Middle East = sum across ME markets.
             row: dict[str, Any] = {"month": month, "Market": _MIDDLE_EAST_REGION_LABEL}
             for c in gm.columns:
                 if c in ("month", "Market"):
@@ -2079,7 +2080,16 @@ def render_page_marketing_performance(
     # - CW (inc approved) + pipeline stages: Raw Post Qualification
     # - TCV / 1st Month LF: RAW CW
     # Spend should come from the Spend sheet (market x month), including name variants.
-    spend_df = _pick_source(df, [r"raw\s*spend", r"^\s*spend\s*$", r"sum\s*spend", r"\bspend\b"], ["cost", "clicks", "impressions"])
+    _spend_tab_patterns: list[str] = [r"raw\s*spend", r"^\s*spend\s*$", r"sum\s*spend", r"\bspend\b"]
+    spend_df = _pick_source(df, _spend_tab_patterns, ["cost", "clicks", "impressions"])
+    # Master table: Spend **only** from the Spend tab, scoped by date (all markets in sheet — not Market filter).
+    spend_sheet_master = _tab_subset(df_date, _spend_tab_patterns)
+    if spend_sheet_master.empty:
+        spend_sheet_master = _filter_by_date_range(
+            _tab_subset(df_loaded, _spend_tab_patterns),
+            start_date,
+            end_date,
+        )
     leads_df = _pick_source(df_loaded, [r"raw\s*leads?"], ["leads", "qualified"])
     leads_gid = _default_leads_gid_from_secrets()
     # Strict source of truth for Total Leads: read the canonical leads worksheet by gid.
@@ -2248,7 +2258,7 @@ def render_page_marketing_performance(
                 out[c] = 0.0
         return out[["month", "country"] + metrics]
 
-    spend_g = _agg_for_master(spend_df, ["cost", "clicks", "impressions"])
+    spend_g = _agg_for_master(spend_sheet_master, ["cost", "clicks", "impressions"])
     leads_g = _agg_for_master(leads_df, ["leads", "qualified"])
     post_g = _agg_for_master(
         post_df, ["closed_won", "pitching", "new", "working", "qualifying", "negotiation", "commitment", "closed_lost"]
@@ -2262,9 +2272,7 @@ def render_page_marketing_performance(
         post_g["total_live"] = _q + _p + _n + _c
     cw_g = _agg_for_master(cw_kpi, ["tcv", "first_month_lf"])
 
-    # Master-view fallbacks for spend and CW.
-    if spend_g.empty or ("cost" in spend_g.columns and float(spend_g["cost"].sum()) == 0.0):
-        spend_g = _agg_for_master(df, ["cost", "clicks", "impressions"])
+    # Master-view fallbacks (never use full ``df`` for spend — it would pull cost from non-Spend tabs).
     if post_g.empty or ("closed_won" in post_g.columns and float(post_g["closed_won"].sum()) == 0.0):
         post_g = _agg_for_master(
             _dedupe_post_lead_rows(_tab_subset(df, list(_POST_LEAD_SOURCE_TAB_PATTERNS))),
