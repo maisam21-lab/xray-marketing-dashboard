@@ -524,6 +524,7 @@ _NORM_TO_FIELD: dict[str, str] = {
     "opp_name": "opp_name",
     "deal_id": "deal_id",
     "deal_name": "deal_name",
+    "lead_status": "lead_status_text",
 }
 
 _NUM_FIELDS = frozenset(
@@ -1206,6 +1207,14 @@ def _lead_rows_count(frame: pd.DataFrame) -> int:
     return int(len(frame)) if isinstance(frame, pd.DataFrame) else 0
 
 
+def _new_working_count_from_leads(frame: pd.DataFrame) -> int:
+    """Count leads where Lead Status is exactly New or Working."""
+    if frame.empty or "lead_status_text" not in frame.columns:
+        return 0
+    s = frame["lead_status_text"].astype(str).str.strip().str.lower()
+    return int(s.isin({"new", "working"}).sum())
+
+
 def _heatmap_bg(series: pd.Series, *, good_low: bool = True) -> list[str]:
     """Return teal/blue heatmap backgrounds (no red tones)."""
     s = pd.to_numeric(series, errors="coerce")
@@ -1580,6 +1589,7 @@ def render_page_marketing_performance(
     total_closed_lost = int(post_df["closed_lost"].sum()) if "closed_lost" in post_df.columns else 0
     total_tcv = float(cw_df["tcv"].sum()) if "tcv" in cw_df.columns else 0.0
     total_first_month_lf = float(cw_df["first_month_lf"].sum()) if "first_month_lf" in cw_df.columns else 0.0
+    total_new_working = _new_working_count_from_leads(leads_df)
 
     # Per-metric safety fallbacks.
     if total_spend == 0.0 and "cost" in df.columns:
@@ -1621,6 +1631,7 @@ def render_page_marketing_performance(
         total_closed_lost = int(df["closed_lost"].sum()) if "closed_lost" in df.columns else 0
         total_tcv = float(df["tcv"].sum()) if "tcv" in df.columns else 0.0
         total_first_month_lf = float(df["first_month_lf"].sum()) if "first_month_lf" in df.columns else 0.0
+        total_new_working = _new_working_count_from_leads(leads_df if not leads_df.empty else df)
     ctr = (total_clicks / total_impr * 100) if total_impr else 0
     cpc = (total_spend / total_clicks) if total_clicks else 0.0
     cpl = (total_spend / total_leads) if total_leads else 0.0
@@ -1640,7 +1651,7 @@ def render_page_marketing_performance(
         cpc=cpc,
         cpl=cpl,
         cpsql=cpsql,
-        total_new_working=total_new + total_working,
+        total_new_working=total_new_working,
         total_total_live=total_total_live,
         total_negotiation=total_negotiation,
         total_commitment=total_commitment,
