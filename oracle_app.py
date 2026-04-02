@@ -448,6 +448,60 @@ def _norm_market_key(name: str) -> str:
     return re.sub(r"\s+", " ", str(name).strip().lower())
 
 
+def _country_join_key(name: str) -> str:
+    """Align Spend vs CRM market labels (e.g. UAE ↔ United Arab Emirates) for filtering."""
+    k = _norm_market_key(name)
+    if k in ("", "unknown", "nan", "<na>"):
+        return k
+    if k == "uae":
+        return "united arab emirates"
+    return k
+
+
+def _month_norm_key(m: Any) -> str:
+    """Canonical ``YYYY-MM`` period string for matching Spend rows to dashboard ``month``."""
+    if m is None or (isinstance(m, float) and pd.isna(m)):
+        return ""
+    ms = str(m).strip()
+    if not ms or ms.lower() in ("nat", "none", "nan"):
+        return ""
+    try:
+        return str(pd.Period(str(m), freq="M"))
+    except Exception:
+        try:
+            ts = pd.to_datetime(m, errors="coerce")
+            if pd.isna(ts):
+                return ms
+            return str(ts.to_period("M"))
+        except Exception:
+            return ms
+
+
+def _spend_slice_for_dashboard_filters(spend_master: pd.DataFrame, df_ref: pd.DataFrame) -> pd.DataFrame:
+    """Apply Market/Month filters without brittle merge; if filters zero out real spend, keep full slice."""
+    if spend_master.empty or "cost" not in spend_master.columns:
+        return spend_master
+    full_sum = float(pd.to_numeric(spend_master["cost"], errors="coerce").fillna(0).sum())
+    if df_ref.empty or full_sum == 0.0:
+        return spend_master.copy()
+    out = spend_master.copy()
+    if "country" in out.columns and "country" in df_ref.columns:
+        allow_c = {
+            x for x in df_ref["country"].map(_country_join_key).unique().tolist() if x and x not in ("unknown", "nan", "")
+        }
+        if allow_c:
+            out = out[out["country"].map(_country_join_key).isin(allow_c)]
+    if "month" in out.columns and "month" in df_ref.columns:
+        allow_m = {x for x in df_ref["month"].map(_month_norm_key).unique().tolist() if x}
+        if allow_m:
+            km = out["month"].map(_month_norm_key)
+            out = out[km.isin(allow_m) | (km == "")]
+    filt_sum = float(pd.to_numeric(out["cost"], errors="coerce").fillna(0).sum())
+    if filt_sum == 0.0 and full_sum > 0.0:
+        return spend_master.copy()
+    return out
+
+
 def _is_middle_east_market(name: str) -> bool:
     k = _norm_market_key(name)
     if k == "uae":
@@ -2054,17 +2108,11 @@ def render_page_marketing_performance(
     # https://docs.google.com/spreadsheets/d/1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8/edit?gid=0
     spend_gid0_wks = load_spend_gid0_normalized(sheet_id, _fp_mpo)
     spend_sheet_master = _filter_by_date_range(spend_gid0_wks, start_date, end_date)
-    spend_df = spend_sheet_master.copy()
-    if (
-        not df.empty
-        and "month" in df.columns
-        and "country" in df.columns
-        and not spend_df.empty
-    ):
-        _mc = df[["month", "country"]].drop_duplicates()
-        _sj = spend_df.merge(_mc, on=["month", "country"], how="inner")
-        if not _sj.empty:
-            spend_df = _sj
+    if spend_sheet_master.empty and "worksheet_gid" in df_loaded.columns:
+        _g0 = df_loaded.loc[pd.to_numeric(df_loaded["worksheet_gid"], errors="coerce") == 0].copy()
+        if not _g0.empty:
+            spend_sheet_master = _filter_by_date_range(_g0, start_date, end_date)
+    spend_df = _spend_slice_for_dashboard_filters(spend_sheet_master, df)
 
     def _tab_subset(frame: pd.DataFrame, tab_keywords: list[str]) -> pd.DataFrame:
         if "source_tab" not in frame.columns:
