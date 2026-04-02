@@ -455,15 +455,15 @@ def _is_middle_east_market(name: str) -> bool:
     return k in _MIDDLE_EAST_MARKET_KEYS
 
 
-# Master View regional roll-up label (first row under each month for MENA markets).
-_MENA_REGION_LABEL = "MENA"
+# Master View regional roll-up (first row under each month for ME markets).
+_MIDDLE_EAST_REGION_LABEL = "Middle East"
 _REGION_SUBTOTAL_NAMES = frozenset(
-    {_MENA_REGION_LABEL, "Middle East", "middle east"}
+    {_MIDDLE_EAST_REGION_LABEL, "middle east", "mena"}
 )
 
 
 def _market_row_sort_key_mena(market: str) -> tuple:
-    """Country rows only: MENA countries in fixed order, then other markets A–Z."""
+    """Country rows only: Middle East countries in fixed order, then other markets A–Z."""
     m = str(market).strip()
     k = _norm_market_key(m)
     if k == "uae":
@@ -1520,20 +1520,50 @@ def _qualified_count_from_leads(frame: pd.DataFrame) -> int:
 
 
 def _master_view_drop_empty_months(gm: pd.DataFrame) -> pd.DataFrame:
-    """Omit months that do not appear in the source with any spend/CW/leads/TCV/LF activity (all zeros)."""
+    """Drop months whose summed activity is all zeros (no rows in source for that period).
+
+    Uses a broad set of metrics so pipeline/clicks/qualified still count as activity.
+    If the filter would remove every row, returns ``gm`` unchanged so the table does not go blank.
+    """
     if gm.empty:
         return gm
-    gm = gm[gm["month"].notna()].copy()
-    num_cols = [c for c in ("spend", "cw", "leads", "tcv", "lf") if c in gm.columns]
-    if not num_cols:
+    before_n = len(gm)
+    gm_ok = gm[gm["month"].notna()].copy()
+    if gm_ok.empty:
         return gm
-    by_m = gm.groupby("month", as_index=True)[num_cols].sum()
+    num_cols = [
+        c
+        for c in (
+            "spend",
+            "cw",
+            "leads",
+            "tcv",
+            "lf",
+            "qualified",
+            "clicks",
+            "impressions",
+            "pitching",
+            "new",
+            "working",
+            "qualifying",
+            "negotiation",
+            "commitment",
+            "closed_lost",
+        )
+        if c in gm_ok.columns
+    ]
+    if not num_cols:
+        return gm_ok
+    by_m = gm_ok.groupby("month", as_index=True)[num_cols].sum()
     keep = by_m.index[(by_m > 0).any(axis=1)]
-    return gm[gm["month"].isin(keep)].copy()
+    out = gm_ok[gm_ok["month"].isin(keep)].copy()
+    if out.empty and before_n > 0:
+        return gm
+    return out
 
 
-def _master_view_append_mena_first(gm: pd.DataFrame) -> pd.DataFrame:
-    """Per month: **MENA** aggregate row first (ME countries only), then country rows (recent month first globally)."""
+def _master_view_append_middle_east_first(gm: pd.DataFrame) -> pd.DataFrame:
+    """Per month: **Middle East** aggregate row first (ME countries only), then country rows."""
     if gm.empty:
         return gm
     parts: list[pd.DataFrame] = []
@@ -1556,7 +1586,7 @@ def _master_view_append_mena_first(gm: pd.DataFrame) -> pd.DataFrame:
         me_slice = country_block[me_mask]
         blocks: list[pd.DataFrame] = []
         if not me_slice.empty:
-            row: dict[str, Any] = {"month": month, "Market": _MENA_REGION_LABEL}
+            row: dict[str, Any] = {"month": month, "Market": _MIDDLE_EAST_REGION_LABEL}
             for c in gm.columns:
                 if c in ("month", "Market"):
                     continue
@@ -1576,12 +1606,10 @@ def _master_view_append_mena_first(gm: pd.DataFrame) -> pd.DataFrame:
 
 
 def _master_view_style_css(df: pd.DataFrame) -> pd.DataFrame:
-    """Looker-like fills: cyan inputs, white leads, R/G/Y ratios; bold MENA region row."""
+    """Looker-like fills: cyan inputs, white leads, R/G/Y ratios; bold Middle East region row."""
     css = pd.DataFrame("", index=df.index, columns=df.columns)
-    is_mena = df["Market"].astype(str).str.strip().str.lower().isin(
-        {"mena", "middle east"}
-    )
-    non_me = ~is_mena
+    is_region = df["Market"].astype(str).str.strip().str.lower().isin({"middle east", "mena"})
+    non_me = ~is_region
     cyan = "background-color: #e8f4f8; color: #0f172a;"
     white = "background-color: #ffffff; color: #0f172a;"
     me_bold = "font-weight: 700;"
@@ -1618,7 +1646,7 @@ def _master_view_style_css(df: pd.DataFrame) -> pd.DataFrame:
 
     cyan_cols = {"Spend", "CW (Inc Approved)", "CPCW", "1st Month LF", "Actual TCV"}
     for i in df.index:
-        me = bool(is_mena.loc[i])
+        me = bool(is_region.loc[i])
         for col in df.columns:
             if col == "Unified Date":
                 v = df.loc[i, col]
@@ -1861,6 +1889,20 @@ def _master_performance_table(
         agg["tcv"] = ("tcv", "sum")
     if "first_month_lf" in df.columns:
         agg["lf"] = ("first_month_lf", "sum")
+    if "impressions" in df.columns:
+        agg["impressions"] = ("impressions", "sum")
+    # Preserve post-tab pipeline fields from the merged master frame (were dropped before).
+    for _src, _dst in (
+        ("pitching", "pitching"),
+        ("new", "new"),
+        ("working", "working"),
+        ("qualifying", "qualifying"),
+        ("negotiation", "negotiation"),
+        ("commitment", "commitment"),
+        ("closed_lost", "closed_lost"),
+    ):
+        if _src in df.columns:
+            agg[_dst] = (_src, "sum")
 
     g = df.groupby(["month", "country"], as_index=False).agg(**agg).sort_values(
         ["month", "country"], ascending=[False, True]
@@ -1868,12 +1910,28 @@ def _master_performance_table(
     g["Market"] = g["country"]
     # Sum additive fields per month × market, then recompute ratios (Looker: do not SUM(CPCW:LF)).
     sum_map: dict[str, str] = {}
-    for c in ("spend", "cw", "tcv", "lf", "leads", "qualified"):
+    for c in (
+        "spend",
+        "cw",
+        "tcv",
+        "lf",
+        "leads",
+        "qualified",
+        "clicks",
+        "impressions",
+        "pitching",
+        "new",
+        "working",
+        "qualifying",
+        "negotiation",
+        "commitment",
+        "closed_lost",
+    ):
         if c in g.columns:
             sum_map[c] = "sum"
     gm = g.groupby(["month", "Market"], as_index=False).agg(sum_map)
     gm = _master_view_drop_empty_months(gm)
-    gm = _master_view_append_mena_first(gm)
+    gm = _master_view_append_middle_east_first(gm)
     gm["Spend"] = gm["spend"]
     gm["CW (Inc Approved)"] = gm["cw"].astype(int)
     if "lf" in gm.columns:
