@@ -1797,6 +1797,14 @@ def _master_view_append_middle_east_first(gm: pd.DataFrame) -> pd.DataFrame:
 
 def _master_view_style_css(df: pd.DataFrame) -> pd.DataFrame:
     """Looker-like fills: cyan inputs, white leads, R/G/Y ratios; bold Middle East region row."""
+    _align_c = "text-align: center; vertical-align: middle;"
+    _align_l = "text-align: left; vertical-align: middle; padding-left: 8px;"
+
+    def _cell(base: str, *, center: bool = True) -> str:
+        a = _align_c if center else _align_l
+        b = base.strip().rstrip(";")
+        return f"{b}; {a}" if b else a
+
     css = pd.DataFrame("", index=df.index, columns=df.columns)
     is_region = df["Market"].astype(str).str.strip().str.lower().isin({"middle east", "mena"})
     non_me = ~is_region
@@ -1810,14 +1818,14 @@ def _master_view_style_css(df: pd.DataFrame) -> pd.DataFrame:
         try:
             v = float(val)
         except (TypeError, ValueError):
-            return "background-color: #fee2e2; color: #991b1b;"
+            return _cell("background-color: #fee2e2; color: #991b1b;")
         if pd.isna(v) or v == 0.0:
-            return "background-color: #fee2e2; color: #991b1b;"
+            return _cell("background-color: #fee2e2; color: #991b1b;")
         if v <= lo:
-            return "background-color: #dcfce7; color: #166534;"
+            return _cell("background-color: #dcfce7; color: #166534;")
         if v <= hi:
-            return "background-color: #fef9c3; color: #854d0e;"
-        return "background-color: #fee2e2; color: #b91c1c;"
+            return _cell("background-color: #fef9c3; color: #854d0e;")
+        return _cell("background-color: #fee2e2; color: #b91c1c;")
 
     lf_lo = lf_hi = 1.0
     ct_lo = ct_hi = 5.0
@@ -1841,27 +1849,32 @@ def _master_view_style_css(df: pd.DataFrame) -> pd.DataFrame:
             if col == "Unified Date":
                 v = df.loc[i, col]
                 if v == "" or (isinstance(v, str) and not str(v).strip()):
-                    css.loc[i, col] = empty_cell
+                    css.loc[i, col] = _cell(empty_cell)
                 else:
-                    css.loc[i, col] = "background-color: #f1f5f9; font-weight: 600; color: #334155; border-bottom: 1px solid #e2e8f0;"
+                    css.loc[i, col] = _cell(
+                        "background-color: #f1f5f9; font-weight: 600; color: #334155; border-bottom: 1px solid #e2e8f0;"
+                    )
             elif col == "Market":
-                css.loc[i, col] = (me_bold + " background-color: #ffffff; color: #0f172a;") if me else white
+                base = (me_bold + " background-color: #ffffff; color: #0f172a;") if me else white
+                css.loc[i, col] = _cell(base, center=False)
             elif col in cyan_cols:
-                css.loc[i, col] = (cyan + me_bold) if me else cyan
+                base = (cyan + me_bold) if me else cyan
+                css.loc[i, col] = _cell(base)
             elif col == "Total Leads":
-                css.loc[i, col] = (white + me_bold) if me else white
+                base = (white + me_bold) if me else white
+                css.loc[i, col] = _cell(base)
             elif col == "CPCW:LF":
                 if me:
-                    css.loc[i, col] = ratio_me
+                    css.loc[i, col] = _cell(ratio_me)
                 else:
                     css.loc[i, col] = _rgy(df.loc[i, col], lf_lo, lf_hi)
             elif col == "Cost/TCV%":
                 if me:
-                    css.loc[i, col] = ratio_me
+                    css.loc[i, col] = _cell(ratio_me)
                 else:
                     css.loc[i, col] = _rgy(df.loc[i, col], ct_lo, ct_hi)
             else:
-                css.loc[i, col] = white
+                css.loc[i, col] = _cell(white)
     return css
 
 
