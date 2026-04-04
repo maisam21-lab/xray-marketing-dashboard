@@ -620,6 +620,26 @@ def _spend_slice_for_dashboard_filters(spend_master: pd.DataFrame, df_ref: pd.Da
     return out
 
 
+def _spend_sheet_pivot_by_month_country(spend_df: pd.DataFrame) -> pd.DataFrame:
+    """Treat the spend tab as a **pivot**: ``SUM(cost)`` [+ clicks/impressions] per ``month`` × ``country``."""
+    metrics = ["cost", "clicks", "impressions"]
+    if spend_df.empty or "cost" not in spend_df.columns:
+        return pd.DataFrame(columns=["month", "country"] + metrics)
+    x = _normalize_master_merge_frame(spend_df.copy())
+    if "month" not in x.columns or "country" not in x.columns:
+        return pd.DataFrame(columns=["month", "country"] + metrics)
+    x = x[x["month"].astype(str).str.strip().str.len() > 0]
+    x = x[x["month"].map(_dashboard_month_plausible)]
+    if x.empty:
+        return pd.DataFrame(columns=["month", "country"] + metrics)
+    cols = [c for c in metrics if c in x.columns]
+    g = x.groupby(["month", "country"], as_index=False, dropna=False)[cols].sum()
+    for c in metrics:
+        if c not in g.columns:
+            g[c] = 0 if c in {"clicks", "impressions"} else 0.0
+    return g[["month", "country"] + metrics]
+
+
 def _is_middle_east_market(name: str) -> bool:
     k = _norm_market_key(name)
     if k == "uae":
@@ -2688,9 +2708,7 @@ def render_page_marketing_performance(
                 out[c] = 0.0
         return out[["month", "country"] + metrics]
 
-    spend_g = _agg_for_master(
-        _normalize_master_merge_frame(spend_sheet_master), ["cost", "clicks", "impressions"]
-    )
+    spend_g = _spend_sheet_pivot_by_month_country(spend_sheet_master)
     leads_g = _agg_for_master(_normalize_master_merge_frame(leads_df), ["leads", "qualified"])
     post_g = _agg_for_master(
         _normalize_master_merge_frame(post_df),
@@ -2740,6 +2758,11 @@ def render_page_marketing_performance(
                 end_date=end_date,
             )
 
+    st.caption(
+        "**Spend** = sum from the spend worksheet, **pivoted by month × country** (same idea as your sheet). "
+        "**Middle East** is the total of the ME country rows for that month. "
+        "CW, leads, TCV, etc. come from their own tabs and are joined on month + market."
+    )
     _master_performance_table(master_df, key_suffix=key_suffix)
 
 
