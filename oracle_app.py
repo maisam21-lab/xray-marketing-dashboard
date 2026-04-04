@@ -373,6 +373,95 @@ def _dataframe_from_grid_with_keyword_header(grid: list[list[str]], keyword: str
     return pd.DataFrame(fixed_rows, columns=header)
 
 
+def _make_unique_headers_row(row: list[Any]) -> list[str]:
+    names = [str(h).strip() or f"col_{j+1}" for j, h in enumerate(row)]
+    seen: dict[str, int] = {}
+    out: list[str] = []
+    for n in names:
+        seen[n] = seen.get(n, 0) + 1
+        out.append(n if seen[n] == 1 else f"{n}__{seen[n]}")
+    return out
+
+
+def _dataframe_from_grid_header_at(grid: list[list[str]], header_idx: int) -> pd.DataFrame:
+    """Build a frame using an arbitrary grid row as the header (for tabs where the real header is not row 1)."""
+    if header_idx < 0 or header_idx >= len(grid):
+        return pd.DataFrame()
+    header = _make_unique_headers_row(grid[header_idx])
+    rows = grid[header_idx + 1 :]
+    if not rows:
+        return pd.DataFrame(columns=header)
+    width = len(header)
+    fixed_rows = [(r + [""] * max(0, width - len(r)))[:width] for r in rows]
+    return pd.DataFrame(fixed_rows, columns=header)
+
+
+def _parse_european_money_scalar(val: Any) -> float:
+    """Parse ``1.234,56`` / ``1234,56`` style amounts when US-style parsing yields nothing."""
+    t = str(val).strip()
+    if not t or t.lower() in ("-", "—", "n/a", "na", "#ref!", "#value!", "null"):
+        return 0.0
+    paren_neg = t.startswith("(") and t.endswith(")")
+    if paren_neg:
+        t = t[1:-1].strip()
+    sign = -1.0 if t.startswith("-") else 1.0
+    t = t.lstrip("-").strip()
+    t = re.sub(r"[\$€£\s\xa0]", "", t)
+    if not t:
+        return 0.0
+    if re.search(r",\d{1,2}$", t) and t.count(",") == 1:
+        t = t.replace(",", ".")
+    elif "," in t and "." in t:
+        if t.rfind(",") > t.rfind("."):
+            t = t.replace(".", "").replace(",", ".")
+        else:
+            t = t.replace(",", "")
+    try:
+        v = sign * float(t)
+        return -abs(v) if paren_neg else v
+    except ValueError:
+        return 0.0
+
+
+def _guess_spend_value_column_raw(raw: pd.DataFrame) -> Optional[str]:
+    """If headers do not contain spend/cost, pick the column with the largest plausible money total (excludes ids)."""
+    if raw.empty or len(raw.columns) < 2:
+        return None
+    best_c: Optional[str] = None
+    best_sm = -1.0
+    for c in raw.columns:
+        nk = _norm_header_key(str(c))
+        if any(
+            x in nk
+            for x in (
+                "id",
+                "opp_",
+                "opportunity",
+                "email",
+                "phone",
+                "url",
+                "link",
+                "uuid",
+                "record",
+                "case_id",
+                "percent",
+                "pct",
+                "rate",
+                "ratio",
+            )
+        ):
+            continue
+        if nk in {"month", "year", "week", "day", "date", "market", "country", "region", "channel", "platform"}:
+            continue
+        sm = float(_to_number_series(raw[c]).abs().sum())
+        if sm > best_sm:
+            best_sm = sm
+            best_c = c
+    if best_c is None or best_sm < 1e-6:
+        return None
+    return best_c
+
+
 def _norm_header_key(name: str) -> str:
     """Lowercase; non-alphanumeric → underscores (matches ME X-Ray Excel headers like `CPCW:LF`, `Cost/TCV%`)."""
     s = str(name).strip().lower()
@@ -1070,7 +1159,15 @@ def _to_number_series(s: pd.Series) -> pd.Series:
         .str.replace(r"[^0-9.\-]", "", regex=True)
     )
     out = pd.to_numeric(cleaned, errors="coerce").fillna(0)
-    out.loc[neg_paren] = -out.loc[neg_paren]
+    us_abs = float(out.abs().sum())
+    used_eu = False
+    if us_abs < 1e-12 and txt.str.contains(",", na=False).any():
+        eu = txt.map(_parse_european_money_scalar).astype(float)
+        if float(eu.abs().sum()) > us_abs:
+            out = eu
+            used_eu = True
+    if not used_eu:
+        out.loc[neg_paren] = -out.loc[neg_paren]
     return out
 
 
@@ -2075,12 +2172,60 @@ def load_spend_gid0_normalized(sheet_id: str, _secret_fp: str) -> pd.DataFrame:
         try:
             cand = _normalize(_preprocess_excel_sheet(raw.copy(), "spend"))
             s = _normalized_spend_cost_sum(cand)
+            if s < 1e-9:
+                gx = _guess_spend_value_column_raw(raw)
+                if (
+                    gx
+                    and gx in raw.columns
+                    and not cand.empty
+                    and len(cand) == len(raw)
+                ):
+                    cand = cand.copy()
+                    cand["cost"] = _to_number_series(raw[gx].reset_index(drop=True)).values
+                    s = _normalized_spend_cost_sum(cand)
             if s > best_sum:
                 best_sum = s
                 best = cand
                 best_gid = int(src_gid)
         except Exception:
             continue
+
+    # Many workbooks have title rows: get_all_records used the wrong header. Try each grid row as header.
+    if best_sum < 1e-6:
+        for gid in gids:
+            try:
+                grid = _read_sheet_grid_values(sheet_id, secret_creds, gid)
+            except Exception:
+                continue
+            for hi in range(0, min(55, len(grid))):
+                if not any(str(x).strip() for x in grid[hi]):
+                    continue
+                raw = _dataframe_from_grid_header_at(grid, hi)
+                if raw.empty or len(raw.columns) < 2:
+                    continue
+                raw = raw.dropna(axis=1, how="all")
+                if raw.empty:
+                    continue
+                try:
+                    cand = _normalize(_preprocess_excel_sheet(raw.copy(), "spend"))
+                    s = _normalized_spend_cost_sum(cand)
+                    if s < 1e-9:
+                        gx = _guess_spend_value_column_raw(raw)
+                        if (
+                            gx
+                            and gx in raw.columns
+                            and not cand.empty
+                            and len(cand) == len(raw)
+                        ):
+                            cand = cand.copy()
+                            cand["cost"] = _to_number_series(raw[gx].reset_index(drop=True)).values
+                            s = _normalized_spend_cost_sum(cand)
+                    if s > best_sum:
+                        best_sum = s
+                        best = cand
+                        best_gid = int(gid)
+                except Exception:
+                    continue
 
     if best.empty:
         return pd.DataFrame()
