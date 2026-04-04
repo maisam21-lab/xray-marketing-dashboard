@@ -260,6 +260,7 @@ def _read_sheet_auth(
 ) -> pd.DataFrame:
     import gspread
     from google.oauth2.service_account import Credentials
+    from gspread.utils import ValueRenderOption
 
     creds_info = _coerce_service_account_dict(service_account_data)
     _validate_service_account_dict(creds_info)
@@ -288,7 +289,11 @@ def _read_sheet_auth(
             ) from e
     else:
         ws = sh.get_worksheet(0)
-    return pd.DataFrame(ws.get_all_records())
+    try:
+        recs = ws.get_all_records(value_render_option=ValueRenderOption.unformatted)
+        return pd.DataFrame(recs)
+    except Exception:
+        return pd.DataFrame(ws.get_all_records())
 
 
 def _read_sheet_auth_loose(
@@ -300,6 +305,7 @@ def _read_sheet_auth_loose(
     """Fallback reader for tabs where get_all_records() fails due unusual header rows."""
     import gspread
     from google.oauth2.service_account import Credentials
+    from gspread.utils import ValueRenderOption
 
     creds_info = _coerce_service_account_dict(service_account_data)
     _validate_service_account_dict(creds_info)
@@ -310,7 +316,10 @@ def _read_sheet_auth_loose(
     gc = gspread.authorize(creds)
     sh = gc.open_by_key(sheet_id)
     ws = sh.get_worksheet_by_id(int(worksheet_gid))
-    grid = ws.get_all_values()
+    try:
+        grid = ws.get_all_values(value_render_option=ValueRenderOption.unformatted) or []
+    except Exception:
+        grid = ws.get_all_values() or []
     if not grid:
         return pd.DataFrame()
     # Choose the first non-empty row as header.
@@ -334,10 +343,11 @@ def _read_sheet_grid_values(
     sheet_id: str,
     service_account_data: Union[bytes, dict, str],
     worksheet_gid: int,
-) -> list[list[str]]:
-    """Raw cell grid from a worksheet (for header-row detection when ``get_all_records`` is wrong)."""
+) -> list[list[Any]]:
+    """Raw cell grid; prefers **unformatted** values so formulas/currency read as numbers (fixes $0 spend)."""
     import gspread
     from google.oauth2.service_account import Credentials
+    from gspread.utils import ValueRenderOption
 
     creds_info = _coerce_service_account_dict(service_account_data)
     _validate_service_account_dict(creds_info)
@@ -348,7 +358,10 @@ def _read_sheet_grid_values(
     gc = gspread.authorize(creds)
     sh = gc.open_by_key(sheet_id)
     ws = sh.get_worksheet_by_id(int(worksheet_gid))
-    return ws.get_all_values() or []
+    try:
+        return ws.get_all_values(value_render_option=ValueRenderOption.unformatted) or []
+    except Exception:
+        return ws.get_all_values() or []
 
 
 def _normalized_spend_cost_sum(frame: pd.DataFrame) -> float:
@@ -2020,7 +2033,12 @@ def load_named_worksheet_normalized(sheet_id: str, worksheet_name: str, _secret_
             gc = gspread.authorize(creds)
             sh = gc.open_by_key(sheet_id)
             ws = sh.worksheet(worksheet_name)
-            grid = ws.get_all_values()
+            from gspread.utils import ValueRenderOption
+
+            try:
+                grid = ws.get_all_values(value_render_option=ValueRenderOption.unformatted) or []
+            except Exception:
+                grid = ws.get_all_values() or []
             raw = _dataframe_from_grid_with_keyword_header(grid, "spend")
         except Exception:
             return pd.DataFrame()
@@ -2030,6 +2048,7 @@ def load_named_worksheet_normalized(sheet_id: str, worksheet_name: str, _secret_
         try:
             import gspread
             from google.oauth2.service_account import Credentials
+            from gspread.utils import ValueRenderOption
 
             creds_info = _coerce_service_account_dict(secret_creds)
             _validate_service_account_dict(creds_info)
@@ -2040,7 +2059,10 @@ def load_named_worksheet_normalized(sheet_id: str, worksheet_name: str, _secret_
             gc = gspread.authorize(creds)
             sh = gc.open_by_key(sheet_id)
             ws = sh.worksheet(worksheet_name)
-            grid = ws.get_all_values()
+            try:
+                grid = ws.get_all_values(value_render_option=ValueRenderOption.unformatted) or []
+            except Exception:
+                grid = ws.get_all_values() or []
             raw2 = _dataframe_from_grid_with_keyword_header(grid, "spend")
             if not raw2.empty:
                 out = _normalize(_preprocess_excel_sheet(raw2, worksheet_name))
