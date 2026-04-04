@@ -620,6 +620,11 @@ def _spend_slice_for_dashboard_filters(spend_master: pd.DataFrame, df_ref: pd.Da
     return out
 
 
+def _spend_sheet_month_is_blank(s: pd.Series) -> pd.Series:
+    t = s.astype(str).str.strip().str.lower()
+    return ~(t.str.len() > 0) | t.isin(["nan", "nat", "none"])
+
+
 def _spend_sheet_pivot_by_month_country(spend_df: pd.DataFrame) -> pd.DataFrame:
     """Treat the spend tab as a **pivot**: ``SUM(cost)`` [+ clicks/impressions] per ``month`` × ``country``."""
     metrics = ["cost", "clicks", "impressions"]
@@ -628,8 +633,44 @@ def _spend_sheet_pivot_by_month_country(spend_df: pd.DataFrame) -> pd.DataFrame:
     x = _normalize_master_merge_frame(spend_df.copy())
     if "month" not in x.columns or "country" not in x.columns:
         return pd.DataFrame(columns=["month", "country"] + metrics)
-    x = x[x["month"].astype(str).str.strip().str.len() > 0]
-    x = x[x["month"].map(_dashboard_month_plausible)]
+
+    # Month often goes blank when Date was scrubbed; rebuild from report_month / date (pivot sheets use Month heavily).
+    if "report_month" in x.columns:
+        blank = _spend_sheet_month_is_blank(x["month"])
+        rser = _parse_report_month_series(x["report_month"].ffill())
+        ok = blank & rser.notna() & (rser >= pd.Timestamp("2000-01-01"))
+        if bool(ok.any()):
+            x.loc[ok, "month"] = rser.loc[ok].dt.to_period("M").astype(str)
+    if "date" in x.columns:
+        blank = _spend_sheet_month_is_blank(x["month"])
+        d = pd.to_datetime(x["date"], errors="coerce")
+        ok = blank & d.notna() & (d >= pd.Timestamp("2000-01-01"))
+        if bool(ok.any()):
+            x.loc[ok, "month"] = d.loc[ok].dt.to_period("M").astype(str)
+
+    x["month"] = x["month"].map(_month_norm_key)
+    x = x.loc[~_spend_sheet_month_is_blank(x["month"])]
+
+    def _not_epoch_jan(m: Any) -> bool:
+        try:
+            p = pd.Period(str(m), freq="M")
+            return not (p.year == 1970 and p.month == 1)
+        except Exception:
+            return True
+
+    x = x.loc[x["month"].map(_not_epoch_jan)]
+
+    if x.empty and _normalized_spend_cost_sum(spend_df) > 1e-9:
+        y = _normalize_master_merge_frame(spend_df.copy())
+        cols = [c for c in metrics if c in y.columns]
+        if cols and "month" in y.columns and "country" in y.columns and not y.empty:
+            g = y.groupby(["month", "country"], as_index=False, dropna=False)[cols].sum()
+            for c in metrics:
+                if c not in g.columns:
+                    g[c] = 0 if c in {"clicks", "impressions"} else 0.0
+            if _normalized_spend_cost_sum(g) > 1e-9:
+                return g[["month", "country"] + metrics]
+
     if x.empty:
         return pd.DataFrame(columns=["month", "country"] + metrics)
     cols = [c for c in metrics if c in x.columns]
@@ -1348,12 +1389,36 @@ def _impute_master_df_cost_from_spend_pool(
         sp_f = sp
     cost_num = pd.to_numeric(sp_f["cost"], errors="coerce").fillna(0)
     by_m = cost_num.groupby(sp_f["month"], dropna=False).sum()
-    month_totals: dict[str, float] = {str(k): float(v) for k, v in by_m.items() if float(v) > 1e-9}
-    if not month_totals:
-        return master_df
+    month_totals: dict[str, float] = {}
+    unassigned_spend = 0.0
+    for k, v in by_m.items():
+        fv = float(v)
+        if fv < 1e-9:
+            continue
+        nk = _month_norm_key(k)
+        if not nk:
+            unassigned_spend += fv
+        else:
+            month_totals[nk] = month_totals.get(nk, 0) + fv
 
     out = master_df.copy()
     out["month"] = out["month"].map(_month_norm_key)
+    if unassigned_spend > 1e-9:
+        mkeys = sorted(
+            {
+                str(m).strip()
+                for m in out["month"].dropna().unique()
+                if str(m).strip() and _dashboard_month_plausible(str(m))
+            }
+        )
+        if mkeys:
+            share = unassigned_spend / len(mkeys)
+            for mk in mkeys:
+                month_totals[mk] = month_totals.get(mk, 0) + share
+
+    if not month_totals:
+        return master_df
+
     for mk, total in month_totals.items():
         if total < 1e-9:
             continue
