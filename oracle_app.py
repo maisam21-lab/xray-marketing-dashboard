@@ -2360,13 +2360,26 @@ def _kpi_block(
             st.markdown("".join(parts), unsafe_allow_html=True)
 
 
+def _unified_date_dmy(m: Any) -> str:
+    """Reporting month as **day/month/year** (first calendar day of that month; grid is month-level)."""
+    if m is None or (isinstance(m, float) and pd.isna(m)):
+        return ""
+    try:
+        p = pd.Period(str(m), freq="M")
+        if p.year < 2000:
+            return ""
+        return p.to_timestamp(how="start").strftime("%d/%m/%Y")
+    except Exception:
+        return ""
+
+
 def _master_performance_table(
     df: pd.DataFrame,
     *,
     key_suffix: str,
     section_title: Optional[str] = "Marketing Performance Master View",
 ) -> None:
-    """Unified Date column (first row per month only), Middle East subtotal, cyan input metrics, R/G/Y on ratios."""
+    """Unified Date column (DD/MM/YYYY, first row per month only), Middle East subtotal, cyan input metrics, R/G/Y."""
     df = _normalize_master_merge_frame(df)
     if not df.empty and "month" in df.columns:
         _mpl = df["month"].map(lambda x: _dashboard_month_plausible(_month_norm_key(x)))
@@ -2473,9 +2486,8 @@ def _master_performance_table(
 
     pvt = gm.copy()
     pvt["Month"] = pvt["month"].apply(lambda m: pd.Period(m, freq="M").strftime("%b %Y") if pd.notna(m) else "")
-    pvt = pvt.drop(columns=["month"], errors="ignore")
-    cols = ["Month", "Market"] + [m for m in metrics if m in pvt.columns]
-    pvt = pvt[cols]
+    cols = ["month", "Month", "Market"] + [m for m in metrics if m in pvt.columns]
+    pvt = pvt[[c for c in cols if c in pvt.columns]]
     pvt["Unified Date"] = ""
 
     def _month_label_sort_key(m: Any) -> Any:
@@ -2487,8 +2499,9 @@ def _master_performance_table(
     for m in sorted(pvt["Month"].dropna().unique(), key=_month_label_sort_key, reverse=True):
         ix = pvt.index[pvt["Month"] == m].tolist()
         if ix:
-            pvt.loc[ix[0], "Unified Date"] = m
-    pvt = pvt.drop(columns=["Month"], errors="ignore")
+            raw_m = pvt.loc[ix[0], "month"]
+            pvt.loc[ix[0], "Unified Date"] = _unified_date_dmy(raw_m)
+    pvt = pvt.drop(columns=["month", "Month"], errors="ignore")
     out_cols = ["Unified Date", "Market"] + [m for m in metrics if m in pvt.columns]
     pvt = pvt[out_cols]
 
