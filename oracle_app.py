@@ -546,6 +546,30 @@ def _normalize_master_merge_frame(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+# Reject Unix-epoch / Excel-zero style dates (shows as **Jan 1970** in the grid).
+_MIN_DASHBOARD_PERIOD = pd.Period("2000-01", freq="M")
+
+
+def _dashboard_month_plausible(m: Any) -> bool:
+    """False for empty month and for pre-2000 periods (epoch junk); True if unparseable (keep row)."""
+    if m is None or (isinstance(m, float) and pd.isna(m)):
+        return False
+    ms = str(m).strip().lower()
+    if not ms or ms in ("nat", "nan", "none"):
+        return False
+    try:
+        return bool(pd.Period(str(m), freq="M") >= _MIN_DASHBOARD_PERIOD)
+    except Exception:
+        return True
+
+
+def _scrub_pre_2000_dates(s: pd.Series) -> pd.Series:
+    """Turn ancient timestamps (often from ``0`` or blank mis-read as epoch) into NaT."""
+    dt = pd.to_datetime(s, errors="coerce")
+    bad = dt.notna() & (dt < pd.Timestamp("2000-01-01"))
+    return dt.where(~bad, pd.NaT)
+
+
 def _month_norm_key(m: Any) -> str:
     """Canonical ``YYYY-MM`` period string for matching Spend rows to dashboard ``month``."""
     if m is None or (isinstance(m, float) and pd.isna(m)):
@@ -554,15 +578,21 @@ def _month_norm_key(m: Any) -> str:
     if not ms or ms.lower() in ("nat", "none", "nan"):
         return ""
     try:
-        return str(pd.Period(str(m), freq="M"))
+        p = pd.Period(str(m), freq="M")
+        if p < _MIN_DASHBOARD_PERIOD:
+            return ""
+        return str(p)
     except Exception:
         try:
             ts = pd.to_datetime(m, errors="coerce")
-            if pd.isna(ts):
-                return ms
-            return str(ts.to_period("M"))
+            if pd.isna(ts) or ts < pd.Timestamp("2000-01-01"):
+                return ""
+            p = ts.to_period("M")
+            if p < _MIN_DASHBOARD_PERIOD:
+                return ""
+            return str(p)
         except Exception:
-            return ms
+            return ""
 
 
 def _spend_slice_for_dashboard_filters(spend_master: pd.DataFrame, df_ref: pd.DataFrame) -> pd.DataFrame:
@@ -1161,14 +1191,18 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
             out["cost"] = inferred
 
     if "date" in out.columns:
-        out["date"] = pd.to_datetime(out["date"], errors="coerce")
+        out["date"] = _scrub_pre_2000_dates(out["date"])
     else:
         out["date"] = pd.NaT
 
     if "report_month" in out.columns:
         rm = _parse_report_month_series(out["report_month"])
         rm = rm.ffill()
+        rm = _scrub_pre_2000_dates(rm)
         out["date"] = out["date"].fillna(rm)
+
+    _still_ancient = out["date"].notna() & (out["date"] < pd.Timestamp("2000-01-01"))
+    out.loc[_still_ancient, "date"] = pd.NaT
 
     for c in _NUM_FIELDS:
         if c in out.columns:
@@ -2249,6 +2283,9 @@ def _master_performance_table(
 ) -> None:
     """Unified Date column (first row per month only), Middle East subtotal, cyan input metrics, R/G/Y on ratios."""
     df = _normalize_master_merge_frame(df)
+    if not df.empty and "month" in df.columns:
+        _mpl = df["month"].map(lambda x: _dashboard_month_plausible(_month_norm_key(x)))
+        df = df.loc[_mpl].copy()
     if section_title:
         st.markdown(f'<div class="looker-table-title">{section_title}</div>', unsafe_allow_html=True)
     agg: dict[str, tuple[str, str]] = {
