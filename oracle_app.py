@@ -44,6 +44,18 @@ def _default_sheet_id_from_secrets() -> str:
         return DEFAULT_SHEET_ID
 
 
+def _workbook_id_resolution() -> tuple[str, str]:
+    """(canonical_sheet_id, label for debug: default vs secret override)."""
+    try:
+        s = st.secrets
+        v = (s.get("XRAY_SHEET_ID") or s.get("xray_sheet_id") or "").strip()
+        if v:
+            return _extract_sheet_id(v), "XRAY_SHEET_ID (Streamlit secret)"
+    except Exception:
+        pass
+    return DEFAULT_SHEET_ID, "DEFAULT_SHEET_ID in code (ME X-Ray workbook)"
+
+
 def _default_truth_gid_from_secrets() -> int:
     """Optional Streamlit secret XRAY_TRUTH_GID overrides default source-of-truth tab gid."""
     try:
@@ -3022,7 +3034,7 @@ def render_page_marketing_performance(
 
     st.caption("Filters apply to scorecards, master table, and charts below.")
 
-    sheet_id = _extract_sheet_id(_default_sheet_id_from_secrets())
+    sheet_id, _workbook_src_label = _workbook_id_resolution()
     _fp_mpo = _secret_fingerprint(_service_account_from_streamlit_secrets())
     # Spend only from the canonical Spend worksheet (gid=0) on the ME X-Ray workbook:
     # https://docs.google.com/spreadsheets/d/1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8/edit?gid=0
@@ -3076,6 +3088,7 @@ def render_page_marketing_performance(
 
     _mpo_dbg: dict[str, Any] = {
         "sheet_id": sheet_id,
+        "workbook_id_source": _workbook_src_label,
         "xray_spend_gid_secret": _optional_spend_gid_from_secrets(),
         "spend_load_source_tab": (
             str(spend_gid0_wks["source_tab"].iloc[0])
@@ -3381,6 +3394,7 @@ def render_page_marketing_performance(
     with st.expander("Debug: Marketing Performance spend pipeline", expanded=False):
         _lines = [
             f"sheet_id: {_mpo_dbg['sheet_id']}",
+            f"workbook id from: {_mpo_dbg.get('workbook_id_source', '')}",
             f"XRAY_SPEND_GID (secrets): {_mpo_dbg.get('xray_spend_gid_secret')!s} — set to tab URL gid when Spend is not first tab",
             f"spend load source_tab: {_mpo_dbg.get('spend_load_source_tab')!r}",
             f"canonical spend load — rows={_mpo_dbg['gid0_rows']}, cost_sum={_mpo_dbg['gid0_cost']:,.2f}, has cost col={_mpo_dbg['has_cost_col_gid0']}",
@@ -3564,7 +3578,7 @@ def render_main_dashboard(
     end_date: date,
 ) -> None:
     """Load Google Sheets workbook (all tabs), then route to report pages."""
-    sheet_id = _extract_sheet_id(_default_sheet_id_from_secrets())
+    sheet_id, _ = _workbook_id_resolution()
     _fp = _secret_fingerprint(_service_account_from_streamlit_secrets())
     try:
         # Source of truth is the entire spreadsheet; aggregate data across tabs.
