@@ -687,6 +687,25 @@ def _dashboard_month_plausible(m: Any) -> bool:
         return True
 
 
+def _coerce_sheet_serial_dates(s: pd.Series) -> pd.Series:
+    """Google Sheets ``UNFORMATTED_VALUE`` often returns calendar columns as **serial day counts** (Excel epoch).
+
+    Plain ``pd.to_datetime`` on those floats is wrong/NaT, which blanks ``month`` and the Master View filter drops every row.
+    """
+    if s is None or getattr(s, "empty", True):
+        return s
+    d1 = pd.to_datetime(s, errors="coerce")
+    n = pd.to_numeric(s, errors="coerce")
+    ser_mask = n.notna() & (n > 20000) & (n < 100000)
+    if not bool(ser_mask.any()):
+        return d1
+    base = pd.Timestamp("1899-12-30")
+    conv = base + pd.to_timedelta(n.loc[ser_mask], unit="D")
+    out = d1.copy()
+    out.loc[ser_mask] = conv
+    return out
+
+
 def _scrub_pre_2000_dates(s: pd.Series) -> pd.Series:
     """Turn ancient timestamps (often from ``0`` or blank mis-read as epoch) into NaT."""
     dt = pd.to_datetime(s, errors="coerce")
@@ -1504,12 +1523,13 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
             out["cost"] = _to_number_series(df[bc])
 
     if "date" in out.columns:
-        out["date"] = _scrub_pre_2000_dates(out["date"])
+        out["date"] = _scrub_pre_2000_dates(_coerce_sheet_serial_dates(out["date"]))
     else:
         out["date"] = pd.NaT
 
     if "report_month" in out.columns:
         rm = _parse_report_month_series(out["report_month"])
+        rm = rm.fillna(_coerce_sheet_serial_dates(out["report_month"]))
         rm = rm.ffill()
         rm = _scrub_pre_2000_dates(rm)
         out["date"] = out["date"].fillna(rm)
@@ -2884,7 +2904,10 @@ def _master_performance_table(
     df = _normalize_master_merge_frame(df)
     if not df.empty and "month" in df.columns:
         _mpl = df["month"].map(lambda x: _dashboard_month_plausible(_month_norm_key(x)))
-        df = df.loc[_mpl].copy()
+        _df_f = df.loc[_mpl].copy()
+        # After UNFORMATTED_VALUE, bad month parsing can wipe every row — keep data visible.
+        if not _df_f.empty:
+            df = _df_f
     if section_title:
         st.markdown(f'<div class="looker-table-title">{section_title}</div>', unsafe_allow_html=True)
     agg: dict[str, tuple[str, str]] = {
