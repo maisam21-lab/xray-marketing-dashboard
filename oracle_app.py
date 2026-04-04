@@ -2654,6 +2654,22 @@ def render_page_marketing_performance(
             spend_sheet_master = fb_f
     spend_df = _spend_slice_for_dashboard_filters(spend_sheet_master, df)
 
+    def _mpo_debug_cost_sum(frame: pd.DataFrame) -> float:
+        return _normalized_spend_cost_sum(frame) if isinstance(frame, pd.DataFrame) else 0.0
+
+    _mpo_dbg: dict[str, Any] = {
+        "sheet_id": sheet_id,
+        "gid0_rows": len(spend_gid0_wks),
+        "gid0_cost": _mpo_debug_cost_sum(spend_gid0_wks),
+        "pool_full_rows": len(spend_pool_full),
+        "pool_full_cost": _mpo_debug_cost_sum(spend_pool_full),
+        "sheet_master_rows": len(spend_sheet_master),
+        "sheet_master_cost": _mpo_debug_cost_sum(spend_sheet_master),
+        "spend_df_rows": len(spend_df),
+        "spend_df_cost": _mpo_debug_cost_sum(spend_df),
+        "has_cost_col_gid0": "cost" in spend_gid0_wks.columns if not spend_gid0_wks.empty else False,
+    }
+
     def _tab_subset(frame: pd.DataFrame, tab_keywords: list[str]) -> pd.DataFrame:
         if "source_tab" not in frame.columns:
             return frame
@@ -2856,9 +2872,15 @@ def render_page_marketing_performance(
     _sp_for_g = spend_sheet_master
     if _normalized_spend_cost_sum(_sp_for_g) <= 0.0 and _normalized_spend_cost_sum(spend_pool_full) > 0.0:
         _sp_for_g = spend_pool_full
+    _mpo_dbg["pivot_used_pool_for_input"] = _sp_for_g is spend_pool_full
     spend_g = _spend_sheet_pivot_by_month_country(_sp_for_g)
     if spend_g.empty or _normalized_spend_cost_sum(spend_g) <= 0.0:
         spend_g = _spend_sheet_pivot_by_month_country(spend_pool_full)
+        _mpo_dbg["pivot_retried_full_pool"] = True
+    else:
+        _mpo_dbg["pivot_retried_full_pool"] = False
+    _mpo_dbg["spend_g_rows"] = len(spend_g)
+    _mpo_dbg["spend_g_cost"] = _mpo_debug_cost_sum(spend_g)
     leads_g = _agg_for_master(_normalize_master_merge_frame(leads_df), ["leads", "qualified"])
     post_g = _agg_for_master(
         _normalize_master_merge_frame(post_df),
@@ -2893,23 +2915,64 @@ def render_page_marketing_performance(
     master_df = master_df.merge(post_g, on=["month", "country"], how="outer")
     master_df = master_df.merge(cw_g, on=["month", "country"], how="outer")
     master_df = master_df.fillna(0)
+    _mpo_dbg["master_after_merge_cost"] = _mpo_debug_cost_sum(master_df)
+    _mpo_dbg["master_after_merge_rows"] = len(master_df)
     if not spend_pool_full.empty:
         master_df = _coalesce_master_cost_from_spend_pivot(master_df, spend_pool_full)
+        _mpo_dbg["master_after_coalesce_cost"] = _mpo_debug_cost_sum(master_df)
         master_df = _allocate_spend_pool_by_country_and_cw(master_df, spend_pool_full)
+        _mpo_dbg["master_after_allocate_cost"] = _mpo_debug_cost_sum(master_df)
+    else:
+        _mpo_dbg["master_after_coalesce_cost"] = _mpo_dbg["master_after_merge_cost"]
+        _mpo_dbg["master_after_allocate_cost"] = _mpo_dbg["master_after_merge_cost"]
+    _mpo_dbg["used_df_copy_fallback"] = False
     if master_df.empty:
         master_df = df.copy()
+        _mpo_dbg["used_df_copy_fallback"] = True
     else:
         metric_probe = [c for c in ("cost", "leads", "qualified", "closed_won", "tcv", "first_month_lf") if c in master_df.columns]
         probe_total = float(master_df[metric_probe].sum(numeric_only=True).sum()) if metric_probe else 1.0
         if probe_total == 0.0:
             master_df = df.copy()
+            _mpo_dbg["used_df_copy_fallback"] = True
         elif not spend_pool_full.empty:
+            _mpo_dbg["master_before_impute_cost"] = _mpo_debug_cost_sum(master_df)
             master_df = _impute_master_df_cost_from_spend_pool(
                 master_df,
                 spend_pool_full,
                 start_date=start_date,
                 end_date=end_date,
             )
+            _mpo_dbg["master_after_impute_cost"] = _mpo_debug_cost_sum(master_df)
+        else:
+            _mpo_dbg["master_before_impute_cost"] = _mpo_dbg["master_after_allocate_cost"]
+            _mpo_dbg["master_after_impute_cost"] = _mpo_dbg["master_after_allocate_cost"]
+    _mpo_dbg["master_final_cost"] = _mpo_debug_cost_sum(master_df)
+    _mpo_dbg["master_final_rows"] = len(master_df)
+    _mpo_dbg.setdefault("master_before_impute_cost", _mpo_dbg.get("master_after_allocate_cost", 0.0))
+    _mpo_dbg.setdefault("master_after_impute_cost", _mpo_dbg["master_final_cost"])
+    _mpo_dbg["scorecard_total_spend"] = float(total_spend)
+    _mpo_dbg["session_gid0_raw_sum"] = float(st.session_state.get("_gid0_spend_sum", 0.0) or 0.0)
+
+    with st.expander("Debug: Marketing Performance spend pipeline", expanded=False):
+        _lines = [
+            f"sheet_id: {_mpo_dbg['sheet_id']}",
+            f"gid=0 load — rows={_mpo_dbg['gid0_rows']}, cost_sum={_mpo_dbg['gid0_cost']:,.2f}, has cost col={_mpo_dbg['has_cost_col_gid0']}",
+            f"pool_full — rows={_mpo_dbg['pool_full_rows']}, cost_sum={_mpo_dbg['pool_full_cost']:,.2f}",
+            f"sheet_master (date filter) — rows={_mpo_dbg['sheet_master_rows']}, cost_sum={_mpo_dbg['sheet_master_cost']:,.2f}",
+            f"spend_df (after dashboard filters) — rows={_mpo_dbg['spend_df_rows']}, cost_sum={_mpo_dbg['spend_df_cost']:,.2f}",
+            f"pivot input used full pool first={_mpo_dbg.get('pivot_used_pool_for_input')}, pivot retried pool={_mpo_dbg.get('pivot_retried_full_pool')}",
+            f"spend_g (month×country pivot) — rows={_mpo_dbg.get('spend_g_rows', 0)}, cost_sum={_mpo_dbg.get('spend_g_cost', 0.0):,.2f}",
+            f"master after merge+fillna — rows={_mpo_dbg['master_after_merge_rows']}, cost_sum={_mpo_dbg['master_after_merge_cost']:,.2f}",
+            f"master after coalesce — cost_sum={_mpo_dbg['master_after_coalesce_cost']:,.2f}",
+            f"master after allocate — cost_sum={_mpo_dbg['master_after_allocate_cost']:,.2f}",
+            f"master impute — before={_mpo_dbg['master_before_impute_cost']:,.2f}, after={_mpo_dbg['master_after_impute_cost']:,.2f}",
+            f"master final — rows={_mpo_dbg['master_final_rows']}, cost_sum={_mpo_dbg['master_final_cost']:,.2f}",
+            f"scorecard total_spend (KPI)={_mpo_dbg['scorecard_total_spend']:,.2f}",
+            f"session_state _gid0_spend_sum (raw grid probe)={_mpo_dbg['session_gid0_raw_sum']:,.2f}",
+            f"replaced master with df.copy() fallback={_mpo_dbg['used_df_copy_fallback']}",
+        ]
+        st.code("\n".join(_lines), language="text")
 
     st.caption(
         "**Spend** = sum from the spend worksheet, **pivoted by month × country** (same idea as your sheet). "
