@@ -1649,6 +1649,77 @@ def _allocate_spend_pool_by_country_and_cw(master_df: pd.DataFrame, pool: pd.Dat
     return out
 
 
+def _tab_title_looks_like_spend_worksheet(title: str) -> bool:
+    tl = str(title).strip().lower()
+    return bool(
+        "spend" in tl
+        or "paid media" in tl
+        or "media spend" in tl
+        or tl == "ppc"
+        or "paid search" in tl
+        or "marketing investment" in tl
+    )
+
+
+def _best_spend_pool_from_df_loaded(df_loaded: pd.DataFrame) -> pd.DataFrame:
+    """Use spend rows already in the combined workbook load (often non-empty when gid=0 reload is empty)."""
+    if df_loaded.empty or "cost" not in df_loaded.columns:
+        return pd.DataFrame()
+    best = pd.DataFrame()
+    best_sum = -1.0
+
+    def _take(sub: pd.DataFrame) -> None:
+        nonlocal best, best_sum
+        if sub is None or sub.empty:
+            return
+        sm = _normalized_spend_cost_sum(sub)
+        if sm > best_sum:
+            best_sum = sm
+            best = sub.copy()
+
+    if "source_tab" in df_loaded.columns:
+        s_tab = df_loaded["source_tab"].astype(str)
+        sl = s_tab.str.lower()
+        mask = sl.str.contains(
+            r"spend|paid\s*media|media\s*spend|ppc|paid\s*search|marketing\s*investment",
+            na=False,
+            regex=True,
+        ) | s_tab.str.match(r"^gid:\d+_spend$", na=False)
+        _take(df_loaded.loc[mask])
+    if "worksheet_gid" in df_loaded.columns:
+        wg = pd.to_numeric(df_loaded["worksheet_gid"], errors="coerce")
+        _take(df_loaded.loc[wg == 0])
+        sg = _optional_spend_gid_from_secrets()
+        if sg is not None:
+            _take(df_loaded.loc[wg == int(sg)])
+    return best if best_sum > 1e-9 else pd.DataFrame()
+
+
+@st.cache_data(ttl=300)
+def _scan_workbook_for_best_spend_frame(sheet_id: str, _secret_fp: str) -> pd.DataFrame:
+    """Last resort: reload each spend-like tab by gid with full preprocess (cached)."""
+    try:
+        meta = list_worksheet_meta(sheet_id, _secret_fp)
+    except Exception:
+        return pd.DataFrame()
+    best = pd.DataFrame()
+    best_sum = -1.0
+    for title, ws_gid in meta:
+        if not _tab_title_looks_like_spend_worksheet(title):
+            continue
+        try:
+            cand = load_worksheet_by_gid_preprocessed(sheet_id, int(ws_gid), _secret_fp)
+        except Exception:
+            continue
+        if cand.empty:
+            continue
+        sm = _normalized_spend_cost_sum(cand)
+        if sm > best_sum:
+            best_sum = sm
+            best = cand
+    return best if best_sum > 1e-9 else pd.DataFrame()
+
+
 @st.cache_data(ttl=300)
 def list_worksheet_meta(sheet_id: str, _secret_fp: str) -> list[tuple[str, int]]:
     """Spreadsheet worksheet titles and numeric ids, **same order as in Google Sheets** (left → right)."""
@@ -2836,6 +2907,23 @@ def render_page_marketing_performance(
         fb_f = _filter_spend_for_dashboard(fb_spend, start_date, end_date)
         if _normalized_spend_cost_sum(fb_f) > 0.0:
             spend_sheet_master = fb_f
+
+    _recovery_note = ""
+    if _normalized_spend_cost_sum(spend_pool_full) < 1e-9:
+        _rec_loaded = _best_spend_pool_from_df_loaded(df_loaded)
+        if not _rec_loaded.empty:
+            spend_pool_full = _rec_loaded.copy()
+            _recovery_note = "df_loaded_slice"
+        else:
+            _scan_best = _scan_workbook_for_best_spend_frame(sheet_id, _fp_mpo)
+            if not _scan_best.empty:
+                spend_pool_full = _scan_best.copy()
+                _recovery_note = "meta_gid_rescan"
+        if _normalized_spend_cost_sum(spend_pool_full) > 1e-9 and _normalized_spend_cost_sum(spend_sheet_master) < 1e-9:
+            spend_sheet_master = _filter_spend_for_dashboard(spend_pool_full, start_date, end_date)
+            if _normalized_spend_cost_sum(spend_sheet_master) < 1e-9:
+                spend_sheet_master = spend_pool_full.copy()
+
     spend_df = _spend_slice_for_dashboard_filters(spend_sheet_master, df)
 
     def _mpo_debug_cost_sum(frame: pd.DataFrame) -> float:
@@ -2858,6 +2946,7 @@ def render_page_marketing_performance(
         "spend_df_rows": len(spend_df),
         "spend_df_cost": _mpo_debug_cost_sum(spend_df),
         "has_cost_col_gid0": "cost" in spend_gid0_wks.columns if not spend_gid0_wks.empty else False,
+        "spend_recovery": _recovery_note,
     }
 
     def _tab_subset(frame: pd.DataFrame, tab_keywords: list[str]) -> pd.DataFrame:
@@ -3337,9 +3426,11 @@ def render_main_dashboard(
         df_loaded = load_all_worksheets_combined(sheet_id, _fp)
         # Hard requirement: ensure Spend sheet is present (sheet: Spend, column: Spend).
         needs_spend_inject = True
-        if not df_loaded.empty and "source_tab" in df_loaded.columns:
-            spend_rows = df_loaded[df_loaded["source_tab"].astype(str).str.strip().str.lower() == "spend"]
-            if not spend_rows.empty and "cost" in spend_rows.columns and float(spend_rows["cost"].sum()) > 0:
+        if not df_loaded.empty and "source_tab" in df_loaded.columns and "cost" in df_loaded.columns:
+            sl = df_loaded["source_tab"].astype(str).str.strip().str.lower()
+            spend_like = sl.str.contains(r"^(raw\s*)?spend$|raw\s*spend|sum\s*spend|media\s*spend", na=False, regex=True)
+            spend_rows = df_loaded.loc[spend_like]
+            if not spend_rows.empty and float(pd.to_numeric(spend_rows["cost"], errors="coerce").fillna(0).sum()) > 0:
                 needs_spend_inject = False
         if needs_spend_inject:
             spend_norm = load_named_worksheet_normalized(sheet_id, "Spend", _fp)
@@ -3355,7 +3446,8 @@ def render_main_dashboard(
         st.session_state["_gid0_spend_sum"] = load_spend_gid0_raw_sum(sheet_id, _fp)
         if not spend_gid0.empty:
             if not df_loaded.empty and "source_tab" in df_loaded.columns:
-                df_loaded = df_loaded[df_loaded["source_tab"].astype(str) != "gid:0_spend"]
+                _rm_syn = df_loaded["source_tab"].astype(str).str.match(r"^gid:\d+_spend$", na=False)
+                df_loaded = df_loaded.loc[~_rm_syn].copy()
             if df_loaded.empty:
                 df_loaded = spend_gid0
             else:
