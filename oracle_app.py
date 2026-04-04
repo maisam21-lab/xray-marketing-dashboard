@@ -1439,6 +1439,73 @@ def _impute_master_df_cost_from_spend_pool(
     return out
 
 
+def _coalesce_master_cost_from_spend_pivot(master_df: pd.DataFrame, pool: pd.DataFrame) -> pd.DataFrame:
+    """Left-fill ``cost`` from a fresh month×country pivot of the spend pool when merge keys missed."""
+    if master_df.empty or pool.empty or "cost" not in master_df.columns:
+        return master_df
+    piv = _spend_sheet_pivot_by_month_country(pool)
+    if piv.empty or "cost" not in piv.columns:
+        return master_df
+    out = master_df.copy()
+    out["month"] = out["month"].map(_month_norm_key)
+    out["country"] = out["country"].map(_country_join_key)
+    part = piv.copy()
+    part["month"] = part["month"].map(_month_norm_key)
+    part["country"] = part["country"].map(_country_join_key)
+    agg = part.groupby(["month", "country"], as_index=False)["cost"].sum()
+    m2 = out.merge(agg.rename(columns={"cost": "_spend_tab"}), on=["month", "country"], how="left")
+    c0 = pd.to_numeric(m2["cost"], errors="coerce").fillna(0)
+    cs = pd.to_numeric(m2["_spend_tab"], errors="coerce").fillna(0)
+    m2["cost"] = c0.where(c0 >= 1e-9, cs)
+    return m2.drop(columns=["_spend_tab"], errors="ignore")
+
+
+def _allocate_spend_pool_by_country_and_cw(master_df: pd.DataFrame, pool: pd.DataFrame) -> pd.DataFrame:
+    """If merged ``cost`` is still zero, allocate pool totals by CRM country (× CW within country)."""
+    if master_df.empty or pool.empty or "cost" not in master_df.columns:
+        return master_df
+    if float(pd.to_numeric(master_df["cost"], errors="coerce").fillna(0).sum()) > 1e-6:
+        return master_df
+    gross = float(pd.to_numeric(pool["cost"], errors="coerce").fillna(0).sum())
+    if gross < 1e-9:
+        return master_df
+    pn = _normalize_master_merge_frame(pool.copy())
+    if "country" not in pn.columns:
+        return master_df
+    by_c = pd.to_numeric(pn["cost"], errors="coerce").fillna(0).groupby(pn["country"].map(_country_join_key)).sum()
+    out = master_df.copy()
+    out["month"] = out["month"].map(_month_norm_key)
+    out["country"] = out["country"].map(_country_join_key)
+
+    nonu = {
+        str(k): float(v)
+        for k, v in by_c.items()
+        if float(v) > 1e-9 and str(k).strip().lower() not in ("", "unknown", "nan")
+    }
+    if not nonu:
+        ix = out.index
+        cw = pd.to_numeric(out["closed_won"], errors="coerce").fillna(0).astype(float)
+        if float(cw.sum()) < 1e-9:
+            add = gross / max(len(ix), 1)
+            out["cost"] = pd.to_numeric(out["cost"], errors="coerce").fillna(0) + add
+        else:
+            out["cost"] = pd.to_numeric(out["cost"], errors="coerce").fillna(0) + gross * (cw / float(cw.sum()))
+        return out
+
+    for ckey, T in nonu.items():
+        ix = out.index[out["country"] == ckey]
+        if len(ix) == 0:
+            continue
+        cw = pd.to_numeric(out.loc[ix, "closed_won"], errors="coerce").fillna(0).astype(float)
+        if float(cw.sum()) < 1e-9:
+            add = pd.Series(T / max(len(ix), 1), index=ix, dtype=float)
+        else:
+            add = T * (cw / float(cw.sum()))
+        base = pd.to_numeric(out.loc[ix, "cost"], errors="coerce").fillna(0)
+        out.loc[ix, "cost"] = base + add.reindex(ix).fillna(0)
+    return out
+
+
 @st.cache_data(ttl=300)
 def list_worksheet_meta(sheet_id: str, _secret_fp: str) -> list[tuple[str, int]]:
     """Spreadsheet worksheet titles and numeric ids, **same order as in Google Sheets** (left → right)."""
@@ -2786,7 +2853,12 @@ def render_page_marketing_performance(
                 out[c] = 0.0
         return out[["month", "country"] + metrics]
 
-    spend_g = _spend_sheet_pivot_by_month_country(spend_sheet_master)
+    _sp_for_g = spend_sheet_master
+    if _normalized_spend_cost_sum(_sp_for_g) <= 0.0 and _normalized_spend_cost_sum(spend_pool_full) > 0.0:
+        _sp_for_g = spend_pool_full
+    spend_g = _spend_sheet_pivot_by_month_country(_sp_for_g)
+    if spend_g.empty or _normalized_spend_cost_sum(spend_g) <= 0.0:
+        spend_g = _spend_sheet_pivot_by_month_country(spend_pool_full)
     leads_g = _agg_for_master(_normalize_master_merge_frame(leads_df), ["leads", "qualified"])
     post_g = _agg_for_master(
         _normalize_master_merge_frame(post_df),
@@ -2821,6 +2893,9 @@ def render_page_marketing_performance(
     master_df = master_df.merge(post_g, on=["month", "country"], how="outer")
     master_df = master_df.merge(cw_g, on=["month", "country"], how="outer")
     master_df = master_df.fillna(0)
+    if not spend_pool_full.empty:
+        master_df = _coalesce_master_cost_from_spend_pivot(master_df, spend_pool_full)
+        master_df = _allocate_spend_pool_by_country_and_cw(master_df, spend_pool_full)
     if master_df.empty:
         master_df = df.copy()
     else:
