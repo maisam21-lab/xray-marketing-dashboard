@@ -1141,19 +1141,75 @@ def _parse_report_month_series(s: pd.Series) -> pd.Series:
         v = raw.loc[idx]
         val = str(v).strip()
         parsed: Optional[pd.Timestamp] = None
-        vl = val.lower()
-        # Ambiguous month-only labels: prefer FY order (Sep–Dec 2025, then Jan 2026, …).
-        if vl.startswith("jan"):
-            years = (2026, 2025, 2024)
-        else:
-            years = (2025, 2026, 2024)
-        for y in years:
+        # Ambiguous month-only labels: prefer current calendar year, then prior years.
+        _cy = date.today().year
+        for y in (_cy, _cy - 1, _cy - 2, _cy + 1):
             t = pd.to_datetime(f"{val} 1, {y}", errors="coerce")
             if pd.notna(t):
                 parsed = t
                 break
         out.loc[idx] = parsed if parsed is not None else pd.NaT
     return out
+
+
+def _try_period_from_column_header(name: str) -> Optional[pd.Period]:
+    """True month columns in wide spend matrices (header = ``Jan 2025``, ``2025-03``, etc.)."""
+    s = str(name).strip()
+    if not s:
+        return None
+    sl = s.lower()
+    if sl in ("total", "sum", "grand total", "ytd") or sl.startswith("vs ") or "variance" in sl:
+        return None
+    try:
+        return pd.Period(s, freq="M")
+    except Exception:
+        pass
+    ts = pd.to_datetime(s, errors="coerce", dayfirst=True)
+    if pd.notna(ts):
+        try:
+            return ts.to_period("M")
+        except Exception:
+            return None
+    return None
+
+
+def _try_melt_wide_month_spend_df(df: pd.DataFrame) -> pd.DataFrame:
+    """If the tab is a pivot matrix (geo rows × month columns), melt so ``normalize()`` can see ``Spend`` + ``Month``."""
+    if df is None or df.empty or len(df.columns) < 4:
+        return df
+    raw = df.copy()
+    cols = [str(c).strip() for c in raw.columns]
+    raw.columns = cols
+    period_by_col: dict[str, Optional[pd.Period]] = {c: _try_period_from_column_header(c) for c in cols}
+    value_vars = [c for c in cols if period_by_col[c] is not None]
+    id_vars = [c for c in cols if period_by_col[c] is None]
+    if len(value_vars) < 3 or not id_vars:
+        return df
+    geo_ok = any(
+        any(x in _norm_header_key(c) for x in ("market", "country", "region", "geo", "location", "kitchen"))
+        for c in id_vars
+    )
+    if not geo_ok:
+        return df
+    try:
+        long = pd.melt(
+            raw,
+            id_vars=id_vars,
+            value_vars=value_vars,
+            var_name="__hdr_month",
+            value_name="Spend",
+        )
+    except Exception:
+        return df
+    long["Month"] = long["__hdr_month"].map(
+        lambda h: str(period_by_col[str(h)]) if period_by_col.get(str(h)) is not None else ""
+    )
+    long = long.drop(columns=["__hdr_month"], errors="ignore")
+    long["Spend"] = _to_number_series(long["Spend"])
+    long = long.loc[long["Spend"].abs() > 1e-12].copy()
+    if long.empty:
+        return df
+    return long
 
 
 def _preprocess_excel_sheet(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
@@ -1165,6 +1221,8 @@ def _preprocess_excel_sheet(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
     if "Market" in df.columns:
         m = df["Market"].astype(str)
         df = df[~m.str.contains("TOTAL", case=False, na=False)]
+    if "spend" in t:
+        df = _try_melt_wide_month_spend_df(df)
     if ("raw" in t and "lead" in t and "post" not in t):
         # Convert lead rows into additive metrics so they can be combined with spend.
         if "Leads" not in df.columns:
@@ -1564,10 +1622,12 @@ def _allocate_spend_pool_by_country_and_cw(master_df: pd.DataFrame, pool: pd.Dat
             out["cost"] = pd.to_numeric(out["cost"], errors="coerce").fillna(0) + gross * (cw / float(cw.sum()))
         return out
 
+    matched_total = 0.0
     for ckey, T in nonu.items():
         ix = out.index[out["country"] == ckey]
         if len(ix) == 0:
             continue
+        matched_total += T
         cw = pd.to_numeric(out.loc[ix, "closed_won"], errors="coerce").fillna(0).astype(float)
         if float(cw.sum()) < 1e-9:
             add = pd.Series(T / max(len(ix), 1), index=ix, dtype=float)
@@ -1575,6 +1635,17 @@ def _allocate_spend_pool_by_country_and_cw(master_df: pd.DataFrame, pool: pd.Dat
             add = T * (cw / float(cw.sum()))
         base = pd.to_numeric(out.loc[ix, "cost"], errors="coerce").fillna(0)
         out.loc[ix, "cost"] = base + add.reindex(ix).fillna(0)
+
+    # Pool countries that do not appear on the master grid (e.g. Egypt, UK) used to drop their spend entirely.
+    residual = gross - matched_total
+    if residual > 1e-6:
+        ix = out.index
+        cw = pd.to_numeric(out["closed_won"], errors="coerce").fillna(0).astype(float)
+        if float(cw.sum()) < 1e-9:
+            add_r = residual / max(len(ix), 1)
+            out["cost"] = pd.to_numeric(out["cost"], errors="coerce").fillna(0) + add_r
+        else:
+            out["cost"] = pd.to_numeric(out["cost"], errors="coerce").fillna(0) + residual * (cw / float(cw.sum()))
     return out
 
 
