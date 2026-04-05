@@ -106,6 +106,37 @@ def _optional_spend_gid_from_secrets() -> Optional[int]:
         return None
 
 
+def _optional_spend_column_header_from_secrets() -> str:
+    """Exact (or substring) spend column header on the sheet, e.g. ``Marketing Spend`` — ``XRAY_SPEND_COLUMN``."""
+    try:
+        s = st.secrets
+        return (s.get("XRAY_SPEND_COLUMN") or s.get("xray_spend_column") or "").strip()
+    except Exception:
+        return ""
+
+
+def _inject_cost_from_named_sheet_column(raw: pd.DataFrame, cand: pd.DataFrame, header: str) -> pd.DataFrame:
+    """Force ``cost`` from a raw column when auto-mapping fails (same row order as ``cand``)."""
+    if not header or raw.empty or cand.empty or len(raw) != len(cand):
+        return cand
+    hl = header.strip().lower()
+    match: Optional[str] = None
+    for c in raw.columns:
+        if str(c).strip().lower() == hl:
+            match = c
+            break
+    if match is None:
+        for c in raw.columns:
+            if hl in str(c).strip().lower():
+                match = c
+                break
+    if match is None:
+        return cand
+    out = cand.copy()
+    out["cost"] = _to_number_series(raw[match].reset_index(drop=True)).values
+    return out
+
+
 def _default_excel_path_from_secrets() -> str:
     """Optional Streamlit secret XRAY_EXCEL_PATH overrides default local workbook path."""
     try:
@@ -717,6 +748,23 @@ def _month_norm_key(m: Any) -> str:
     """Canonical ``YYYY-MM`` period string for matching Spend rows to dashboard ``month``."""
     if m is None or (isinstance(m, float) and pd.isna(m)):
         return ""
+    # Sheets ``UNFORMATTED_VALUE`` often puts calendar months in the cell as **serial day counts** (Excel epoch).
+    # ``pd.to_datetime(45321)`` treats that as ns/ms → 1970 junk → we return "" and Master View drops spend rows.
+    try:
+        if not isinstance(m, bool):
+            n = float(m)
+            # Allow fractional sheet serials (e.g. 46054.0); ignore values outside plausible date range.
+            if pd.notna(n) and 20000 < n < 100000:
+                ni = int(round(n))
+                if abs(n - ni) < 0.02 or abs(n - round(n)) < 1e-6:
+                    base = pd.Timestamp("1899-12-30")
+                    ts = base + pd.to_timedelta(ni, unit="D")
+                    if ts.year >= 2000:
+                        p = ts.to_period("M")
+                        if p >= _MIN_DASHBOARD_PERIOD:
+                            return str(p)
+    except (TypeError, ValueError, OverflowError):
+        pass
     ms = str(m).strip()
     if not ms or ms.lower() in ("nat", "none", "nan"):
         return ""
@@ -2220,11 +2268,15 @@ def load_spend_gid0_normalized(sheet_id: str, _secret_fp: str) -> pd.DataFrame:
     best = pd.DataFrame()
     best_sum = 0.0
     best_gid = 0
+    _spend_col_secret = _optional_spend_column_header_from_secrets()
     for raw, src_gid in raws_tagged:
         if raw.empty or len(raw.columns) == 0:
             continue
         try:
+            raw_orig = raw.copy()
             cand = _normalize(_preprocess_excel_sheet(raw.copy(), "spend"))
+            if _spend_col_secret:
+                cand = _inject_cost_from_named_sheet_column(raw_orig, cand, _spend_col_secret)
             s = _normalized_spend_cost_sum(cand)
             if s < 1e-9:
                 gx = _guess_spend_value_column_raw(raw)
@@ -2261,7 +2313,10 @@ def load_spend_gid0_normalized(sheet_id: str, _secret_fp: str) -> pd.DataFrame:
                 if raw.empty:
                     continue
                 try:
+                    raw_orig = raw.copy()
                     cand = _normalize(_preprocess_excel_sheet(raw.copy(), "spend"))
+                    if _spend_col_secret:
+                        cand = _inject_cost_from_named_sheet_column(raw_orig, cand, _spend_col_secret)
                     s = _normalized_spend_cost_sum(cand)
                     if s < 1e-9:
                         gx = _guess_spend_value_column_raw(raw)
@@ -2547,11 +2602,12 @@ def _master_view_append_middle_east_first(gm: pd.DataFrame) -> pd.DataFrame:
         )
         me_idx = country_block.index[me_mask] if not country_block.empty else pd.Index([], dtype=int)
 
-        # Spend (and clicks/impressions) often sit on a "Middle East" / MENA row; those rows were stripped above.
-        # Push those totals onto ME country rows when per-country spend is still zero (avoid double-counting).
+        # Clicks/impressions may still roll from a regional row onto ME countries; **spend** stays on **Middle East** as month total.
         if len(me_idx) > 0:
             country_block = country_block.copy()
             for col in _REGIONAL_ROLL_METRICS:
+                if col == "spend":
+                    continue
                 if col not in country_block.columns:
                     continue
                 rtot = reg_totals.get(col, 0.0)
@@ -2571,13 +2627,18 @@ def _master_view_append_middle_east_first(gm: pd.DataFrame) -> pd.DataFrame:
 
         blocks: list[pd.DataFrame] = []
         if not me_slice.empty:
-            # ``spend`` is month×market cost from the Spend sheet only; Middle East = sum across ME markets.
+            # Middle East row: spend = regional/sheet total for the month when countries have no spend; else sum of countries.
             row: dict[str, Any] = {"month": month, "Market": _MIDDLE_EAST_REGION_LABEL}
             for c in gm.columns:
                 if c in ("month", "Market"):
                     continue
                 if c in me_slice.columns:
-                    row[c] = float(pd.to_numeric(me_slice[c], errors="coerce").fillna(0).sum())
+                    summed = float(pd.to_numeric(me_slice[c], errors="coerce").fillna(0).sum())
+                    if c == "spend":
+                        r_spend = float(reg_totals.get("spend", 0.0))
+                        row[c] = summed if summed > 1e-6 else r_spend
+                    else:
+                        row[c] = summed
             mena_df = pd.DataFrame([row])
             for c in gm.columns:
                 if c not in mena_df.columns:
@@ -2881,12 +2942,143 @@ def _kpi_block(
             st.markdown("".join(parts), unsafe_allow_html=True)
 
 
+def _collapse_duplicate_named_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """Merge same-named columns by summing numeric values — duplicate ``cost`` breaks ``groupby().agg(spend=('cost','sum'))``."""
+    if df.empty or not df.columns.duplicated().any():
+        return df
+    out: dict[str, pd.Series] = {}
+    handled: set[str] = set()
+    for name in df.columns:
+        if name in handled:
+            continue
+        handled.add(name)
+        block = df.loc[:, df.columns == name]
+        if block.shape[1] == 1:
+            out[str(name)] = block.iloc[:, 0]
+        else:
+            num = block.apply(lambda s: pd.to_numeric(s, errors="coerce"))
+            out[str(name)] = num.sum(axis=1, min_count=1)
+    return pd.DataFrame(out, index=df.index)
+
+
+def _master_view_impute_month_for_spend_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """``groupby(..., dropna=True)`` drops NaN month keys and can hide all spend; align orphan spend to peer months."""
+    if df.empty or "month" not in df.columns or "cost" not in df.columns:
+        return df
+    out = df.copy()
+    cost = pd.to_numeric(out["cost"], errors="coerce").fillna(0)
+    mk = out["month"].map(_month_norm_key)
+    plausible = mk.map(_dashboard_month_plausible)
+    # Rows where we never got ``YYYY-MM`` (even if ``_dashboard_month_plausible`` is True for junk strings).
+    need_mask = (cost > 1e-3) & (out["month"].isna() | ~plausible | mk.eq(""))
+    if not bool(need_mask.any()):
+        return out
+    good_mask = plausible & mk.ne("") & out["month"].notna()
+    if not bool(good_mask.any()):
+        return out
+    global_vc = out.loc[good_mask, "month"].map(_month_norm_key).value_counts()
+    g_fallback = global_vc.index[0] if len(global_vc) else ""
+    if not g_fallback:
+        return out
+    for idx in out.loc[need_mask].index:
+        pick = g_fallback
+        if "country" in out.columns:
+            ctry = out.at[idx, "country"]
+            peer_mask = good_mask & (out["country"] == ctry)
+            if bool(peer_mask.any()):
+                local_vc = out.loc[peer_mask, "month"].map(_month_norm_key).value_counts()
+                if len(local_vc):
+                    pick = local_vc.index[0]
+        out.at[idx, "month"] = pick
+    return out
+
+
+def _month_label_short(m: Any) -> str:
+    k = _month_norm_key(m)
+    if not k:
+        return ""
+    try:
+        return pd.Period(k, freq="M").strftime("%b %Y")
+    except Exception:
+        return ""
+
+
+def _master_view_spend_authoritative_from_grid(spend_grid: pd.DataFrame) -> pd.DataFrame:
+    """``month`` × display ``Market`` spend from the spend pivot — not from ``master_df`` joins (those can show 0 in UI)."""
+    if spend_grid is None or spend_grid.empty or "cost" not in spend_grid.columns or "country" not in spend_grid.columns:
+        return pd.DataFrame(columns=["month", "Market", "spend"])
+    x = spend_grid.copy()
+    x["month"] = x["month"].map(_month_norm_key)
+    x["Market"] = x["country"].map(_market_display_from_join_key)
+    x["cost"] = pd.to_numeric(x["cost"], errors="coerce").fillna(0)
+    return (
+        x.groupby(["month", "Market"], as_index=False, dropna=False)["cost"]
+        .sum()
+        .rename(columns={"cost": "spend"})
+    )
+
+
+def _auth_spend_lookup_by_norm_keys(spend_grid: pd.DataFrame) -> pd.DataFrame:
+    """Unique ``(month_norm, market_label) → spend`` for vectorized reindex onto ``gm`` rows."""
+    auth = _master_view_spend_authoritative_from_grid(spend_grid)
+    if auth.empty:
+        return pd.DataFrame(columns=["__k1", "__k2", "spend"])
+    auth["__k1"] = auth["month"].map(_month_norm_key)
+    auth["__k2"] = auth["Market"].astype(str).str.strip()
+    auth["spend"] = pd.to_numeric(auth["spend"], errors="coerce").fillna(0)
+    return auth.groupby(["__k1", "__k2"], as_index=False)["spend"].sum()
+
+
+def _overlay_spend_from_spend_grid_on_gm(gm: pd.DataFrame, spend_grid: Optional[pd.DataFrame]) -> pd.DataFrame:
+    """Prefer worksheet pivot spend per row; ``reindex`` avoids fragile ``merge`` dtype/key mismatches."""
+    if spend_grid is None or spend_grid.empty or gm.empty:
+        return gm
+    lut = _auth_spend_lookup_by_norm_keys(spend_grid)
+    if lut.empty or float(lut["spend"].sum()) < 1e-9:
+        return gm
+    out = gm.copy()
+    k1 = out["month"].map(_month_norm_key)
+    k2 = out["Market"].astype(str).str.strip()
+    ser = lut.drop_duplicates(["__k1", "__k2"], keep="last").set_index(["__k1", "__k2"])["spend"]
+    mi = pd.MultiIndex.from_arrays([k1, k2])
+    s_auth = pd.to_numeric(ser.reindex(mi), errors="coerce")
+    s_auth.index = out.index
+    s_old = pd.to_numeric(out["spend"], errors="coerce").fillna(0) if "spend" in out.columns else pd.Series(0.0, index=out.index)
+    out["spend"] = s_auth.where(s_auth > 1e-6, s_old)
+    out["spend"] = pd.to_numeric(out["spend"], errors="coerce").fillna(0)
+    return out
+
+
+def _master_view_refresh_middle_east_spend_row(gm: pd.DataFrame) -> pd.DataFrame:
+    """If ME countries have spend, **Middle East** = their sum; if not, keep the row as the monthly regional total (do not zero it)."""
+    if gm.empty or "month" not in gm.columns or "Market" not in gm.columns or "spend" not in gm.columns:
+        return gm
+    out = gm.copy()
+    me_label = _MIDDLE_EAST_REGION_LABEL
+    for m in out["month"].dropna().unique():
+        m_mask = out["month"] == m
+        ix_me = out.index[m_mask & (out["Market"].astype(str).str.strip().str.lower() == me_label.lower())]
+        ix_cc = out.index[
+            m_mask
+            & out["Market"].map(_is_middle_east_market)
+            & (out["Market"].astype(str).str.strip().str.lower() != me_label.lower())
+        ]
+        if len(ix_me) == 1 and len(ix_cc) > 0:
+            tot = float(pd.to_numeric(out.loc[ix_cc, "spend"], errors="coerce").fillna(0).sum())
+            if tot > 1e-6:
+                out.loc[ix_me, "spend"] = tot
+    return out
+
+
 def _unified_date_dmy(m: Any) -> str:
     """Reporting month as **day/month/year** (first calendar day of that month; grid is month-level)."""
     if m is None or (isinstance(m, float) and pd.isna(m)):
         return ""
+    k = _month_norm_key(m)
+    if not k:
+        return ""
     try:
-        p = pd.Period(str(m), freq="M")
+        p = pd.Period(k, freq="M")
         if p.year < 2000:
             return ""
         return p.to_timestamp(how="start").strftime("%d/%m/%Y")
@@ -2899,15 +3091,32 @@ def _master_performance_table(
     *,
     key_suffix: str,
     section_title: Optional[str] = "Marketing Performance Master View",
+    spend_grid: Optional[pd.DataFrame] = None,
 ) -> None:
     """Unified Date column (DD/MM/YYYY, first row per month only), Middle East subtotal, cyan input metrics, R/G/Y."""
     df = _normalize_master_merge_frame(df)
     if not df.empty and "month" in df.columns:
         _mpl = df["month"].map(lambda x: _dashboard_month_plausible(_month_norm_key(x)))
-        _df_f = df.loc[_mpl].copy()
+        # Keep rows with real spend even if month was still non-plausible (outer-merge keys vs. display filter).
+        if "cost" in df.columns:
+            _has_spend = pd.to_numeric(df["cost"], errors="coerce").fillna(0) > 1e-3
+            _keep = _mpl | _has_spend
+        else:
+            _keep = _mpl
+        _df_f = df.loc[_keep].copy()
         # After UNFORMATTED_VALUE, bad month parsing can wipe every row — keep data visible.
         if not _df_f.empty:
             df = _df_f
+    df = _collapse_duplicate_named_columns(df)
+    if "cost" in df.columns:
+        df["cost"] = pd.to_numeric(df["cost"], errors="coerce").fillna(0)
+    if "spend" in df.columns:
+        s_alt = pd.to_numeric(df["spend"], errors="coerce").fillna(0)
+        if "cost" in df.columns:
+            df["cost"] = df["cost"].where(df["cost"] > 1e-6, s_alt)
+        else:
+            df["cost"] = s_alt
+    df = _master_view_impute_month_for_spend_rows(df)
     if section_title:
         st.markdown(f'<div class="looker-table-title">{section_title}</div>', unsafe_allow_html=True)
     agg: dict[str, tuple[str, str]] = {
@@ -2936,7 +3145,7 @@ def _master_performance_table(
         if _src in df.columns:
             agg[_dst] = (_src, "sum")
 
-    g = df.groupby(["month", "country"], as_index=False).agg(**agg).sort_values(
+    g = df.groupby(["month", "country"], as_index=False, dropna=False).agg(**agg).sort_values(
         ["month", "country"], ascending=[False, True]
     )
     g["Market"] = g["country"].map(_market_display_from_join_key)
@@ -2961,9 +3170,12 @@ def _master_performance_table(
     ):
         if c in g.columns:
             sum_map[c] = "sum"
-    gm = g.groupby(["month", "Market"], as_index=False).agg(sum_map)
+    gm = g.groupby(["month", "Market"], as_index=False, dropna=False).agg(sum_map)
+    gm = _overlay_spend_from_spend_grid_on_gm(gm, spend_grid)
     gm = _master_view_drop_empty_months(gm)
     gm = _master_view_append_middle_east_first(gm)
+    gm = _overlay_spend_from_spend_grid_on_gm(gm, spend_grid)
+    gm = _master_view_refresh_middle_east_spend_row(gm)
     gm["Spend"] = gm["spend"]
     gm["CW (Inc Approved)"] = gm["cw"].astype(int)
     if "lf" in gm.columns:
@@ -3009,7 +3221,7 @@ def _master_performance_table(
             gm[m] = float("nan")
 
     pvt = gm.copy()
-    pvt["Month"] = pvt["month"].apply(lambda m: pd.Period(m, freq="M").strftime("%b %Y") if pd.notna(m) else "")
+    pvt["Month"] = pvt["month"].map(_month_label_short)
     cols = ["month", "Month", "Market"] + [m for m in metrics if m in pvt.columns]
     pvt = pvt[[c for c in cols if c in pvt.columns]]
     pvt["Unified Date"] = ""
@@ -3028,10 +3240,15 @@ def _master_performance_table(
     pvt = pvt.drop(columns=["month", "Month"], errors="ignore")
     out_cols = ["Unified Date", "Market"] + [m for m in metrics if m in pvt.columns]
     pvt = pvt[out_cols]
+    # Streamlit's Arrow table path often ignores ``Styler.format`` for numeric cells — use strings for Spend.
+    if "Spend" in pvt.columns:
+        pvt["Spend"] = pvt["Spend"].apply(
+            lambda v: _format_spend_k(float(v)) if v is not None and not pd.isna(v) else "—"
+        )
 
     def _fmt_for_metric(metric_name: str) -> Any:
         if metric_name == "Spend":
-            return lambda x: _format_spend_k(float(x)) if pd.notna(x) else "—"
+            return lambda x: x if isinstance(x, str) else (_format_spend_k(float(x)) if pd.notna(x) else "—")
         if metric_name in {"CPCW", "CPL", "Actual TCV", "1st Month LF"}:
             return lambda x: f"${x:,.2f}" if pd.notna(x) else "—"
         if metric_name == "CPCW:LF":
@@ -3150,6 +3367,7 @@ def render_page_marketing_performance(
         "spend_df_cost": _mpo_debug_cost_sum(spend_df),
         "has_cost_col_gid0": "cost" in spend_gid0_wks.columns if not spend_gid0_wks.empty else False,
         "spend_recovery": _recovery_note,
+        "xray_spend_column_secret": _optional_spend_column_header_from_secrets(),
     }
 
     def _tab_subset(frame: pd.DataFrame, tab_keywords: list[str]) -> pd.DataFrame:
@@ -3226,6 +3444,19 @@ def render_page_marketing_performance(
     total_spend = float(spend_df["cost"].sum()) if "cost" in spend_df.columns else 0.0
     if total_spend <= 0.0 and _normalized_spend_cost_sum(spend_sheet_master) > 0.0:
         total_spend = float(pd.to_numeric(spend_sheet_master["cost"], errors="coerce").fillna(0).sum())
+    if total_spend <= 0.0 and "cost" in cw_kpi.columns:
+        _cw_s = float(pd.to_numeric(cw_kpi["cost"], errors="coerce").fillna(0).sum())
+        if _cw_s > 1e-6:
+            total_spend = _cw_s
+    if total_spend <= 0.0 and "cpcw" in cw_kpi.columns and "closed_won" in cw_kpi.columns:
+        _px_s = float(
+            (
+                pd.to_numeric(cw_kpi["cpcw"], errors="coerce").fillna(0)
+                * pd.to_numeric(cw_kpi["closed_won"], errors="coerce").fillna(0)
+            ).sum()
+        )
+        if _px_s > 1e-6:
+            total_spend = _px_s
     total_impr = int(spend_df["impressions"].sum()) if "impressions" in spend_df.columns else 0
     total_clicks = int(spend_df["clicks"].sum()) if "clicks" in spend_df.columns else 0
     total_leads = _lead_rows_count(leads_df)
@@ -3375,7 +3606,25 @@ def render_page_marketing_performance(
         _n = pd.to_numeric(post_g["negotiation"], errors="coerce").fillna(0) if "negotiation" in post_g.columns else 0
         _c = pd.to_numeric(post_g["commitment"], errors="coerce").fillna(0) if "commitment" in post_g.columns else 0
         post_g["total_live"] = _q + _p + _n + _c
-    cw_g = _agg_for_master(_normalize_master_merge_frame(cw_kpi), ["tcv", "first_month_lf"])
+    _cw_base = _normalize_master_merge_frame(cw_kpi)
+    if "cost" in _cw_base.columns:
+        _cw_base = _cw_base.rename(columns={"cost": "cw_tab_cost"})
+    _cw_metrics = ["tcv", "first_month_lf"] + (["cw_tab_cost"] if "cw_tab_cost" in _cw_base.columns else [])
+    cw_g = _agg_for_master(_cw_base, _cw_metrics)
+
+    spend_proxy_g = pd.DataFrame()
+    _cwk = _normalize_master_merge_frame(cw_kpi)
+    if not _cwk.empty and "cpcw" in _cwk.columns and "closed_won" in _cwk.columns:
+        _px = _cwk.copy()
+        _px["_cost_cw_px"] = pd.to_numeric(_px["cpcw"], errors="coerce").fillna(0) * pd.to_numeric(
+            _px["closed_won"], errors="coerce"
+        ).fillna(0)
+        if float(_px["_cost_cw_px"].abs().sum()) > 1e-6:
+            spend_proxy_g = (
+                _px.groupby(["month", "country"], as_index=False)["_cost_cw_px"]
+                .sum()
+                .rename(columns={"_cost_cw_px": "cost_cpcw_proxy"})
+            )
 
     # Master-view fallbacks (never use full ``df`` for spend — it would pull cost from non-Spend tabs).
     if post_g.empty or ("closed_won" in post_g.columns and float(post_g["closed_won"].sum()) == 0.0):
@@ -3397,6 +3646,17 @@ def render_page_marketing_performance(
     master_df = master_df.merge(post_g, on=["month", "country"], how="outer")
     master_df = master_df.merge(cw_g, on=["month", "country"], how="outer")
     master_df = master_df.fillna(0)
+    if "cw_tab_cost" in master_df.columns:
+        _c_sp = pd.to_numeric(master_df["cost"], errors="coerce").fillna(0)
+        _c_cw = pd.to_numeric(master_df["cw_tab_cost"], errors="coerce").fillna(0)
+        master_df["cost"] = _c_sp.where(_c_sp > 1e-6, _c_cw)
+        master_df = master_df.drop(columns=["cw_tab_cost"], errors="ignore")
+    if not spend_proxy_g.empty and "cost_cpcw_proxy" in spend_proxy_g.columns:
+        master_df = master_df.merge(spend_proxy_g, on=["month", "country"], how="left")
+        master_df["cost_cpcw_proxy"] = pd.to_numeric(master_df["cost_cpcw_proxy"], errors="coerce").fillna(0)
+        _c_sp = pd.to_numeric(master_df["cost"], errors="coerce").fillna(0)
+        master_df["cost"] = _c_sp.where(_c_sp > 1e-6, master_df["cost_cpcw_proxy"])
+        master_df = master_df.drop(columns=["cost_cpcw_proxy"], errors="ignore")
     _mpo_dbg["master_after_merge_cost"] = _mpo_debug_cost_sum(master_df)
     _mpo_dbg["master_after_merge_rows"] = len(master_df)
     if not spend_pool_full.empty:
@@ -3441,6 +3701,7 @@ def render_page_marketing_performance(
             f"sheet_id: {_mpo_dbg['sheet_id']}",
             f"workbook id from: {_mpo_dbg.get('workbook_id_source', '')}",
             f"XRAY_SPEND_GID (secrets): {_mpo_dbg.get('xray_spend_gid_secret')!s} — set to tab URL gid when Spend is not first tab",
+            f"XRAY_SPEND_COLUMN (secrets): {_mpo_dbg.get('xray_spend_column_secret')!r} — exact/substring header to force cost mapping",
             f"spend load source_tab: {_mpo_dbg.get('spend_load_source_tab')!r}",
             f"canonical spend load — rows={_mpo_dbg['gid0_rows']}, cost_sum={_mpo_dbg['gid0_cost']:,.2f}, has cost col={_mpo_dbg['has_cost_col_gid0']}",
             f"pool_full — rows={_mpo_dbg['pool_full_rows']}, cost_sum={_mpo_dbg['pool_full_cost']:,.2f}",
@@ -3461,10 +3722,14 @@ def render_page_marketing_performance(
 
     st.caption(
         "**Spend** = sum from the spend worksheet, **pivoted by month × country** (same idea as your sheet). "
-        "**Middle East** is the total of the ME country rows for that month. "
+        "**Middle East** = that month’s regional spend total from the sheet when countries have no line-item spend; "
+        "otherwise it matches the sum of the ME country rows. "
         "CW, leads, TCV, etc. come from their own tabs and are joined on month + market."
     )
-    _master_performance_table(master_df, key_suffix=key_suffix)
+    _spend_for_master_ui = spend_g
+    if _normalized_spend_cost_sum(_spend_for_master_ui) < 1e-6 and _normalized_spend_cost_sum(spend_pool_full) > 1e-6:
+        _spend_for_master_ui = _spend_sheet_pivot_by_month_country(spend_pool_full)
+    _master_performance_table(master_df, key_suffix=key_suffix, spend_grid=_spend_for_master_ui)
 
 
 def render_page_market_mom(
