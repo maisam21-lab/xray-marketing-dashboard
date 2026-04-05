@@ -2962,34 +2962,32 @@ def _collapse_duplicate_named_columns(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _master_view_impute_month_for_spend_rows(df: pd.DataFrame) -> pd.DataFrame:
-    """``groupby(..., dropna=True)`` drops NaN month keys and can hide all spend; align orphan spend to peer months."""
-    if df.empty or "month" not in df.columns or "cost" not in df.columns:
+    """Fill month only from **same-country** peers with a real calendar month.
+
+    A global ``value_counts`` fallback (e.g. “most common month in the sheet”) dumps **all** orphan spend
+    into one month (often the busiest CRM month like Sep) — wrong for Marketing Performance.
+    """
+    if df.empty or "month" not in df.columns or "cost" not in df.columns or "country" not in df.columns:
         return df
     out = df.copy()
     cost = pd.to_numeric(out["cost"], errors="coerce").fillna(0)
     mk = out["month"].map(_month_norm_key)
     plausible = mk.map(_dashboard_month_plausible)
-    # Rows where we never got ``YYYY-MM`` (even if ``_dashboard_month_plausible`` is True for junk strings).
     need_mask = (cost > 1e-3) & (out["month"].isna() | ~plausible | mk.eq(""))
     if not bool(need_mask.any()):
         return out
     good_mask = plausible & mk.ne("") & out["month"].notna()
     if not bool(good_mask.any()):
         return out
-    global_vc = out.loc[good_mask, "month"].map(_month_norm_key).value_counts()
-    g_fallback = global_vc.index[0] if len(global_vc) else ""
-    if not g_fallback:
-        return out
     for idx in out.loc[need_mask].index:
-        pick = g_fallback
-        if "country" in out.columns:
-            ctry = out.at[idx, "country"]
-            peer_mask = good_mask & (out["country"] == ctry)
-            if bool(peer_mask.any()):
-                local_vc = out.loc[peer_mask, "month"].map(_month_norm_key).value_counts()
-                if len(local_vc):
-                    pick = local_vc.index[0]
-        out.at[idx, "month"] = pick
+        ctry = out.at[idx, "country"]
+        peer_mask = good_mask & (out["country"] == ctry)
+        if not bool(peer_mask.any()):
+            continue
+        local_vc = out.loc[peer_mask, "month"].map(_month_norm_key).value_counts()
+        if not len(local_vc):
+            continue
+        out.at[idx, "month"] = local_vc.index[0]
     return out
 
 
