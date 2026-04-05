@@ -8,12 +8,12 @@ Run:
 from __future__ import annotations
 
 import hashlib
-import html
 import io
 import json
 import os
 import re
 import base64
+import unicodedata
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Optional, Union
@@ -24,7 +24,13 @@ import streamlit as st
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 DEFAULT_SOURCE_TRUTH_GID = 8109573
-DEFAULT_LEADS_WORKSHEET_GID = 743065354
+# Inbound lead tab gid from Sheets URL (…#gid=743065354). One row = one lead. Override or extend via
+# Streamlit secret ``XRAY_LEAD_WORKSHEET_GIDS`` (comma-separated) or env ``XRAY_LEAD_WORKSHEET_GIDS``.
+# If gid matching still misses (rename / API id ≠ URL), set ``XRAY_LEAD_TAB_CONTAINS`` to a unique
+# substring of the tab title, e.g. ``Inbound`` or ``Lead export`` (comma-separated allowed).
+DEFAULT_INBOUND_LEAD_WORKSHEET_GIDS: tuple[int, ...] = (743065354,)
+# Synthetic worksheet ids for Excel loads (stable per sheet index in the loaded workbook).
+_EXCEL_SOURCE_WS_GID_BASE = 1_000_000
 # Default empty on Streamlit Cloud; set `XRAY_EXCEL_PATH` in secrets or `XRAY_EXCEL_PATH_DEFAULT` locally.
 DEFAULT_LOCAL_EXCEL_PATH = (os.environ.get("XRAY_EXCEL_PATH_DEFAULT") or "").strip()
 DEFAULT_LOGO_PATH = (
@@ -44,18 +50,6 @@ def _default_sheet_id_from_secrets() -> str:
         return DEFAULT_SHEET_ID
 
 
-def _workbook_id_resolution() -> tuple[str, str]:
-    """(canonical_sheet_id, label for debug: default vs secret override)."""
-    try:
-        s = st.secrets
-        v = (s.get("XRAY_SHEET_ID") or s.get("xray_sheet_id") or "").strip()
-        if v:
-            return _extract_sheet_id(v), "XRAY_SHEET_ID (Streamlit secret)"
-    except Exception:
-        pass
-    return DEFAULT_SHEET_ID, "DEFAULT_SHEET_ID in code (ME X-Ray workbook)"
-
-
 def _default_truth_gid_from_secrets() -> int:
     """Optional Streamlit secret XRAY_TRUTH_GID overrides default source-of-truth tab gid."""
     try:
@@ -64,77 +58,6 @@ def _default_truth_gid_from_secrets() -> int:
         return int(v) if v else DEFAULT_SOURCE_TRUTH_GID
     except Exception:
         return DEFAULT_SOURCE_TRUTH_GID
-
-
-def _default_leads_gid_from_secrets() -> int:
-    """Optional Streamlit secret XRAY_LEADS_GID overrides default leads tab gid."""
-    try:
-        s = st.secrets
-        v = (s.get("XRAY_LEADS_GID") or s.get("xray_leads_gid") or "").strip()
-        return int(v) if v else DEFAULT_LEADS_WORKSHEET_GID
-    except Exception:
-        return DEFAULT_LEADS_WORKSHEET_GID
-
-
-def _optional_post_qual_gid_from_secrets() -> Optional[int]:
-    """Optional Streamlit secret XRAY_POST_QUAL_GID: load this tab alone for pipeline KPIs (Total Live)."""
-    try:
-        s = st.secrets
-        v = (s.get("XRAY_POST_QUAL_GID") or s.get("xray_post_qual_gid") or "").strip()
-        return int(v) if v else None
-    except Exception:
-        return None
-
-
-def _optional_raw_cw_gid_from_secrets() -> Optional[int]:
-    """Optional Streamlit secret XRAY_RAW_CW_GID: TCV / 1st Month LF tab (same as Looker Actual TCV & CPCW:LF)."""
-    try:
-        s = st.secrets
-        v = (s.get("XRAY_RAW_CW_GID") or s.get("xray_raw_cw_gid") or "").strip()
-        return int(v) if v else None
-    except Exception:
-        return None
-
-
-def _optional_spend_gid_from_secrets() -> Optional[int]:
-    """Optional Streamlit secret XRAY_SPEND_GID: worksheet id from the tab URL when Spend is not on gid=0."""
-    try:
-        s = st.secrets
-        v = (s.get("XRAY_SPEND_GID") or s.get("xray_spend_gid") or "").strip()
-        return int(v) if v else None
-    except Exception:
-        return None
-
-
-def _optional_spend_column_header_from_secrets() -> str:
-    """Exact (or substring) spend column header on the sheet, e.g. ``Marketing Spend`` — ``XRAY_SPEND_COLUMN``."""
-    try:
-        s = st.secrets
-        return (s.get("XRAY_SPEND_COLUMN") or s.get("xray_spend_column") or "").strip()
-    except Exception:
-        return ""
-
-
-def _inject_cost_from_named_sheet_column(raw: pd.DataFrame, cand: pd.DataFrame, header: str) -> pd.DataFrame:
-    """Force ``cost`` from a raw column when auto-mapping fails (same row order as ``cand``)."""
-    if not header or raw.empty or cand.empty or len(raw) != len(cand):
-        return cand
-    hl = header.strip().lower()
-    match: Optional[str] = None
-    for c in raw.columns:
-        if str(c).strip().lower() == hl:
-            match = c
-            break
-    if match is None:
-        for c in raw.columns:
-            if hl in str(c).strip().lower():
-                match = c
-                break
-    if match is None:
-        return cand
-    out = cand.copy()
-    out["cost"] = _to_number_series(raw[match].reset_index(drop=True)).values
-    return out
 
 
 def _default_excel_path_from_secrets() -> str:
@@ -155,6 +78,84 @@ def _default_logo_path_from_secrets() -> str:
         return v if v else DEFAULT_LOGO_PATH
     except Exception:
         return DEFAULT_LOGO_PATH
+
+
+def _configured_lead_worksheet_gids() -> frozenset[int]:
+    """Worksheet ids whose rows are counted as inbound leads (union of defaults + secrets + env)."""
+    gids: set[int] = set(DEFAULT_INBOUND_LEAD_WORKSHEET_GIDS)
+    try:
+        s = st.secrets  # type: ignore[union-attr]
+        v = (s.get("XRAY_LEAD_WORKSHEET_GIDS") or s.get("xray_lead_worksheet_gids") or "").strip()
+        if v:
+            for part in v.split(","):
+                p = part.strip()
+                if p.isdigit():
+                    gids.add(int(p))
+    except Exception:
+        pass
+    ev = (os.environ.get("XRAY_LEAD_WORKSHEET_GIDS") or "").strip()
+    if ev:
+        for part in ev.split(","):
+            p = part.strip()
+            if p.isdigit():
+                gids.add(int(p))
+    return frozenset(gids)
+
+
+def _sheet_title_clean(title: str) -> str:
+    """Strip BOM / odd spaces so ``source_tab`` matches URL tab names like ``Leads`` / ``leads`` reliably."""
+    s = str(title).replace("\ufeff", "").strip()
+    if not s:
+        return "Sheet"
+    s = unicodedata.normalize("NFKC", s)
+    s = re.sub(r"[\u200b\u200c\u200d\ufeff]", "", s).strip()
+    return s or "Sheet"
+
+
+def _sheet_title_match_key(title: str) -> str:
+    """Case-insensitive key for comparing worksheet titles (inbound lead tab = ``leads``, ``lead``, etc.)."""
+    return _sheet_title_clean(title).casefold()
+
+
+# Exact tab titles (after :func:`_sheet_title_match_key`) that mean the inbound lead sheet, one row per lead.
+_KNOWN_INBOUND_LEAD_TAB_KEYS: frozenset[str] = frozenset(
+    {
+        "lead",
+        "leads",
+        "raw lead",
+        "raw leads",
+        "lead sheet",
+        "leads sheet",
+        "raw lead sheet",
+        "raw leads sheet",
+    }
+)
+
+
+def _configured_lead_tab_substrings() -> tuple[str, ...]:
+    """Substrings matched case-insensitively against ``source_tab`` to find the inbound lead sheet."""
+    found: list[str] = []
+    try:
+        s = st.secrets  # type: ignore[union-attr]
+        v = (
+            s.get("XRAY_LEAD_TAB_CONTAINS")
+            or s.get("xray_lead_tab_contains")
+            or ""
+        ).strip()
+        if v:
+            for part in v.split(","):
+                p = part.strip()
+                if p and p not in found:
+                    found.append(p)
+    except Exception:
+        pass
+    ev = (os.environ.get("XRAY_LEAD_TAB_CONTAINS") or "").strip()
+    if ev:
+        for part in ev.split(","):
+            p = part.strip()
+            if p and p not in found:
+                found.append(p)
+    return tuple(found)
 
 
 def _logo_data_uri(path_str: str) -> str:
@@ -291,7 +292,6 @@ def _read_sheet_auth(
 ) -> pd.DataFrame:
     import gspread
     from google.oauth2.service_account import Credentials
-    from gspread.utils import ValueRenderOption
 
     creds_info = _coerce_service_account_dict(service_account_data)
     _validate_service_account_dict(creds_info)
@@ -320,11 +320,7 @@ def _read_sheet_auth(
             ) from e
     else:
         ws = sh.get_worksheet(0)
-    try:
-        recs = ws.get_all_records(value_render_option=ValueRenderOption.unformatted)
-        return pd.DataFrame(recs)
-    except Exception:
-        return pd.DataFrame(ws.get_all_records())
+    return pd.DataFrame(ws.get_all_records())
 
 
 def _read_sheet_auth_loose(
@@ -336,7 +332,6 @@ def _read_sheet_auth_loose(
     """Fallback reader for tabs where get_all_records() fails due unusual header rows."""
     import gspread
     from google.oauth2.service_account import Credentials
-    from gspread.utils import ValueRenderOption
 
     creds_info = _coerce_service_account_dict(service_account_data)
     _validate_service_account_dict(creds_info)
@@ -347,10 +342,7 @@ def _read_sheet_auth_loose(
     gc = gspread.authorize(creds)
     sh = gc.open_by_key(sheet_id)
     ws = sh.get_worksheet_by_id(int(worksheet_gid))
-    try:
-        grid = ws.get_all_values(value_render_option=ValueRenderOption.unformatted) or []
-    except Exception:
-        grid = ws.get_all_values() or []
+    grid = ws.get_all_values()
     if not grid:
         return pd.DataFrame()
     # Choose the first non-empty row as header.
@@ -370,37 +362,6 @@ def _read_sheet_auth_loose(
     return pd.DataFrame(fixed_rows, columns=headers)
 
 
-def _read_sheet_grid_values(
-    sheet_id: str,
-    service_account_data: Union[bytes, dict, str],
-    worksheet_gid: int,
-) -> list[list[Any]]:
-    """Raw cell grid; prefers **unformatted** values so formulas/currency read as numbers (fixes $0 spend)."""
-    import gspread
-    from google.oauth2.service_account import Credentials
-    from gspread.utils import ValueRenderOption
-
-    creds_info = _coerce_service_account_dict(service_account_data)
-    _validate_service_account_dict(creds_info)
-    creds = Credentials.from_service_account_info(
-        creds_info,
-        scopes=["https://www.googleapis.com/auth/spreadsheets.readonly"],
-    )
-    gc = gspread.authorize(creds)
-    sh = gc.open_by_key(sheet_id)
-    ws = sh.get_worksheet_by_id(int(worksheet_gid))
-    try:
-        return ws.get_all_values(value_render_option=ValueRenderOption.unformatted) or []
-    except Exception:
-        return ws.get_all_values() or []
-
-
-def _normalized_spend_cost_sum(frame: pd.DataFrame) -> float:
-    if frame.empty or "cost" not in frame.columns:
-        return 0.0
-    return float(pd.to_numeric(frame["cost"], errors="coerce").fillna(0).sum())
-
-
 def _dataframe_from_grid_with_keyword_header(grid: list[list[str]], keyword: str) -> pd.DataFrame:
     """Build a dataframe by detecting a header row containing a keyword (e.g. 'spend')."""
     if not grid:
@@ -408,7 +369,7 @@ def _dataframe_from_grid_with_keyword_header(grid: list[list[str]], keyword: str
     kw = _norm_header_key(keyword)
     best_idx = None
     best_score = -1
-    for i, row in enumerate(grid[:55]):  # title rows often push the real header down
+    for i, row in enumerate(grid[:25]):  # scan first rows for likely header
         if not any(str(c).strip() for c in row):
             continue
         norm_cells = [_norm_header_key(c) for c in row]
@@ -427,95 +388,6 @@ def _dataframe_from_grid_with_keyword_header(grid: list[list[str]], keyword: str
     width = len(header)
     fixed_rows = [(r + [""] * max(0, width - len(r)))[:width] for r in rows]
     return pd.DataFrame(fixed_rows, columns=header)
-
-
-def _make_unique_headers_row(row: list[Any]) -> list[str]:
-    names = [str(h).strip() or f"col_{j+1}" for j, h in enumerate(row)]
-    seen: dict[str, int] = {}
-    out: list[str] = []
-    for n in names:
-        seen[n] = seen.get(n, 0) + 1
-        out.append(n if seen[n] == 1 else f"{n}__{seen[n]}")
-    return out
-
-
-def _dataframe_from_grid_header_at(grid: list[list[str]], header_idx: int) -> pd.DataFrame:
-    """Build a frame using an arbitrary grid row as the header (for tabs where the real header is not row 1)."""
-    if header_idx < 0 or header_idx >= len(grid):
-        return pd.DataFrame()
-    header = _make_unique_headers_row(grid[header_idx])
-    rows = grid[header_idx + 1 :]
-    if not rows:
-        return pd.DataFrame(columns=header)
-    width = len(header)
-    fixed_rows = [(r + [""] * max(0, width - len(r)))[:width] for r in rows]
-    return pd.DataFrame(fixed_rows, columns=header)
-
-
-def _parse_european_money_scalar(val: Any) -> float:
-    """Parse ``1.234,56`` / ``1234,56`` style amounts when US-style parsing yields nothing."""
-    t = str(val).strip()
-    if not t or t.lower() in ("-", "—", "n/a", "na", "#ref!", "#value!", "null"):
-        return 0.0
-    paren_neg = t.startswith("(") and t.endswith(")")
-    if paren_neg:
-        t = t[1:-1].strip()
-    sign = -1.0 if t.startswith("-") else 1.0
-    t = t.lstrip("-").strip()
-    t = re.sub(r"[\$€£\s\xa0]", "", t)
-    if not t:
-        return 0.0
-    if re.search(r",\d{1,2}$", t) and t.count(",") == 1:
-        t = t.replace(",", ".")
-    elif "," in t and "." in t:
-        if t.rfind(",") > t.rfind("."):
-            t = t.replace(".", "").replace(",", ".")
-        else:
-            t = t.replace(",", "")
-    try:
-        v = sign * float(t)
-        return -abs(v) if paren_neg else v
-    except ValueError:
-        return 0.0
-
-
-def _guess_spend_value_column_raw(raw: pd.DataFrame) -> Optional[str]:
-    """If headers do not contain spend/cost, pick the column with the largest plausible money total (excludes ids)."""
-    if raw.empty or len(raw.columns) < 2:
-        return None
-    best_c: Optional[str] = None
-    best_sm = -1.0
-    for c in raw.columns:
-        nk = _norm_header_key(str(c))
-        if any(
-            x in nk
-            for x in (
-                "id",
-                "opp_",
-                "opportunity",
-                "email",
-                "phone",
-                "url",
-                "link",
-                "uuid",
-                "record",
-                "case_id",
-                "percent",
-                "pct",
-                "rate",
-                "ratio",
-            )
-        ):
-            continue
-        if nk in {"month", "year", "week", "day", "date", "market", "country", "region", "channel", "platform"}:
-            continue
-        sm = float(_to_number_series(raw[c]).abs().sum())
-        if sm > best_sm:
-            best_sm = sm
-            best_c = c
-    if best_c is None or best_sm < 1e-6:
-        return None
-    return best_c
 
 
 def _norm_header_key(name: str) -> str:
@@ -549,20 +421,54 @@ def _resolve_post_lead_stage_column(df: pd.DataFrame) -> Optional[str]:
     return next((c for c in df.columns if "stage" in _norm_header_key(c)), None)
 
 
+def _resolve_optional_approval_column(df: pd.DataFrame) -> Optional[str]:
+    """Optional column for formal approval (e.g. Approval Status) when Stage alone is not enough."""
+    if df.empty or not len(df.columns):
+        return None
+    for c in df.columns:
+        nk = _norm_header_key(c)
+        if nk in (
+            "approval_status",
+            "approval",
+            "deal_approval",
+            "formally_approved",
+            "approved",
+            "approval_state",
+        ):
+            return c
+        if "approval" in nk and "stage" not in nk:
+            return c
+    return None
+
+
+def _closed_won_kpi_mask(
+    raw_stage: pd.Series,
+    approval_optional: Optional[pd.Series] = None,
+) -> pd.Series:
+    """KPI matches Excel **Stage** filter: **Closed Won** OR **Approved** (separate picklist values).
+
+    Same idea as selecting both *Approved* and *Closed Won* in a stage slicer—not requiring both words in one cell.
+    Excludes **Closed Lost** and stage text that reads as not approved. Optional **approval** column can still
+    veto rows that explicitly reject.
+    """
+    s = raw_stage.astype(str).str.lower().str.strip()
+    not_rejected = ~s.str.contains("not approved", na=False) & ~s.str.contains("unapproved", na=False)
+    is_closed_won = s.str.contains("closed won", na=False) & ~s.str.contains("closed lost", na=False)
+    is_approved_stage = s.eq("approved")
+    base = not_rejected & (is_closed_won | is_approved_stage)
+    if approval_optional is None:
+        return base
+    ao = approval_optional.astype(str).str.lower()
+    col_accept = (
+        ao.str.contains("approved", na=False) & ~ao.str.contains("not approved", na=False)
+    ) | ao.str.strip().isin(["yes", "y", "true", "1"])
+    col_reject = ao.str.contains("not approved", na=False) | ao.str.contains("rejected", na=False)
+    return base & (~col_reject | col_accept)
+
+
 def _is_closed_won_stage_text(val: Any) -> bool:
-    """Count rows in Closed Won, including formally approved; exclude Not Approved / Closed Lost."""
-    t = str(val).lower().strip()
-    if not t or t in ("nan", "none"):
-        return False
-    if "closed lost" in t:
-        return False
-    if "closed won" in t:
-        return True
-    if "not approved" in t or "unapproved" in t:
-        return False
-    if re.search(r"\bapproved\b", t):
-        return True
-    return False
+    """Single-cell helper: Closed Won + approved (same rules as :func:`_closed_won_kpi_mask`)."""
+    return bool(_closed_won_kpi_mask(pd.Series([val]), None).iloc[0])
 
 
 def _is_post_lead_pipeline_tab(tab_name: str) -> bool:
@@ -578,629 +484,281 @@ def _is_post_lead_pipeline_tab(tab_name: str) -> bool:
         return True
     return False
 
+
+def _is_lead_source_tab(tab_name: str) -> bool:
+    """True for Raw Leads / Lead Sheet / Lead(s): one row per inbound lead (not post-lead pipeline)."""
+    if _is_post_lead_pipeline_tab(tab_name):
+        return False
+    t = tab_name.strip().lower()
+    if re.search(r"raw\s*leads?", t):
+        return True
+    if re.search(r"lead\s*sheet", t):
+        return True
+    if re.match(r"^\s*leads?\s*$", t):
+        return True
+    if re.search(r"\bleads?\s+report", t) or re.search(r"\bleads?\s+export", t):
+        return True
+    # SF / Sheets exports: tab title contains "Lead(s)" but not post-lead / spend / CW.
+    if re.search(r"\bleads?\b", t) and not re.search(
+        r"post|qualification|raw\s*post|raw\s*cw|rawcw|\bspend\b|gid:0",
+        t,
+    ):
+        return True
+    return False
+
+
+# Tab name regexes for MPO lead totals and chart slices (must stay aligned with :func:`_is_lead_source_tab`).
+_LEAD_SOURCE_TAB_PATTERNS: tuple[str, ...] = (
+    r"raw\s*leads?",
+    r"lead\s*sheet",
+    r"^\s*leads?\s*$",
+    r"leads?\s+report",
+    r"copy\s+of\s+.*lead",
+)
+
+
+def _rows_from_configured_lead_gids(frame: pd.DataFrame) -> pd.DataFrame:
+    """Rows loaded from worksheet gids listed in :func:`_configured_lead_worksheet_gids` (URL ``#gid=``)."""
+    if frame.empty or "source_ws_gid" not in frame.columns:
+        return frame.iloc[0:0].copy()
+    want = _configured_lead_worksheet_gids()
+    if not want:
+        return frame.iloc[0:0].copy()
+    g = pd.to_numeric(frame["source_ws_gid"], errors="coerce")
+    return frame[g.isin(list(want))].copy()
+
+
+def _rows_from_known_inbound_lead_tab_title(frame: pd.DataFrame) -> pd.DataFrame:
+    """Rows from tabs whose title is exactly ``Leads`` / ``Lead`` / ``Raw Leads`` (case-insensitive), etc."""
+    if frame.empty or "source_tab" not in frame.columns:
+        return frame.iloc[0:0].copy()
+    keys = frame["source_tab"].map(lambda x: _sheet_title_match_key(str(x)))
+    return frame[keys.isin(_KNOWN_INBOUND_LEAD_TAB_KEYS)].copy()
+
+
+def _rows_from_configured_lead_tab_substrings(frame: pd.DataFrame) -> pd.DataFrame:
+    """Rows whose ``source_tab`` contains a user-configured substring (``XRAY_LEAD_TAB_CONTAINS``)."""
+    if frame.empty or "source_tab" not in frame.columns:
+        return frame.iloc[0:0].copy()
+    subs = _configured_lead_tab_substrings()
+    if not subs:
+        return frame.iloc[0:0].copy()
+    st = frame["source_tab"].astype(str).str.strip().str.lower()
+    mask = pd.Series(False, index=frame.index)
+    for sub in subs:
+        sub_l = sub.strip().lower()
+        if not sub_l:
+            continue
+        mask = mask | st.str.contains(re.escape(sub_l), na=False, regex=True)
+    return frame[mask].copy()
+
+
+def _fallback_lead_tab_rows(frame: pd.DataFrame) -> pd.DataFrame:
+    """When strict tab regexes miss the workbook title, include any tab whose name suggests inbound leads."""
+    if "source_tab" not in frame.columns or frame.empty:
+        return frame.iloc[0:0].copy()
+    s = frame["source_tab"].astype(str).str.strip().str.lower()
+    has_lead = s.str.contains(r"\bleads?\b", na=False, regex=True) | s.str.contains(
+        r"\binbound\b", na=False, regex=True
+    )
+    exclude = s.str.contains(
+        r"post|qualification|raw\s*post|raw\s*cw|rawcw|\bspend\b|gid:0|marketing\s+performance",
+        na=False,
+        regex=True,
+    )
+    return frame[has_lead & ~exclude].copy()
+
+
+def _lead_totals_from_slice(leads_slice: pd.DataFrame, *, allow_rowcount: bool) -> tuple[int, int]:
+    """Sum ``leads`` / ``qualified``; if sums are zero and *allow_rowcount*, treat **one row = one lead**."""
+    if leads_slice.empty:
+        return 0, 0
+    q = 0
+    if "qualified" in leads_slice.columns:
+        q = int(pd.to_numeric(leads_slice["qualified"], errors="coerce").fillna(0).sum())
+    if "leads" in leads_slice.columns:
+        lv = int(pd.to_numeric(leads_slice["leads"], errors="coerce").fillna(0).sum())
+        if lv > 0:
+            return lv, q
+    if allow_rowcount:
+        return int(len(leads_slice)), q
+    return 0, q
+
+
+# Canonical market labels so lead rows merge with spend/CW on the same (month, country) keys.
+_COUNTRY_MARKET_ALIASES: dict[str, str] = {
+    "uae": "UAE",
+    "u.a.e": "UAE",
+    "u.a.e.": "UAE",
+    "united arab emirates": "UAE",
+    "emirates": "UAE",
+    "ksa": "Saudi Arabia",
+    "kingdom of saudi arabia": "Saudi Arabia",
+    "the kingdom of saudi arabia": "Saudi Arabia",
+    "saudi": "Saudi Arabia",
+    "saudi arabia": "Saudi Arabia",
+    "bahrain": "Bahrain",
+    "kuwait": "Kuwait",
+    "qatar": "Qatar",
+    "oman": "Oman",
+    "middle east": "Middle East",
+    "mena": "Middle East",
+    "egypt": "Egypt",
+    "jordan": "Jordan",
+}
+
+
+def _normalize_country_market_label(val: Any) -> str:
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return "Unknown"
+    t = str(val).strip()
+    if not t or t.lower() in ("nan", "none", "unknown", ""):
+        return "Unknown"
+    return _COUNTRY_MARKET_ALIASES.get(t.lower().strip(), t)
+
+
+def _normalize_country_market_series(s: pd.Series) -> pd.Series:
+    return s.map(_normalize_country_market_label)
+
+
+def _apply_country_norm_for_master_dim(frame: pd.DataFrame) -> pd.DataFrame:
+    """Copy frame with ``country`` mapped to canonical names before month×country aggregation."""
+    if frame.empty or "country" not in frame.columns:
+        return frame
+    out = frame.copy()
+    out["country"] = _normalize_country_market_series(out["country"])
+    return out
+
+
+def _canonical_master_month_keys(frame: pd.DataFrame) -> pd.DataFrame:
+    """Normalize ``month`` to ``YYYY-MM`` (Period string) using ``month``, ``date``, and ``report_month``."""
+    if frame.empty or "month" not in frame.columns:
+        return frame
+    out = frame.copy()
+    d = pd.to_datetime(out["month"], errors="coerce")
+    if "date" in out.columns:
+        d = d.fillna(pd.to_datetime(out["date"], errors="coerce"))
+    if "report_month" in out.columns:
+        d = d.fillna(_parse_report_month_series(out["report_month"]))
+    p = d.dt.to_period("M").astype(str)
+    out["month"] = p.where(d.notna(), out["month"].astype(str).str.strip())
+    d2 = pd.to_datetime(out["month"], errors="coerce")
+    if "date" in out.columns:
+        d2 = d2.fillna(pd.to_datetime(out["date"], errors="coerce"))
+    if "report_month" in out.columns:
+        d2 = d2.fillna(_parse_report_month_series(out["report_month"]))
+    p2 = d2.dt.to_period("M").astype(str)
+    out.loc[d2.notna(), "month"] = p2.loc[d2.notna()]
+    out["month"] = (
+        out["month"].astype(str).str.strip().replace({"NaT": "", "nan": "", "None": "", "<NA>": ""})
+    )
+    return out
+
+
+def _format_master_month_label(m: Any) -> str:
+    """``month`` is stored as Period string ``YYYY-MM``; tolerate blanks and bad values."""
+    if m is None or str(m).strip().lower() in ("", "nan", "nat", "none"):
+        return ""
+    try:
+        return pd.Period(m, freq="M").strftime("%b %Y")
+    except Exception:
+        return str(m).strip()
+
+
+def _enrich_lead_dimensions_for_master(leads_df: pd.DataFrame) -> pd.DataFrame:
+    """Align ``month`` with calendar ``date`` / ``report_month`` and normalize ``country`` for the master pivot."""
+    if leads_df.empty:
+        return leads_df
+    out = leads_df.copy()
+    d = pd.to_datetime(out["date"], errors="coerce") if "date" in out.columns else pd.Series(pd.NaT, index=out.index)
+    if "report_month" in out.columns:
+        rm = _parse_report_month_series(out["report_month"])
+        d = d.fillna(rm)
+    period_str = d.dt.to_period("M").astype(str)
+    base = out["month"].astype(str) if "month" in out.columns else pd.Series("NaT", index=out.index, dtype=str)
+    out["month"] = period_str.where(d.notna(), base)
+    if "country" in out.columns:
+        out["country"] = _normalize_country_market_series(out["country"])
+    return _canonical_master_month_keys(out)
+
+
+def _master_df_reconcile_leads(master_df: pd.DataFrame, df: pd.DataFrame, tl_kpi: int) -> pd.DataFrame:
+    """If merged ``leads`` do not match the scorecard total, re-attach from the lead slice or allocate by month."""
+    if tl_kpi <= 0 or master_df.empty or "month" not in master_df.columns:
+        return master_df
+    cur = float(pd.to_numeric(master_df.get("leads", 0), errors="coerce").fillna(0).sum())
+    if cur >= 0.92 * float(tl_kpi):
+        return master_df
+    ld, _ = _resolve_leads_slice_for_mpo(df)
+    if ld.empty:
+        return master_df
+    ld = _enrich_lead_dimensions_for_master(ld.copy())
+    if "leads" not in ld.columns or int(pd.to_numeric(ld["leads"], errors="coerce").fillna(0).sum()) == 0:
+        ld = ld.copy()
+        ld["leads"] = 1
+    agg_kw: dict[str, tuple[str, str]] = {"leads": ("leads", "sum")}
+    if "qualified" in ld.columns:
+        agg_kw["qualified"] = ("qualified", "sum")
+    mc = ld.groupby(["month", "country"], as_index=False).agg(**agg_kw)
+    md = master_df.drop(columns=["leads", "qualified"], errors="ignore")
+    md = md.merge(mc, on=["month", "country"], how="outer")
+    md = md.fillna(0)
+    if "qualified" not in md.columns:
+        md["qualified"] = 0.0
+    new_sum = float(pd.to_numeric(md.get("leads", 0), errors="coerce").fillna(0).sum())
+    if new_sum >= 0.88 * float(tl_kpi):
+        return md
+    by_m = ld.groupby("month", as_index=False)["leads"].sum().rename(columns={"leads": "_mlead"})
+    md2 = master_df.drop(columns=["leads", "qualified"], errors="ignore")
+    if md2.empty:
+        return md
+    md2 = md2.merge(by_m, on="month", how="left")
+    if "cost" not in md2.columns:
+        md2["cost"] = 0.0
+    cost = pd.to_numeric(md2["cost"], errors="coerce").fillna(0.0)
+    sum_c = md2.assign(_c=cost).groupby("month", dropna=False)["_c"].transform("sum")
+    share = cost / sum_c.replace(0, pd.NA)
+    n_per_m = md2.groupby("month", dropna=False)["cost"].transform("count")
+    share = share.fillna(1.0 / n_per_m.replace(0, 1))
+    md2["leads"] = pd.to_numeric(md2["_mlead"], errors="coerce").fillna(0.0) * share
+    md2 = md2.drop(columns=["_mlead"], errors="ignore")
+    if "qualified" not in md2.columns:
+        md2["qualified"] = 0.0
+    return md2.fillna(0)
+
+
+def _resolve_leads_slice_for_mpo(df: pd.DataFrame) -> tuple[pd.DataFrame, bool]:
+    """Return (lead rows, whether row-count is a valid lead total). Never use row-count on the full stacked frame."""
+    gid_rows = _rows_from_configured_lead_gids(df)
+    if not gid_rows.empty:
+        return gid_rows, True
+    title_rows = _rows_from_known_inbound_lead_tab_title(df)
+    if not title_rows.empty:
+        return title_rows, True
+    sub_rows = _rows_from_configured_lead_tab_substrings(df)
+    if not sub_rows.empty:
+        return sub_rows, True
+    strict = _mpo_tab_subset(df, list(_LEAD_SOURCE_TAB_PATTERNS))
+    if not strict.empty:
+        return strict, True
+    broad = _fallback_lead_tab_rows(df)
+    if not broad.empty:
+        return broad, True
+    return df, False
+
+
 # Tabs whose rows contribute to CW / post-lead funnel (must not include RAW CW or Spend).
 _POST_LEAD_SOURCE_TAB_PATTERNS: tuple[str, ...] = (
     # Historical KPI scope: extra patterns pulled a second tab and doubled CW (e.g. 61 -> 122).
     r"raw.*post.*qual",
     r"post\s*leads?",
-    # "Post Qualification" / "Post Qual" (no "Raw" or "Leads" in the tab title) — was excluded by the two patterns above.
-    r"post\s+qual",
-    r"post.*qualif",
+    r"post\s*lead",
+    r"post\s*qual",
 )
-
-# RAW CW / TCV tab — Actual TCV, 1st Month LF, CPCW:LF (Looker: SUM(Spend)/SUM(1st Month LF) at scorecard level).
-_RAW_CW_TAB_PATTERNS: tuple[str, ...] = (
-    r"raw\s*cw",
-    r"raw.*\bcw\b",
-    r"^\s*cw\s*$",
-    r"sum\s*cw",
-    r"cw\s*summary",
-)
-
-# Master View: regional subtotal (same markets as typical ME X-Ray).
-_MIDDLE_EAST_MARKET_KEYS: frozenset[str] = frozenset(
-    {
-        "bahrain",
-        "kuwait",
-        "saudi arabia",
-        "uae",
-        "united arab emirates",
-        "oman",
-        "qatar",
-        "jordan",
-        "lebanon",
-        "iraq",
-    }
-)
-# Sort order within a month (normalized keys; UAE aliases unified for ordering).
-_ME_MARKET_ORDER: tuple[str, ...] = (
-    "bahrain",
-    "kuwait",
-    "saudi arabia",
-    "united arab emirates",
-    "oman",
-    "qatar",
-    "jordan",
-    "lebanon",
-    "iraq",
-)
-
-
-def _norm_market_key(name: str) -> str:
-    return re.sub(r"\s+", " ", str(name).strip().lower())
-
-
-_COUNTRY_JOIN_ALIASES: dict[str, str] = {
-    "uae": "united arab emirates",
-    "u.a.e": "united arab emirates",
-    "u.a.e.": "united arab emirates",
-    "the uae": "united arab emirates",
-    "ksa": "saudi arabia",
-    "kingdom of saudi arabia": "saudi arabia",
-    "kingdom of saudi": "saudi arabia",
-    # Spend tabs often use a regional row; keep one key so it merges and can roll down to countries.
-    "middle east": "middle east",
-    "mena": "middle east",
-    "mea": "middle east",
-    "gcc": "middle east",
-    "gulf": "middle east",
-}
-
-
-def _country_join_key(name: str) -> str:
-    """Align Spend vs CRM market labels (e.g. UAE ↔ United Arab Emirates) for filtering."""
-    k = _norm_market_key(name)
-    if k in ("", "unknown", "nan", "<na>"):
-        return k
-    if k in _COUNTRY_JOIN_ALIASES:
-        return _COUNTRY_JOIN_ALIASES[k]
-    return k
-
-
-# Canonical join-key → CRM-style label in Master View (after merge on normalized ``country``).
-_MARKET_DISPLAY_FROM_KEY: dict[str, str] = {
-    "united arab emirates": "UAE",
-    "saudi arabia": "Saudi Arabia",
-    "bahrain": "Bahrain",
-    "kuwait": "Kuwait",
-    "oman": "Oman",
-    "qatar": "Qatar",
-    "jordan": "Jordan",
-    "lebanon": "Lebanon",
-    "iraq": "Iraq",
-}
-
-
-def _market_display_from_join_key(country_key: str) -> str:
-    k = _norm_market_key(str(country_key))
-    if k == "middle east":
-        return _MIDDLE_EAST_REGION_LABEL
-    if k in _MARKET_DISPLAY_FROM_KEY:
-        return _MARKET_DISPLAY_FROM_KEY[k]
-    if not k or k in ("unknown", "nan", "<na>"):
-        return "Unknown"
-    return " ".join(w.capitalize() for w in k.split())
-
-
-def _normalize_master_merge_frame(df: pd.DataFrame) -> pd.DataFrame:
-    """Unify ``month`` + ``country`` so spend + CRM + CW outer merges land on one row per market."""
-    if df.empty:
-        return df
-    out = df.copy()
-    if "country" in out.columns:
-        out["country"] = out["country"].map(_country_join_key)
-    if "month" in out.columns:
-        mk = out["month"].map(_month_norm_key)
-        if "date" in out.columns:
-            bad = mk.eq("") | mk.isna()
-            if bool(bad.any()):
-                d = pd.to_datetime(
-                    _scrub_pre_2000_dates(_coerce_sheet_serial_dates(out["date"])),
-                    errors="coerce",
-                )
-                fill = pd.Series("", index=out.index, dtype=object)
-                dok = d.notna() & (d >= pd.Timestamp("2000-01-01"))
-                if bool(dok.any()):
-                    fill.loc[dok] = d.loc[dok].dt.to_period("M").astype(str)
-                mk = mk.where(~bad, fill.map(_month_norm_key))
-        out["month"] = mk.map(_month_norm_key)
-    return out
-
-
-# Reject Unix-epoch / Excel-zero style dates (shows as **Jan 1970** in the grid).
-_MIN_DASHBOARD_PERIOD = pd.Period("2000-01", freq="M")
-
-
-def _yyyymm_calendar_to_key(ni: int) -> str:
-    """Map integer ``YYYYMM`` (e.g. ``202509``) to canonical ``YYYY-MM`` (ME exports / pivot downloads)."""
-    if ni < 199001 or ni > 210012:
-        return ""
-    y, mo = ni // 100, ni % 100
-    if mo < 1 or mo > 12 or y < 1990 or y > 2100:
-        return ""
-    try:
-        p = pd.Period(year=int(y), month=int(mo), freq="M")
-        if p >= _MIN_DASHBOARD_PERIOD:
-            return str(p)
-    except (ValueError, TypeError):
-        pass
-    return ""
-
-
-def _month_only_calendar_month_to_key(month_1_12: int) -> str:
-    """Map bare month index 1..12 (no year in cell) to ``YYYY-MM``.
-
-    Picks the latest calendar month **not after** the current month (same year first, then prior years).
-    """
-    if month_1_12 < 1 or month_1_12 > 12:
-        return ""
-    nowp = pd.Period(date.today(), freq="M")
-    y0 = date.today().year
-    for y in range(y0, y0 - 8, -1):
-        try:
-            p = pd.Period(year=y, month=month_1_12, freq="M")
-            if p < _MIN_DASHBOARD_PERIOD:
-                continue
-            if p <= nowp:
-                return str(p)
-        except (ValueError, TypeError):
-            continue
-    return ""
-
-
-def _dashboard_month_plausible(m: Any) -> bool:
-    """False for empty month and for pre-2000 periods (epoch junk); True if unparseable (keep row)."""
-    if m is None or (isinstance(m, float) and pd.isna(m)):
-        return False
-    ms = str(m).strip().lower()
-    if not ms or ms in ("nat", "nan", "none"):
-        return False
-    try:
-        return bool(pd.Period(str(m), freq="M") >= _MIN_DASHBOARD_PERIOD)
-    except Exception:
-        return True
-
-
-def _coerce_sheet_serial_dates(s: pd.Series) -> pd.Series:
-    """Google Sheets ``UNFORMATTED_VALUE`` often returns calendar columns as **serial day counts** (Excel epoch).
-
-    Plain ``pd.to_datetime`` on those floats is wrong/NaT, which blanks ``month`` and the Master View filter drops every row.
-    """
-    if s is None or getattr(s, "empty", True):
-        return s
-    d1 = pd.to_datetime(s, errors="coerce")
-    n = pd.to_numeric(s, errors="coerce")
-    ser_mask = n.notna() & (n > 20000) & (n < 100000)
-    if not bool(ser_mask.any()):
-        return d1
-    base = pd.Timestamp("1899-12-30")
-    conv = base + pd.to_timedelta(n.loc[ser_mask], unit="D")
-    out = d1.copy()
-    out.loc[ser_mask] = conv
-    return out
-
-
-def _scrub_pre_2000_dates(s: pd.Series) -> pd.Series:
-    """Turn ancient timestamps (often from ``0`` or blank mis-read as epoch) into NaT."""
-    dt = pd.to_datetime(s, errors="coerce")
-    bad = dt.notna() & (dt < pd.Timestamp("2000-01-01"))
-    return dt.where(~bad, pd.NaT)
-
-
-def _month_norm_key(m: Any) -> str:
-    """Canonical ``YYYY-MM`` period string for matching Spend rows to dashboard ``month``."""
-    if m is None or (isinstance(m, float) and pd.isna(m)):
-        return ""
-    # Sheets ``UNFORMATTED_VALUE`` often puts calendar months in the cell as **serial day counts** (Excel epoch).
-    # ``pd.to_datetime(45321)`` treats that as ns/ms → 1970 junk → we return "" and Master View drops spend rows.
-    try:
-        if not isinstance(m, bool):
-            n = float(m)
-            if pd.notna(n):
-                ni = int(round(n))
-                if abs(n - ni) < 0.02 or abs(n - round(n)) < 1e-6:
-                    yk = _yyyymm_calendar_to_key(ni)
-                    if yk:
-                        return yk
-                    # Calendar month 1-12 only (often paired with a separate Year column — see spend preprocess).
-                    if 1 <= ni <= 12 and not (20000 < n < 100000):
-                        mk = _month_only_calendar_month_to_key(ni)
-                        if mk:
-                            return mk
-                # Excel / Sheets day-count serial (not YYYYMM — those are > 100k).
-                if 20000 < n < 100000:
-                    if abs(n - ni) < 0.02 or abs(n - round(n)) < 1e-6:
-                        base = pd.Timestamp("1899-12-30")
-                        ts = base + pd.to_timedelta(ni, unit="D")
-                        if ts.year >= 2000:
-                            p = ts.to_period("M")
-                            if p >= _MIN_DASHBOARD_PERIOD:
-                                return str(p)
-    except (TypeError, ValueError, OverflowError):
-        pass
-    ms = str(m).strip()
-    if not ms or ms.lower() in ("nat", "none", "nan"):
-        return ""
-    ms6 = ms.replace(",", "").replace(" ", "")
-    if ms6.isdigit() and len(ms6) == 6:
-        yk6 = _yyyymm_calendar_to_key(int(ms6))
-        if yk6:
-            return yk6
-    if ms6.isdigit() and 1 <= len(ms6) <= 2:
-        mi = int(ms6)
-        if 1 <= mi <= 12:
-            mk = _month_only_calendar_month_to_key(mi)
-            if mk:
-                return mk
-    try:
-        p = pd.Period(str(m), freq="M")
-        if p < _MIN_DASHBOARD_PERIOD:
-            return ""
-        return str(p)
-    except Exception:
-        try:
-            ts = pd.to_datetime(m, errors="coerce")
-            if pd.isna(ts) or ts < pd.Timestamp("2000-01-01"):
-                return ""
-            p = ts.to_period("M")
-            if p < _MIN_DASHBOARD_PERIOD:
-                return ""
-            return str(p)
-        except Exception:
-            return ""
-
-
-def _spend_slice_for_dashboard_filters(spend_master: pd.DataFrame, df_ref: pd.DataFrame) -> pd.DataFrame:
-    """Apply Market/Month filters without brittle merge; if filters zero out real spend, keep full slice."""
-    if spend_master.empty or "cost" not in spend_master.columns:
-        return spend_master
-    full_sum = float(pd.to_numeric(spend_master["cost"], errors="coerce").fillna(0).sum())
-    if df_ref.empty or full_sum == 0.0:
-        return spend_master.copy()
-    out = spend_master.copy()
-    if "country" in out.columns and "country" in df_ref.columns:
-        allow_c = {
-            x for x in df_ref["country"].map(_country_join_key).unique().tolist() if x and x not in ("unknown", "nan", "")
-        }
-        if allow_c:
-            out = out[out["country"].map(_country_join_key).isin(allow_c)]
-    if "month" in out.columns and "month" in df_ref.columns:
-        allow_m = {x for x in df_ref["month"].map(_month_norm_key).unique().tolist() if x}
-        if allow_m:
-            km = out["month"].map(_month_norm_key)
-            out = out[km.isin(allow_m) | (km == "")]
-    filt_sum = float(pd.to_numeric(out["cost"], errors="coerce").fillna(0).sum())
-    if filt_sum == 0.0 and full_sum > 0.0:
-        return spend_master.copy()
-    return out
-
-
-def _spend_sheet_month_is_blank(s: pd.Series) -> pd.Series:
-    t = s.astype(str).str.strip().str.lower()
-    return ~(t.str.len() > 0) | t.isin(["nan", "nat", "none"])
-
-
-def _best_norm_month_series_from_normalized_frame(df: pd.DataFrame) -> Optional[pd.Series]:
-    """Pick the column whose values most often normalize to ``YYYY-MM`` (unmapped / odd ME X-Ray headers)."""
-    if df.empty or len(df.columns) < 2:
-        return None
-    skip_nk = frozenset(
-        {
-            "country",
-            "market",
-            "geo",
-            "kitchen_country",
-            "country_code",
-            "channel",
-            "platform",
-            "media_type",
-            "lead_source",
-            "cost",
-            "clicks",
-            "impressions",
-            "cost_tcv_pct",
-        }
-    ) | _NUM_FIELDS
-    best: Optional[pd.Series] = None
-    best_ct = 0
-    n = len(df)
-    for c in df.columns:
-        sc = str(c)
-        nk = _norm_header_key(sc)
-        if nk in skip_nk:
-            continue
-        if any(p in nk for p in ("opportunity", "deal", "record", "case", "utm_", "lead_status", "opp_")):
-            continue
-        if nk.endswith("_id") or nk.endswith("_name"):
-            continue
-        if sc.startswith("_") or sc in ("source_tab", "worksheet_gid"):
-            continue
-        s = df[c].map(_month_norm_key)
-        ct = int(s.ne("").sum())
-        if ct > best_ct:
-            best_ct = ct
-            best = s
-    need = max(3, int(0.015 * n))
-    if best is None or best_ct < need:
-        return None
-    return best
-
-
-def _canonicalize_spend_month_column(df: pd.DataFrame) -> pd.DataFrame:
-    """Set ``month`` (YYYY-MM) from row ``date`` when valid; else forward-filled ``report_month`` (merged Month cells).
-
-    ``normalize()`` fills missing ``date`` from **per-row** ``report_month``. Blank Month cells stay blank there,
-    but a **preprocess ffill** on Month (removed) or a single filled cell used to collapse all spend into one
-    period. Here **date wins**; ``report_month.ffill()`` applies only where month is still unknown.
-    """
-    if df.empty:
-        return df
-    out = df.copy()
-    idx = out.index
-    m_new = pd.Series(pd.NA, index=idx, dtype=object)
-    if "date" in out.columns:
-        # One map covers YYYYMM ints, sheet serials, ISO strings, etc. (avoids ``to_datetime(202509)`` junk).
-        from_date = out["date"].map(_month_norm_key)
-        okd = from_date.ne("")
-        if bool(okd.any()):
-            m_new.loc[okd] = from_date.loc[okd]
-    blank = m_new.isna() | m_new.astype(str).str.strip().str.lower().isin(["", "nan", "nat", "none"])
-    if "report_month" in out.columns and bool(blank.any()):
-        rm_ff = out["report_month"].ffill()
-        direct_rm = rm_ff.map(_month_norm_key)
-        hit_direct = blank & direct_rm.ne("")
-        if bool(hit_direct.any()):
-            m_new.loc[hit_direct] = direct_rm.loc[hit_direct]
-        blank = m_new.isna() | m_new.astype(str).str.strip().str.lower().isin(["", "nan", "nat", "none"])
-        rser = _parse_report_month_series(rm_ff)
-        rser = rser.fillna(_coerce_sheet_serial_dates(rm_ff))
-        rser = _scrub_pre_2000_dates(rser)
-        okr = blank & rser.notna() & (rser >= pd.Timestamp("2000-01-01"))
-        if bool(okr.any()):
-            m_new.loc[okr] = rser.loc[okr].dt.to_period("M").astype(str)
-    blank2 = m_new.isna() | m_new.astype(str).str.strip().str.lower().isin(["", "nan", "nat", "none"])
-    if "month" in out.columns and bool(blank2.any()):
-        ex = out["month"].map(_month_norm_key)
-        use = blank2 & ex.ne("")
-        if bool(use.any()):
-            m_new.loc[use] = ex.loc[use]
-    tmp_k = m_new.map(lambda v: _month_norm_key(v) if pd.notna(v) and str(v).strip() else "")
-    if bool(tmp_k.eq("").all()) and "cost" in out.columns:
-        if float(pd.to_numeric(out["cost"], errors="coerce").fillna(0).sum()) > 1e-6:
-            guess = _best_norm_month_series_from_normalized_frame(out)
-            if guess is not None:
-                m_new = guess
-    out["month"] = m_new.map(lambda v: _month_norm_key(v) if pd.notna(v) and str(v).strip() else "")
-    return out
-
-
-def _attach_spend_pool_debug_attrs(frame: pd.DataFrame) -> None:
-    """Stash diagnostics on the normalized spend pool for the MPO debug expander."""
-    if frame is None or getattr(frame, "empty", True):
-        return
-    try:
-        frame.attrs["spend_debug_norm_columns"] = list(frame.columns)
-        frame.attrs["spend_debug_fields_mapped"] = list(frame.attrs.get("fields_mapped", []) or [])
-        frame.attrs["spend_debug_has_report_month"] = bool("report_month" in frame.columns)
-        frame.attrs["spend_debug_report_month_filled"] = (
-            int(
-                (
-                    frame["report_month"].notna()
-                    & frame["report_month"].astype(str).str.strip().ne("")
-                    & ~frame["report_month"].astype(str).str.strip().str.lower().isin(["nan", "none", "nat"])
-                ).sum()
-            )
-            if "report_month" in frame.columns
-            else 0
-        )
-        frame.attrs["spend_debug_date_filled"] = int(frame["date"].notna().sum()) if "date" in frame.columns else 0
-        frame.attrs["spend_debug_month_key_rows"] = (
-            int(frame["month"].map(_month_norm_key).ne("").sum()) if "month" in frame.columns else 0
-        )
-        if "report_month" in frame.columns:
-            u = frame["report_month"].dropna().astype(str).str.strip()
-            u = u[~u.str.lower().isin(["nan", "none", "nat"])]
-            frame.attrs["spend_debug_report_month_sample"] = sorted(set(u.tolist()))[:24]
-        else:
-            frame.attrs["spend_debug_report_month_sample"] = []
-    except Exception:
-        pass
-
-
-def _spend_sheet_pivot_by_month_country(spend_df: pd.DataFrame) -> pd.DataFrame:
-    """Treat the spend tab as a **pivot**: ``SUM(cost)`` [+ clicks/impressions] per ``month`` × ``country``."""
-    metrics = ["cost", "clicks", "impressions"]
-    if spend_df.empty or "cost" not in spend_df.columns:
-        return pd.DataFrame(columns=["month", "country"] + metrics)
-    x0 = spend_df.copy()
-    x0 = _canonicalize_spend_month_column(x0)
-    x = _normalize_master_merge_frame(x0)
-    if "month" not in x.columns or "country" not in x.columns:
-        return pd.DataFrame(columns=["month", "country"] + metrics)
-
-    x["month"] = x["month"].map(_month_norm_key)
-    x = x.loc[~_spend_sheet_month_is_blank(x["month"])]
-
-    def _not_epoch_jan(m: Any) -> bool:
-        try:
-            p = pd.Period(str(m), freq="M")
-            return not (p.year == 1970 and p.month == 1)
-        except Exception:
-            return True
-
-    x = x.loc[x["month"].map(_not_epoch_jan)]
-
-    if x.empty and _normalized_spend_cost_sum(spend_df) > 1e-9:
-        y = _normalize_master_merge_frame(_canonicalize_spend_month_column(spend_df.copy()))
-        cols = [c for c in metrics if c in y.columns]
-        if cols and "month" in y.columns and "country" in y.columns and not y.empty:
-            g = y.groupby(["month", "country"], as_index=False, dropna=False)[cols].sum()
-            for c in metrics:
-                if c not in g.columns:
-                    g[c] = 0 if c in {"clicks", "impressions"} else 0.0
-            if _normalized_spend_cost_sum(g) > 1e-9:
-                g["month"] = g["month"].map(_month_norm_key)
-                return g[["month", "country"] + metrics]
-
-    if x.empty:
-        return pd.DataFrame(columns=["month", "country"] + metrics)
-    cols = [c for c in metrics if c in x.columns]
-    g = x.groupby(["month", "country"], as_index=False, dropna=False)[cols].sum()
-    for c in metrics:
-        if c not in g.columns:
-            g[c] = 0 if c in {"clicks", "impressions"} else 0.0
-    g["month"] = g["month"].map(_month_norm_key)
-    return g[["month", "country"] + metrics]
-
-
-def _is_middle_east_market(name: str) -> bool:
-    k = _norm_market_key(name)
-    if k == "uae":
-        k = "united arab emirates"
-    return k in _MIDDLE_EAST_MARKET_KEYS
-
-
-# Master View regional roll-up (first row under each month for ME markets).
-_MIDDLE_EAST_REGION_LABEL = "Middle East"
-_REGION_SUBTOTAL_NAMES = frozenset(
-    {_MIDDLE_EAST_REGION_LABEL, "middle east", "mena", "mea", "gcc", "gulf"}
-)
-_REGION_SUBTOTAL_NAMES_LOWER = frozenset(str(x).strip().lower() for x in _REGION_SUBTOTAL_NAMES)
-# Sheet-level metrics to move from regional aggregate rows onto ME country rows when detail spend is missing.
-_REGIONAL_ROLL_METRICS = frozenset({"spend", "clicks", "impressions"})
-
-
-def _market_row_sort_key_mena(market: str) -> tuple:
-    """Country rows only: Middle East countries in fixed order, then other markets A–Z."""
-    m = str(market).strip()
-    k = _norm_market_key(m)
-    if k == "uae":
-        k = "united arab emirates"
-    if k in _MIDDLE_EAST_MARKET_KEYS:
-        try:
-            pos = _ME_MARKET_ORDER.index(k)
-        except ValueError:
-            pos = 40
-        return (0, f"{pos:02d}", m)
-    return (1, m.lower(), m)
-
-
-def _tab_subset_by_patterns(frame: pd.DataFrame, tab_keywords: list[str]) -> pd.DataFrame:
-    """Filter rows by ``source_tab`` regex patterns (shared by KPI + master merges)."""
-    if frame.empty or "source_tab" not in frame.columns:
-        return frame
-    s = frame["source_tab"].astype(str).str.lower()
-    mask = pd.Series(False, index=frame.index)
-    for k in tab_keywords:
-        mask = mask | s.str.contains(k.lower(), na=False, regex=True)
-    return frame[mask].copy()
-
-
-def _disambiguate_raw_cw_tabs(frame: pd.DataFrame) -> pd.DataFrame:
-    """When several tabs match RAW CW patterns, keep one worksheet so TCV/LF are not double-counted.
-
-    Prefer a tab whose title matches ``raw cw``; drop other matches (e.g. ``CW Summary`` + ``RAW CW``).
-    If none are explicitly ``raw cw``, prefer non-summary titles, then the tab with the most rows
-    (deal-level exports are usually larger than rollups).
-    """
-    if frame.empty or "source_tab" not in frame.columns:
-        return frame
-    tabs = frame["source_tab"].dropna().astype(str).str.strip()
-    ut = tabs.unique().tolist()
-    if len(ut) <= 1:
-        return frame
-    raw_named = [u for u in ut if re.search(r"raw\s*cw", u.lower())]
-    pool = raw_named if raw_named else list(ut)
-    if len(pool) > 1:
-        non_sum = [u for u in pool if "summary" not in u.lower()]
-        if non_sum:
-            pool = non_sum
-    best = max(pool, key=lambda tab: int((tabs == tab).sum()))
-    return frame.loc[tabs.eq(best)].copy()
-
-
-def _resolve_cw_tcv_dataframe(df_loaded: pd.DataFrame, df_filtered: pd.DataFrame) -> pd.DataFrame:
-    """Resolve rows from the RAW CW worksheet(s). KPI totals apply ``_cw_dataframe_for_kpis`` (closed won + filters)."""
-    gid = _optional_raw_cw_gid_from_secrets()
-    if gid is not None and not df_loaded.empty and "worksheet_gid" in df_loaded.columns:
-        wg = pd.to_numeric(df_loaded["worksheet_gid"], errors="coerce")
-        by_g = df_loaded.loc[wg == int(gid)].copy()
-        if not by_g.empty:
-            return by_g
-    if not df_loaded.empty:
-        t = _tab_subset_by_patterns(df_loaded, list(_RAW_CW_TAB_PATTERNS))
-        if not t.empty:
-            return _disambiguate_raw_cw_tabs(t)
-    # Fallback: filtered frame + loose pattern
-    if df_filtered.empty:
-        return df_filtered
-    s = df_filtered["source_tab"].astype(str).str.lower() if "source_tab" in df_filtered.columns else None
-    if s is not None:
-        mask = pd.Series(False, index=df_filtered.index)
-        for k in _RAW_CW_TAB_PATTERNS:
-            mask = mask | s.str.contains(k.lower(), na=False, regex=True)
-        sub = df_filtered.loc[mask].copy()
-        if not sub.empty:
-            return _disambiguate_raw_cw_tabs(sub)
-    return df_filtered
-
-
-def _is_raw_cw_style_tab(tab_name: str) -> bool:
-    """Worksheets that hold deal-level TCV / LF (not only tabs literally named RAW CW)."""
-    t = tab_name.strip().lower()
-    if "raw" in t and "cw" in t:
-        return True
-    if re.match(r"^\s*cw\s*$", t):
-        return True
-    if re.search(r"cw\s*summary", t):
-        return True
-    return False
-
-
-def _cw_dataframe_for_kpis(cw_df: pd.DataFrame, df_dashboard: pd.DataFrame) -> pd.DataFrame:
-    """Looker-style scope for Actual TCV and 1st Month LF: **closed-won rows only**, same Month × Market as the dashboard.
-
-    ``closed_won`` includes ``Is_CW`` / ``is_cw`` after normalization. If flags would zero out TCV incorrectly,
-    we fall back to the unfiltered CW frame (misaligned sheet).
-    """
-    out = cw_df.copy() if not cw_df.empty else cw_df
-    if out.empty:
-        return out
-    if "closed_won" in out.columns:
-        s = pd.to_numeric(out["closed_won"], errors="coerce").fillna(0)
-        if float(s.sum()) > 0:
-            filt = out.loc[s > 0].copy()
-            if "tcv" in filt.columns and "tcv" in out.columns:
-                t_f = float(pd.to_numeric(filt["tcv"], errors="coerce").fillna(0).sum())
-                t_all = float(pd.to_numeric(out["tcv"], errors="coerce").fillna(0).sum())
-                if t_f == 0.0 and t_all > 0.0:
-                    pass
-                else:
-                    out = filt
-            else:
-                out = filt
-    if (
-        not df_dashboard.empty
-        and not out.empty
-        and "month" in out.columns
-        and "country" in out.columns
-        and "month" in df_dashboard.columns
-        and "country" in df_dashboard.columns
-    ):
-        pairs = df_dashboard[["month", "country"]].drop_duplicates()
-        if not pairs.empty:
-            merged = out.merge(pairs, on=["month", "country"], how="inner")
-            if not merged.empty:
-                out = merged
-    return out
 
 
 def _dedupe_post_lead_rows(df: pd.DataFrame) -> pd.DataFrame:
-    """When the same opportunity appears on **more than one** post-qual tab, keep one row (prefer Raw Post Qualification).
-
-    Duplicate rows **within the same tab** are kept so SUM(Qualifying)+SUM(Pitching)+… matches the X-Ray sheet.
-    (CW is still de-risked via ``_sum_closed_won_unique_opportunities``.)
-    """
+    """If two post-lead tabs repeat the same opportunities, count each once (prefer Raw Post Qualification)."""
     if df.empty or "source_tab" not in df.columns:
         return df
     out = df.copy()
@@ -1215,19 +773,8 @@ def _dedupe_post_lead_rows(df: pd.DataFrame) -> pd.DataFrame:
     key_cols = _opp_key_columns_for_post_lead(out)
     if key_cols:
         out = out.sort_values(by=["_tab_pri"] + key_cols)
-        miss = out[out[key_cols].isna().any(axis=1)].copy()
-        valid = out[~out[key_cols].isna().any(axis=1)].copy()
-        if valid.empty:
-            return miss.drop(columns=["_tab_pri"], errors="ignore")
-        parts: list[pd.DataFrame] = []
-        for _, g in valid.groupby(key_cols, dropna=False):
-            n_tabs = g["source_tab"].dropna().astype(str).str.strip().nunique()
-            if n_tabs <= 1:
-                parts.append(g)
-            else:
-                parts.append(g.sort_values("_tab_pri").head(1))
-        merged = pd.concat(parts + ([miss] if not miss.empty else []), ignore_index=True)
-        return merged.drop(columns=["_tab_pri"], errors="ignore")
+        out = out.drop_duplicates(subset=key_cols, keep="first")
+        return out.drop(columns=["_tab_pri"], errors="ignore")
     ut = out["source_tab"].dropna().astype(str).unique().tolist()
     if len(ut) <= 1:
         return out.drop(columns=["_tab_pri"], errors="ignore")
@@ -1236,16 +783,20 @@ def _dedupe_post_lead_rows(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _opp_key_columns_for_post_lead(df: pd.DataFrame) -> list[str]:
-    """Columns that identify one Salesforce opportunity (for de-duping CW)."""
+    """Columns that identify one **opportunity** (for de-duping CW).
+
+    Excludes ``record_id`` / ``case_id`` — those are often **unique per sheet row**, so groupby
+    would count every row as a distinct deal (e.g. 122 instead of 61).
+    """
     keys: list[str] = []
     for c in df.columns:
         nk = _norm_header_key(c)
+        if nk in ("record_id", "case_id"):
+            continue
         if nk in {
             "opportunity_id",
             "opportunity_id_18",
             "opportunity_name",
-            "record_id",
-            "case_id",
             "opp_id",
             "opp_name",
             "deal_id",
@@ -1253,57 +804,296 @@ def _opp_key_columns_for_post_lead(df: pd.DataFrame) -> list[str]:
         }:
             keys.append(c)
             continue
-        if "opportunity" in nk and ("id" in nk or "name" in nk):
+        if nk == "opportunity" or (
+            "opportunity" in nk and ("id" in nk or "name" in nk)
+        ):
             keys.append(c)
     return list(dict.fromkeys(keys))
 
 
-def _sum_closed_won_unique_opportunities(df: pd.DataFrame) -> int:
-    """Sum CW without double-counting duplicate rows for the same deal (e.g. 122 vs 61)."""
-    if df.empty or "closed_won" not in df.columns:
-        return 0
-    cw = pd.to_numeric(df["closed_won"], errors="coerce").fillna(0)
-    cw_bin = (cw > 0).astype(int)
+def _norm_key_cell(val: Any) -> str:
+    """Normalize ID / name for stable groupby (avoids NaN-as-unique-group and 123.0 vs 123)."""
+    if val is None or (isinstance(val, float) and pd.isna(val)):
+        return ""
+    s = str(val).strip().lower()
+    if s in ("nan", "none", "<na>"):
+        return ""
+    if re.fullmatch(r"-?\d+\.0", s):
+        s = s[:-2]
+    return s
+
+
+def _primary_opp_key_column(df: pd.DataFrame) -> Optional[str]:
+    """Pick **one** column for CW dedupe: real opp IDs only, fixed priority (not record/case row ids)."""
+    # Prefer Salesforce opportunity identifiers first — never use row-unique fields here.
+    for want in (
+        "opportunity_id_18",
+        "opportunity_id",
+        "opp_id",
+        "deal_id",
+    ):
+        for c in df.columns:
+            if _norm_header_key(c) != want:
+                continue
+            s = df[c].map(_norm_key_cell)
+            if float((s != "").mean()) >= 0.3:
+                return c
+    for want in ("opportunity_name", "opp_name", "deal_name"):
+        for c in df.columns:
+            if _norm_header_key(c) != want:
+                continue
+            s = df[c].map(_norm_key_cell)
+            if float((s != "").mean()) >= 0.5:
+                return c
+    # Any other opportunity*id column (still not record/case — excluded from _opp_key_columns_for_post_lead)
     keys = _opp_key_columns_for_post_lead(df)
-    if keys:
-        tmp = df.loc[:, keys].copy()
-        tmp["_cw"] = cw_bin
-        return int(tmp.groupby(keys, dropna=False)["_cw"].max().sum())
-    return int(cw_bin.sum())
+    best_c: Optional[str] = None
+    best_score = 0.0
+    for c in keys:
+        nk = _norm_header_key(c)
+        if "id" in nk and "name" not in nk:
+            s = df[c].map(_norm_key_cell)
+            score = float((s != "").mean())
+            if score > best_score:
+                best_score = score
+                best_c = c
+    if best_c is not None and best_score >= 0.3:
+        return best_c
+    return None
 
 
-def _sum_closed_won_sheet_style(df: pd.DataFrame) -> int:
-    """``SUM(CW)`` as in Sheets / Looker — sums the metric column across rows (includes duplicate rows)."""
+def _dim_cols_for_cw_dedupe(df: pd.DataFrame) -> list[str]:
+    """When opp keys are missing, collapse duplicate metric rows that share the same funnel slice."""
+    want = [
+        "opportunity_id",
+        "opportunity_id_18",
+        "opportunity_name",
+        "country",
+        "month",
+        "source_tab",
+        "channel",
+        "platform",
+        "utm_source",
+    ]
+    return [c for c in want if c in df.columns]
+
+
+def _dim_bucket_cols_for_cw_composite(df: pd.DataFrame) -> list[str]:
+    """Funnel slice for last-resort CW keys — omits ``source_tab`` so the same deal on two tab copies is one group."""
+    return [c for c in _dim_cols_for_cw_dedupe(df) if c != "source_tab"]
+
+
+def _resolved_opp_id_series(df: pd.DataFrame) -> pd.Series:
+    """Best-effort opp id per row, then fill missing ids from rows that share the same opportunity name."""
+    idx = df.index
+    k = pd.Series("", index=idx, dtype=object)
+    pk = _primary_opp_key_column(df)
+    if pk is not None:
+        k = df[pk].map(_norm_key_cell).reindex(idx).fillna("")
+    for want in ("opportunity_id_18", "opportunity_id", "opp_id", "deal_id"):
+        if want not in df.columns:
+            continue
+        alt = df[want].map(_norm_key_cell)
+        k = k.where(k != "", alt)
+    merged_name = pd.Series("", index=idx, dtype=object)
+    for want in ("opportunity_name", "opp_name", "deal_name"):
+        if want not in df.columns:
+            continue
+        alt = df[want].map(_norm_key_cell)
+        merged_name = merged_name.where(merged_name != "", alt)
+    if merged_name.eq("").all():
+        return k
+    names = merged_name
+    name_to_id: dict[str, str] = {}
+    for i in idx:
+        n = str(names.loc[i])
+        kid = str(k.loc[i])
+        if n and kid:
+            name_to_id.setdefault(n, kid)
+    for i in idx:
+        n = str(names.loc[i])
+        kid = str(k.loc[i])
+        if (not kid) and n and n in name_to_id:
+            k.loc[i] = name_to_id[n]
+    return k
+
+
+def _composite_cw_opportunity_key_series(df: pd.DataFrame) -> pd.Series:
+    """One stable key per row: resolved opp id → name → dim bucket.
+
+    Avoids double-count when the same deal appears once with an SF id and again without (61 + 61 = 122).
+    """
+    k = _resolved_opp_id_series(df)
+    for want in ("opportunity_name", "opp_name", "deal_name"):
+        if want not in df.columns:
+            continue
+        alt = df[want].map(_norm_key_cell)
+        k = k.mask((k == "") & (alt != ""), "n:" + alt.astype(str))
+    empty = k.astype(str) == ""
+    if empty.any():
+        dim_cols = [c for c in _dim_bucket_cols_for_cw_composite(df) if c in df.columns]
+        if dim_cols:
+            sub = df.loc[empty, dim_cols].astype(str).agg("|".join, axis=1)
+            k.loc[empty] = "d:" + sub
+    return k
+
+
+def _sum_closed_won_unique_opportunities(df: pd.DataFrame) -> int:
+    """Count closed-won deals without double-counting stacked tabs or duplicate rows (e.g. 122 vs 61)."""
     if df.empty or "closed_won" not in df.columns:
         return 0
-    return int(pd.to_numeric(df["closed_won"], errors="coerce").fillna(0).sum())
+    cw_bin = (pd.to_numeric(df["closed_won"], errors="coerce").fillna(0) > 0).astype(int)
+    k = _composite_cw_opportunity_key_series(df)
+    ks = k.astype(str).replace("nan", "")
+    tmp = pd.DataFrame({"_k": ks, "_cw": cw_bin})
+    if (tmp["_k"] == "").all():
+        dims = _dim_cols_for_cw_dedupe(df)
+        use = [c for c in dims if c in df.columns]
+        if use:
+            d = df.drop_duplicates(subset=use, keep="first")
+            return int((pd.to_numeric(d["closed_won"], errors="coerce").fillna(0) > 0).sum())
+        return int(cw_bin.sum())
+    return int(tmp.groupby("_k", dropna=False)["_cw"].max().sum())
 
 
-def _qualified_denominator_for_qwin(post_df: pd.DataFrame, leads_df: pd.DataFrame) -> int:
-    """``SUM(Qualified)`` on post-qual when the sheet has a real 0/1 column; else Lead Status=Qualified on leads tab."""
-    q_leads = _qualified_count_from_leads(leads_df)
-    if post_df.empty or "qualified" not in post_df.columns:
-        return q_leads
-    s = pd.to_numeric(post_df["qualified"], errors="coerce").fillna(0)
-    n = len(post_df)
-    if n == 0:
-        return q_leads
-    q_sum = int(s.sum())
-    # Preprocess default for post tabs: Qualified=1 on every row → sum == row count (not SQL count).
-    if q_sum == n and float(s.max()) <= 1.0:
-        return q_leads
-    return q_sum if q_sum > 0 else q_leads
+def _actual_tcv_value_column(df: pd.DataFrame) -> Optional[str]:
+    """Use the **Actual TCV** / TCV (converted) field only (not generic ``tcv``)."""
+    if "actual_tcv" in df.columns:
+        return "actual_tcv"
+    return None
 
 
-def _q_win_rate_inputs(post_df: pd.DataFrame, leads_df: pd.DataFrame) -> tuple[int, int]:
-    """(CW numerator, Qualified denominator) to mirror X-Ray ``SUM(CW)/SUM(Qualified)``."""
-    _pq = post_df if not post_df.empty else pd.DataFrame()
-    cw_sheet = _sum_closed_won_sheet_style(_pq)
-    cw_uniq = _sum_closed_won_unique_opportunities(_pq)
-    # Sheets SUM(CW) counts duplicate rows; unique is used when there are no extras.
-    cw_num = cw_sheet if cw_sheet > cw_uniq else cw_uniq
-    qual_den = _qualified_denominator_for_qwin(_pq, leads_df)
-    return cw_num, qual_den
+def _rows_for_actual_tcv_sum(df: pd.DataFrame) -> pd.DataFrame:
+    """Rows that count as **CW (Inc Approved)** — same ``closed_won`` flag as the deal count (61, etc.)."""
+    if df.empty or "closed_won" not in df.columns:
+        return df.iloc[0:0]
+    return df.loc[pd.to_numeric(df["closed_won"], errors="coerce").fillna(0) > 0].copy()
+
+
+def _sum_actual_tcv_closed_won_deals(df: pd.DataFrame) -> float:
+    """Sum Actual TCV for those deals, once per opportunity (same composite keys as CW count)."""
+    if df.empty or "closed_won" not in df.columns:
+        return 0.0
+    vc = _actual_tcv_value_column(df)
+    if vc is None:
+        return 0.0
+    sub = _rows_for_actual_tcv_sum(df)
+    if sub.empty:
+        return 0.0
+    sub["_v"] = pd.to_numeric(sub[vc], errors="coerce").fillna(0.0)
+    k = _composite_cw_opportunity_key_series(sub)
+    ks = k.astype(str).replace("nan", "")
+    tmp = pd.DataFrame({"_k": ks, "_v": sub["_v"]})
+    if (tmp["_k"] == "").all():
+        dims = _dim_cols_for_cw_dedupe(sub)
+        use = [c for c in dims if c in sub.columns]
+        if use:
+            d = sub.drop_duplicates(subset=use, keep="first")
+            return float(pd.to_numeric(d[vc], errors="coerce").fillna(0.0).sum())
+        return float(tmp["_v"].sum())
+    return float(tmp.groupby("_k", dropna=False)["_v"].max().sum())
+
+
+def _sum_monthly_lf_for_cw_deals(df: pd.DataFrame) -> float:
+    """**LF Spend**: sum of Monthly LF USD for CW (Inc Approved) deals, one LF per opportunity.
+
+    Uses **all** funnel rows in ``df`` (before one-row-per-opp collapse) so max LF per opp is not lost when
+    LF sits on a non–Closed Won row. Includes a deal if ``closed_won`` is 1 on any row for that opportunity key.
+    """
+    if df.empty or "closed_won" not in df.columns or "first_month_lf" not in df.columns:
+        return 0.0
+    sub = df.copy()
+    sub["_k"] = _composite_cw_opportunity_key_series(sub).astype(str).replace("nan", "")
+    sub["_lf"] = pd.to_numeric(sub["first_month_lf"], errors="coerce").fillna(0.0)
+    sub["_cw"] = (pd.to_numeric(sub["closed_won"], errors="coerce").fillna(0) > 0).astype(int)
+    if (sub["_k"].fillna("").astype(str).str.strip() == "").all():
+        cw_only = sub.loc[sub["_cw"] > 0]
+        if cw_only.empty:
+            return 0.0
+        dims = _dim_cols_for_cw_dedupe(cw_only)
+        use = [c for c in dims if c in cw_only.columns]
+        if use:
+            d = cw_only.drop_duplicates(subset=use, keep="first")
+            return float(pd.to_numeric(d["first_month_lf"], errors="coerce").fillna(0.0).sum())
+        return float(sub.loc[sub["_cw"] > 0, "_lf"].sum())
+    g_lf = sub.groupby("_k", dropna=False)["_lf"].max()
+    g_cw = sub.groupby("_k", dropna=False)["_cw"].max()
+    take = g_cw > 0
+    if not take.any():
+        return 0.0
+    return float(g_lf.loc[take].sum())
+
+
+def _agg_actual_tcv_closed_won_by_month_country(post_df: pd.DataFrame) -> pd.DataFrame:
+    """Actual TCV for CW (Inc Approved) rows, deduped per opp, summed by month × country (for master table)."""
+    out_cols = ["month", "country", "tcv"]
+    if post_df.empty or "closed_won" not in post_df.columns:
+        return pd.DataFrame(columns=out_cols)
+    vc = _actual_tcv_value_column(post_df)
+    if vc is None or "month" not in post_df.columns or "country" not in post_df.columns:
+        return pd.DataFrame(columns=out_cols)
+    sub = _rows_for_actual_tcv_sum(post_df)
+    if sub.empty:
+        return pd.DataFrame(columns=out_cols)
+    sub["_v"] = pd.to_numeric(sub[vc], errors="coerce").fillna(0.0)
+    sub["_k"] = _composite_cw_opportunity_key_series(sub)
+    g = sub.groupby(["month", "country", "_k"], as_index=False)["_v"].max()
+    g = g.groupby(["month", "country"], as_index=False)["_v"].sum()
+    return g.rename(columns={"_v": "tcv"})
+
+
+def _post_lead_slice_before_ck_dedupe(df: pd.DataFrame) -> pd.DataFrame:
+    """Post-lead rows after tab + identical-row dedupe, **before** one row per composite opp key.
+
+    Used for LF Spend so Monthly LF can be taken as max per opportunity across funnel rows.
+    """
+    post_df = _dedupe_post_lead_rows(_mpo_tab_subset(df, list(_POST_LEAD_SOURCE_TAB_PATTERNS)))
+    if post_df.empty:
+        return post_df
+    return post_df.drop_duplicates(ignore_index=True)
+
+
+def _post_lead_slice_for_kpi(df: pd.DataFrame) -> pd.DataFrame:
+    """Rows used for post-lead CW KPIs: cross-tab dedupe, then exact-row dedupe (fixes 61 vs 122), then per-opp dedupe.
+
+    Per-opp collapse uses the **same composite key** as CW / Actual TCV (not tuple-of-all-ID-columns).
+    Tuple dedupe split one deal across ``opportunity_id`` vs ``opportunity_id_18`` rows and doubled TCV (~2×).
+    """
+    post_df = _dedupe_post_lead_rows(_mpo_tab_subset(df, list(_POST_LEAD_SOURCE_TAB_PATTERNS)))
+    if post_df.empty:
+        return post_df
+    # Same tab concatenated twice (e.g. extras reload) → identical rows; drop before summing CW.
+    post_df = post_df.drop_duplicates(ignore_index=True)
+    post_df = post_df.copy()
+    ck = _composite_cw_opportunity_key_series(post_df).astype(str).str.strip()
+    bad = ck.eq("") | ck.str.lower().isin(["nan", "none", "<na>"])
+    if bad.any():
+        anon = "anon:" + pd.Series(range(len(post_df)), index=post_df.index).astype(str)
+        ck = ck.where(~bad, anon)
+    post_df["_ck"] = ck
+    cw_s = post_df.get("closed_won", pd.Series(0, index=post_df.index))
+    post_df["_prio_cw"] = pd.to_numeric(cw_s, errors="coerce").fillna(0)
+    atc_s = post_df.get("actual_tcv", pd.Series(0.0, index=post_df.index))
+    post_df["_prio_tcv"] = pd.to_numeric(atc_s, errors="coerce").fillna(0.0)
+    lf_s = post_df.get("first_month_lf", pd.Series(0.0, index=post_df.index))
+    post_df["_prio_lf"] = pd.to_numeric(lf_s, errors="coerce").fillna(0.0)
+    # Same opp on multiple funnel rows: prefer higher CW, then Actual TCV, then Monthly LF (for CpCW:LF denominator).
+    if "source_tab" in post_df.columns:
+        tp = post_df["source_tab"].astype(str).str.lower().map(
+            lambda x: 0 if re.search(r"raw.*post.*qual", x) else 1
+        )
+        post_df["_tp"] = tp
+        post_df = post_df.sort_values(
+            by=["_tp", "_ck", "_prio_cw", "_prio_tcv", "_prio_lf"],
+            ascending=[True, True, False, False, False],
+        )
+    else:
+        post_df = post_df.sort_values(
+            by=["_ck", "_prio_cw", "_prio_tcv", "_prio_lf"],
+            ascending=[True, False, False, False],
+        )
+    post_df = post_df.drop_duplicates(subset=["_ck"], keep="first")
+    return post_df.drop(columns=["_ck", "_tp", "_prio_cw", "_prio_tcv", "_prio_lf"], errors="ignore")
 
 
 # Normalized header → canonical column (covers X-Ray export names + ME X-Ray Excel template)
@@ -1314,16 +1104,9 @@ _NORM_TO_FIELD: dict[str, str] = {
     "week": "date",
     "create_date": "date",
     "created_date": "date",
-    "first_lead_created_date": "date",
-    "1st_lead_created_date": "date",
+    "unified_date": "date",
     "date_formatted": "date",
     "close_date": "date",
-    "reporting_date": "date",
-    "activity_date": "date",
-    "spend_date": "date",
-    "campaign_date": "date",
-    "week_start": "date",
-    "week_starting": "date",
     "country_name": "country",
     "country": "country",
     "market": "country",
@@ -1356,38 +1139,25 @@ _NORM_TO_FIELD: dict[str, str] = {
     "impressions": "impressions",
     "impr": "impressions",
     "leads": "leads",
+    "lead_count": "leads",
     "qualified": "qualified",
     "pitching": "pitching",
     "closed_won": "closed_won",
     "closedwon": "closed_won",
     "closed_won_deals": "closed_won",
     "cw_including_approved": "closed_won",
-    # Post-lead X-Ray / Salesforce export (binary 0/1 column)
-    "is_cw": "closed_won",
-    # Sheet / pivot header variants (often col AA on Post Lead)
-    "cw_inc_approved": "closed_won",
-    "cw_inc_app": "closed_won",
     "utm_source_gp": "utm_source",
     "utm_source": "utm_source",
     "utm_source_l": "utm_source_l",
     "utm_source_o": "utm_source_o",
     "month": "report_month",
-    "report_month": "report_month",
-    "calendar_month": "report_month",
-    "month_year": "report_month",
-    "year_month": "report_month",
-    "reporting_month": "report_month",
-    "billing_month": "report_month",
-    "posting_month": "report_month",
-    "reporting_period": "report_month",
-    "time_period": "report_month",
-    "calendar_period": "report_month",
     "tcv": "tcv",
     "tcv_usd": "tcv",
-    "tcv_converted": "tcv",
-    "actual_tcv": "tcv",
-    "actual_tcv_usd": "tcv",
+    # Post-lead: Salesforce TCV (converted) / "Actual TCV" column — used for Actual TCV KPI (Closed Won + Approved).
+    "tcv_converted": "actual_tcv",
+    "actual_tcv": "actual_tcv",
     "1st_month_lf": "first_month_lf",
+    "monthly_lf": "first_month_lf",
     "monthly_lf_usd": "first_month_lf",
     "cpcw": "cpcw",
     "cpcw_lf": "cpcw_lf",
@@ -1396,7 +1166,6 @@ _NORM_TO_FIELD: dict[str, str] = {
     "q_win_rate": "q_win_rate",
     "new": "new",
     "working": "working",
-    "qualifying": "qualifying",
     "total_live": "total_live",
     "negotiation": "negotiation",
     "commitment": "commitment",
@@ -1405,13 +1174,19 @@ _NORM_TO_FIELD: dict[str, str] = {
     "opportunity_id": "opportunity_id",
     "opportunity_name": "opportunity_name",
     "opportunity_id_18": "opportunity_id_18",
+    "18_character_id": "opportunity_id_18",
     "record_id": "record_id",
     "case_id": "case_id",
     "opp_id": "opp_id",
     "opp_name": "opp_name",
     "deal_id": "deal_id",
     "deal_name": "deal_name",
-    "lead_status": "lead_status_text",
+    # Preserve Stage for Actual TCV (must be Closed Won in stage text, not standalone Approved).
+    "stage": "stage_text",
+    "post_lead_stage": "stage_text",
+    "stagename": "stage_text",
+    "stage_name": "stage_text",
+    "opportunity_stage": "stage_text",
 }
 
 _NUM_FIELDS = frozenset(
@@ -1424,6 +1199,7 @@ _NUM_FIELDS = frozenset(
         "pitching",
         "closed_won",
         "tcv",
+        "actual_tcv",
         "first_month_lf",
         "cpcw",
         "cpcw_lf",
@@ -1432,7 +1208,6 @@ _NUM_FIELDS = frozenset(
         "q_win_rate",
         "new",
         "working",
-        "qualifying",
         "total_live",
         "negotiation",
         "commitment",
@@ -1454,238 +1229,41 @@ def _to_number_series(s: pd.Series) -> pd.Series:
         .str.replace(r"[^0-9.\-]", "", regex=True)
     )
     out = pd.to_numeric(cleaned, errors="coerce").fillna(0)
-    us_abs = float(out.abs().sum())
-    used_eu = False
-    if us_abs < 1e-12 and txt.str.contains(",", na=False).any():
-        eu = txt.map(_parse_european_money_scalar).astype(float)
-        if float(eu.abs().sum()) > us_abs:
-            out = eu
-            used_eu = True
-    if not used_eu:
-        out.loc[neg_paren] = -out.loc[neg_paren]
+    out.loc[neg_paren] = -out.loc[neg_paren]
     return out
 
 
-def _closed_won_to_numeric_series(s: pd.Series) -> pd.Series:
-    """Post-Lead ``Is_CW`` / boolean / TRUE-FALSE text → 0/1; leave integer counts >1 as-is (RAW CW tabs)."""
-    if s.dtype == bool:
-        return s.astype(float)
-    n = pd.to_numeric(s, errors="coerce")
-    nn = n.dropna()
-    if len(nn) and float(nn.max()) > 1.0 + 1e-9:
-        return _to_number_series(s)
-    t = s.astype(str).str.strip().str.lower()
-    out = n.fillna(0).astype(float)
-    out.loc[t.isin(("true", "t", "yes", "y", "x"))] = 1.0
-    out.loc[t.isin(("false", "f", "no", "n", "", "nan", "none", "nat"))] = 0.0
-    return (out > 0).astype(float)
-
-
-def _best_spend_column_raw(df: pd.DataFrame) -> Optional[str]:
-    """When normalize maps ``cost`` to zero, pick the raw column that looks like spend (by header + numeric mass)."""
-    if df.empty or not len(df.columns):
-        return None
-    best_c: Optional[str] = None
-    best_abs = 0.0
-    for c in df.columns:
-        nk = _norm_header_key(str(c))
-        if nk in {"cost_tcv", "cost_tcv_pct"}:
-            continue
-        if nk in {"leads", "qualified", "clicks", "impressions", "impr"}:
-            continue
-        if nk.startswith("tcv") and "cost" not in nk:
-            continue
-        if nk in {"first_month_lf", "monthly_lf_usd", "cpcw", "cpcw_lf", "contract_length"}:
-            continue
-        if not (
-            "spend" in nk
-            or "cost" in nk
-            or "amount" in nk
-            or nk in ("investment", "budget", "media_spend", "paid", "fee", "fees")
-            or ("investment" in nk and "tcv" not in nk)
-            or ("budget" in nk and "tcv" not in nk)
-        ):
-            continue
-        sm = float(_to_number_series(df[c]).abs().sum())
-        if sm > best_abs:
-            best_abs = sm
-            best_c = c
-    return best_c
-
-
-def _scan_frame_for_spend_sum(raw: pd.DataFrame) -> float:
-    """Best single-column spend total on a **raw** sheet (headers not yet normalized)."""
-    if raw.empty or len(raw.columns) == 0:
-        return 0.0
-    best_sum = 0.0
-    for c in raw.columns:
-        nk = _norm_header_key(c)
-        if nk in {"cost_tcv", "cost_tcv_pct"}:
-            continue
-        if not (
-            "spend" in nk
-            or "cost" in nk
-            or "amount" in nk
-            or nk in ("investment", "budget")
-            or ("investment" in nk and "tcv" not in nk)
-            or ("budget" in nk and "tcv" not in nk)
-        ):
-            continue
-        sm = float(_to_number_series(raw[c]).sum())
-        if abs(sm) > abs(best_sum):
-            best_sum = sm
-    return best_sum
-
-
 def _parse_report_month_series(s: pd.Series) -> pd.Series:
-    """Parse Excel / Sheets ``Month`` cells: serial day counts, datetimes, ``Sept``, ``December``, etc.
-
-    Plain ``pd.to_datetime`` on numeric 45xxx treats values as ns-since-epoch → junk; we coerce sheet serials first.
-    """
+    """Parse Excel `Month` cells: datetimes, `Sept`, `December`, etc."""
     raw = s.copy()
-    ser = _coerce_sheet_serial_dates(raw)
-    out = pd.to_datetime(ser, errors="coerce")
+    out = pd.to_datetime(raw, errors="coerce")
     mask = out.isna() & raw.notna()
     if not mask.any():
         return out
     for idx in raw.index[mask]:
         v = raw.loc[idx]
+        val = str(v).strip()
         parsed: Optional[pd.Timestamp] = None
-        try:
-            if not isinstance(v, bool):
-                n = float(v)
-                if pd.notna(n):
-                    ni = int(round(n))
-                    if abs(n - ni) < 0.02 or abs(n - round(n)) < 1e-6:
-                        yk = _yyyymm_calendar_to_key(ni)
-                        if yk:
-                            parsed = pd.Timestamp(yk + "-01")
-                        elif 1 <= ni <= 12 and not (20000 < n < 100000):
-                            mkey = _month_only_calendar_month_to_key(ni)
-                            if mkey:
-                                parsed = pd.Timestamp(mkey + "-01")
-                        elif 20000 < n < 100000:
-                            base = pd.Timestamp("1899-12-30")
-                            ts = base + pd.to_timedelta(ni, unit="D")
-                            if ts.year >= 2000:
-                                parsed = ts
-        except (TypeError, ValueError, OverflowError):
-            pass
-        if parsed is None:
-            val = str(v).strip()
-            if not val or val.lower() in ("nan", "none", "nat"):
-                out.loc[idx] = pd.NaT
-                continue
-            vd = val.replace(",", "").replace(" ", "")
-            if vd.isdigit() and 1 <= len(vd) <= 2:
-                mi = int(vd)
-                if 1 <= mi <= 12:
-                    mkey = _month_only_calendar_month_to_key(mi)
-                    if mkey:
-                        parsed = pd.Timestamp(mkey + "-01")
-            if parsed is None:
-                _cy = date.today().year
-                for y in (_cy, _cy - 1, _cy - 2, _cy + 1):
-                    t = pd.to_datetime(f"{val} 1, {y}", errors="coerce")
-                    if pd.notna(t):
-                        parsed = t
-                        break
+        vl = val.lower()
+        # Ambiguous month-only labels: prefer FY order (Sep–Dec 2025, then Jan 2026, …).
+        if vl.startswith("jan"):
+            years = (2026, 2025, 2024)
+        else:
+            years = (2025, 2026, 2024)
+        for y in years:
+            t = pd.to_datetime(f"{val} 1, {y}", errors="coerce")
+            if pd.notna(t):
+                parsed = t
+                break
         out.loc[idx] = parsed if parsed is not None else pd.NaT
     return out
 
 
-def _try_period_from_column_header(name: str) -> Optional[pd.Period]:
-    """True month columns in wide spend matrices (header = ``Jan 2025``, ``2025-03``, etc.)."""
-    s = str(name).strip()
-    if not s:
-        return None
-    sl = s.lower()
-    if sl in ("total", "sum", "grand total", "ytd") or sl.startswith("vs ") or "variance" in sl:
-        return None
-    try:
-        return pd.Period(s, freq="M")
-    except Exception:
-        pass
-    ts = pd.to_datetime(s, errors="coerce", dayfirst=True)
-    if pd.notna(ts):
-        try:
-            return ts.to_period("M")
-        except Exception:
-            return None
-    return None
-
-
-def _try_melt_wide_month_spend_df(df: pd.DataFrame) -> pd.DataFrame:
-    """If the tab is a pivot matrix (geo rows × month columns), melt so ``normalize()`` can see ``Spend`` + ``Month``."""
-    if df is None or df.empty or len(df.columns) < 4:
-        return df
-    raw = df.copy()
-    cols = [str(c).strip() for c in raw.columns]
-    raw.columns = cols
-    period_by_col: dict[str, Optional[pd.Period]] = {c: _try_period_from_column_header(c) for c in cols}
-    value_vars = [c for c in cols if period_by_col[c] is not None]
-    id_vars = [c for c in cols if period_by_col[c] is None]
-    if len(value_vars) < 3 or not id_vars:
-        return df
-    geo_ok = any(
-        any(x in _norm_header_key(c) for x in ("market", "country", "region", "geo", "location", "kitchen"))
-        for c in id_vars
-    )
-    if not geo_ok:
-        return df
-    try:
-        long = pd.melt(
-            raw,
-            id_vars=id_vars,
-            value_vars=value_vars,
-            var_name="__hdr_month",
-            value_name="Spend",
-        )
-    except Exception:
-        return df
-    long["Month"] = long["__hdr_month"].map(
-        lambda h: str(period_by_col[str(h)]) if period_by_col.get(str(h)) is not None else ""
-    )
-    long = long.drop(columns=["__hdr_month"], errors="ignore")
-    long["Spend"] = _to_number_series(long["Spend"])
-    long = long.loc[long["Spend"].abs() > 1e-12].copy()
-    if long.empty:
-        return df
-    return long
-
-
-def _spend_combine_year_month_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """When the Spend tab has ``Year`` + numeric ``Month`` (1-12), write ``YYYY-MM-01`` into the Month column.
-
-    ``Year`` is not part of ``normalize()`` output — it is only used here on the raw grid so ``report_month`` parses.
-    """
-    ycols = [
-        c
-        for c in df.columns
-        if _norm_header_key(str(c)) in ("year", "calendar_year", "report_year")
-    ]
-    mcols = [c for c in df.columns if _norm_header_key(str(c)) == "month"]
-    if len(ycols) != 1 or len(mcols) != 1:
-        return df
-    yc, mc = ycols[0], mcols[0]
-    if yc == mc:
-        return df
-    yv = pd.to_numeric(df[yc], errors="coerce")
-    mv = pd.to_numeric(df[mc], errors="coerce")
-    ok = yv.notna() & mv.notna() & mv.between(1, 12) & yv.between(1990, 2100)
-    if not bool(ok.any()):
-        return df
-    combined = df[mc].astype(object).copy()
-    for ix in df.index[ok]:
-        try:
-            combined.loc[ix] = f"{int(yv.loc[ix])}-{int(mv.loc[ix]):02d}-01"
-        except (ValueError, TypeError, OverflowError):
-            pass
-    df[mc] = combined
-    return df
-
-
-def _preprocess_excel_sheet(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
+def _preprocess_excel_sheet(
+    df: pd.DataFrame,
+    tab_name: str,
+    worksheet_gid: Optional[int] = None,
+) -> pd.DataFrame:
     """ME X-Ray template: forward-fill month blocks on CW Summary; drop regional subtotals."""
     df = df.copy()
     t = tab_name.strip().lower()
@@ -1694,39 +1272,28 @@ def _preprocess_excel_sheet(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
     if "Market" in df.columns:
         m = df["Market"].astype(str)
         df = df[~m.str.contains("TOTAL", case=False, na=False)]
-    if "spend" in t:
-        df = _try_melt_wide_month_spend_df(df)
-        df = _spend_combine_year_month_columns(df)
-        # Do **not** ffill Month here (merged-cell collapse). Also tell ``normalize()`` not to
-        # ``date.fillna(report_month)`` on spend — Sheets sometimes repeats one Month on every row; that would
-        # stamp the same calendar month onto all undated rows before we can prefer real per-row dates.
-        df.attrs["spend_skip_date_fill_from_month"] = True
-        # ``period`` maps to ``date`` only; ``reporting_period`` / ``Time period`` etc. may not map at all.
-        # Mirror the best *period* column into ``Month`` so ``report_month`` is populated.
-        period_cols = sorted(
-            (c for c in df.columns if "period" in _norm_header_key(str(c))),
-            key=lambda c: (0 if _norm_header_key(str(c)) == "period" else 1, str(c).lower()),
-        )
-        month_cols = [c for c in df.columns if _norm_header_key(str(c)) == "month"]
-        if period_cols:
-            pcol = period_cols[0]
-            if not month_cols:
-                df["Month"] = df[pcol].values
-            else:
-                mcol = month_cols[0]
-                mser = df[mcol].astype(str).str.strip()
-                empty_m = mser.eq("") | mser.str.lower().isin(["nan", "none", "nat"])
-                if bool(empty_m.all()):
-                    df[mcol] = df[pcol].values
-    if ("raw" in t and "lead" in t and "post" not in t):
+    gid_int = int(worksheet_gid) if worksheet_gid is not None else None
+    is_configured_lead_gid = gid_int is not None and gid_int in _configured_lead_worksheet_gids()
+    lead_sheet = _is_lead_source_tab(tab_name) or is_configured_lead_gid
+    if lead_sheet:
         # Convert lead rows into additive metrics so they can be combined with spend.
-        if "Leads" not in df.columns:
+        has_lead_metric = any(_norm_header_key(c) in ("leads", "lead_count") for c in df.columns)
+        if not has_lead_metric:
             df["Leads"] = 1
+        # ME X-Ray lead export: country is **Market** (Excel column N); if headers are missing, use column N.
+        _market_like = frozenset({"market", "country", "country_name", "kitchen_country", "geo"})
+        if not any(_norm_header_key(c) in _market_like for c in df.columns) and len(df.columns) > 13:
+            df["Market"] = df.iloc[:, 13]
         status = df.get("Lead Status", pd.Series(index=df.index, dtype=str)).astype(str).str.lower()
         if "Qualified" not in df.columns:
             df["Qualified"] = status.str.contains("qualified", na=False).astype(int)
-        if "Date Formatted" in df.columns and "Date" not in df.columns:
-            df["Date"] = pd.to_datetime(df["Date Formatted"], errors="coerce")
+        if "Date" not in df.columns:
+            for cand in ("Date Formatted", "Create Date", "Created Date", "Unified Date"):
+                if cand in df.columns:
+                    df["Date"] = pd.to_datetime(df[cand], errors="coerce")
+                    break
+            if "Date" not in df.columns and "Month" in df.columns:
+                df["Date"] = _parse_report_month_series(df["Month"])
     if _is_post_lead_pipeline_tab(t):
         # Stage rows become pipeline counters (post-lead funnel). Prefer Post Lead Stage column.
         stage_col = _resolve_post_lead_stage_column(df)
@@ -1736,19 +1303,12 @@ def _preprocess_excel_sheet(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
             df["Qualified"] = 1
         if "Pitching" not in df.columns:
             df["Pitching"] = stage.str.contains("pitch", na=False).astype(int)
-        if "Qualifying" not in df.columns:
-            # Distinct from Qualified SQL / Disqualified — match Qualifying + Qualification (Salesforce labels).
-            _qual_core = stage.str.contains("qualifying", na=False) | stage.str.contains(
-                "qualification", na=False
-            )
-            df["Qualifying"] = (
-                _qual_core
-                & ~stage.str.contains("qualified", na=False)
-                & ~stage.str.contains("disqualif", na=False)
-            ).astype(int)
-        _has_is_cw_col = any(_norm_header_key(c) == "is_cw" for c in df.columns)
-        if "Closed Won" not in df.columns and not _has_is_cw_col:
-            df["Closed Won"] = raw_stage.map(_is_closed_won_stage_text).astype(int)
+        if "Closed Won" not in df.columns:
+            appr_col = _resolve_optional_approval_column(df)
+            if appr_col is not None:
+                df["Closed Won"] = _closed_won_kpi_mask(raw_stage, df[appr_col]).astype(int)
+            else:
+                df["Closed Won"] = _closed_won_kpi_mask(raw_stage, None).astype(int)
         if "Negotiation" not in df.columns:
             df["Negotiation"] = stage.str.contains("negotiation", na=False).astype(int)
         if "Commitment" not in df.columns:
@@ -1757,43 +1317,43 @@ def _preprocess_excel_sheet(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
             df["Closed Lost"] = stage.str.contains("closed lost", na=False).astype(int)
         if "Total Live" not in df.columns:
             df["Total Live"] = stage.str.contains("new|working|qualifying|pitch|negotiation|commitment", na=False).astype(int)
-        _flc = next(
-            (
-                c
-                for c in df.columns
-                if _norm_header_key(str(c)) in ("first_lead_created_date", "1st_lead_created_date")
-            ),
-            None,
-        )
-        if _flc is not None:
-            _flc_parsed = pd.to_datetime(df[_flc], errors="coerce")
-            if "Date" not in df.columns:
-                df["Date"] = _flc_parsed
-            else:
-                df["Date"] = _flc_parsed.fillna(pd.to_datetime(df["Date"], errors="coerce"))
-        elif "Date" not in df.columns:
+        if "Date" not in df.columns:
             date_col = next(
                 (
                     c
                     for c in df.columns
-                    if _norm_header_key(c)
-                    in {"formatted_date", "created_date", "create_date", "date", "date_formatted"}
+                    if _norm_header_key(c) in {"formatted_date", "created_date", "create_date", "date", "date_formatted"}
                 ),
                 None,
             )
             if date_col:
                 df["Date"] = pd.to_datetime(df[date_col], errors="coerce")
-        # Do not drop duplicate opportunity rows here — SUM(Pitching)+… must match the sheet; CW uses unique opps in code.
-    if _is_raw_cw_style_tab(t):
-        # RAW CW / CW deal tabs can contain repeated rows for the same opportunity; dedupe before aggregation.
+        # One row per opportunity so Closed Won is not double-counted.
+        _opp_keys = [
+            c
+            for c in df.columns
+            if _norm_header_key(c)
+            in {
+                "opportunity_id",
+                "opportunity_id_18",
+                "opportunity_name",
+            }
+        ]
+        if _opp_keys:
+            df = df.drop_duplicates(subset=_opp_keys, keep="first")
+    if ("raw" in t and "cw" in t):
+        # RAW CW can contain repeated rows for the same opportunity; dedupe before aggregation.
         dedupe_cols = [c for c in ("Opportunity Name", "Close Date", "Kitchen Country", "Stage") if c in df.columns]
         if dedupe_cols:
             df = df.drop_duplicates(subset=dedupe_cols, keep="first")
         stage_col = next((c for c in df.columns if "stage" in _norm_header_key(c)), None)
-        stage = df.get(stage_col or "Stage", pd.Series(index=df.index, dtype=str)).astype(str).str.lower().str.strip()
-        _has_is_cw_raw = any(_norm_header_key(c) == "is_cw" for c in df.columns)
-        if "Closed Won" not in df.columns and not _has_is_cw_raw:
-            df["Closed Won"] = stage.str.contains("closed won", na=False).astype(int)
+        raw_stage_cw = df.get(stage_col or "Stage", pd.Series(index=df.index, dtype=str))
+        if "Closed Won" not in df.columns:
+            appr_col_cw = _resolve_optional_approval_column(df)
+            if appr_col_cw is not None:
+                df["Closed Won"] = _closed_won_kpi_mask(raw_stage_cw, df[appr_col_cw]).astype(int)
+            else:
+                df["Closed Won"] = _closed_won_kpi_mask(raw_stage_cw, None).astype(int)
         if "Date" not in df.columns:
             if "Close Date" in df.columns:
                 df["Date"] = pd.to_datetime(df["Close Date"], errors="coerce", dayfirst=True)
@@ -1813,9 +1373,12 @@ def _preprocess_excel_sheet(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
     stage_col_any = _resolve_post_lead_stage_column(df)
     if stage_col_any is None:
         stage_col_any = next((c for c in df.columns if "stage" in _norm_header_key(c)), None)
-    _has_is_cw_g = any(_norm_header_key(c) == "is_cw" for c in df.columns)
-    if stage_col_any and "Closed Won" not in df.columns and not _has_is_cw_g:
-        df["Closed Won"] = df[stage_col_any].map(_is_closed_won_stage_text).astype(int)
+    if stage_col_any and "Closed Won" not in df.columns:
+        appr_col = _resolve_optional_approval_column(df)
+        if appr_col is not None:
+            df["Closed Won"] = _closed_won_kpi_mask(df[stage_col_any], df[appr_col]).astype(int)
+        else:
+            df["Closed Won"] = _closed_won_kpi_mask(df[stage_col_any], None).astype(int)
     return df
 
 
@@ -1831,7 +1394,6 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
 
     df = df.copy()
     df.columns = raw_cols
-    _spend_skip_date_fill = bool(df.attrs.get("spend_skip_date_fill_from_month", False))
 
     # Map each sheet column to at most one canonical field (first wins for dims; sum for dup metrics)
     field_to_sources: dict[str, list[str]] = {}
@@ -1841,46 +1403,8 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
         if field:
             field_to_sources.setdefault(field, []).append(col)
 
-    if "country" in field_to_sources:
-        # Prefer **Market** over ``Kitchen Country`` / other geo keys so Post-Lead CW rolls up to sheet Market.
-        _srcs = field_to_sources["country"]
-        field_to_sources["country"] = sorted(
-            _srcs,
-            key=lambda c: (
-                0 if _norm_header_key(str(c)) == "market" else 1 if _norm_header_key(str(c)) == "kitchen_country" else 2,
-                str(c).lower(),
-            ),
-        )
-
-    if "date" in field_to_sources:
-        # Post-Lead: attribute CW / funnel to the **first touch** month (sheet ``First Lead Created Date``).
-        _ds = field_to_sources["date"]
-        field_to_sources["date"] = sorted(
-            _ds,
-            key=lambda c: (
-                0
-                if _norm_header_key(str(c))
-                in ("first_lead_created_date", "1st_lead_created_date")
-                else 1,
-                str(c).lower(),
-            ),
-        )
-
     out = pd.DataFrame(index=df.index)
-    # These often appear as two headers for the same measure (e.g. Actual TCV + TCV USD); summing doubles row TCV/LF.
-    _DEDUPE_NUMERIC_MAX_FIELDS = frozenset({"tcv", "first_month_lf"})
     for field, srcs in field_to_sources.items():
-        if field == "closed_won":
-            is_cw_cols = [c for c in srcs if _norm_header_key(str(c)) == "is_cw"]
-            if is_cw_cols:
-                if len(is_cw_cols) == 1:
-                    out[field] = df[is_cw_cols[0]]
-                else:
-                    acc = _closed_won_to_numeric_series(df[is_cw_cols[0]])
-                    for c in is_cw_cols[1:]:
-                        acc = acc.combine(_closed_won_to_numeric_series(df[c]), max)
-                    out[field] = acc
-                continue
         if len(srcs) == 1:
             out[field] = df[srcs[0]]
         elif field in _NUM_FIELDS:
@@ -1889,29 +1413,28 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
                 nxt = _to_number_series(df[c])
                 if field == "closed_won":
                     acc = acc.combine(nxt, max)
-                elif field in _DEDUPE_NUMERIC_MAX_FIELDS:
+                elif field == "actual_tcv":
+                    # Same deal often has both "Actual TCV" and "TCV (converted)" — must not sum (≈2× scorecard).
                     acc = acc.combine(nxt, max)
                 else:
                     acc = acc + nxt
             out[field] = acc
         else:
-            out[field] = df[srcs[0]]
+            if field == "stage_text" and len(srcs) > 1:
+                comb = df[srcs[0]].astype(str).replace({"nan": "", "None": ""})
+                for c in srcs[1:]:
+                    nxt = df[c].astype(str).replace({"nan": "", "None": ""})
+                    comb = comb.where(comb.str.strip().ne(""), nxt)
+                out[field] = comb
+            else:
+                out[field] = df[srcs[0]]
 
     # Hard fallback for spend: if explicit mapping missed it, infer from any spend/cost/amount-like header.
     if "cost" not in out.columns:
         spend_like_cols = []
         for c in df.columns:
             nk = _norm_header_key(c)
-            if nk in {"cost_tcv", "cost_tcv_pct"}:
-                continue
-            if (
-                "spend" in nk
-                or "cost" in nk
-                or "amount" in nk
-                or nk in ("investment", "budget", "media_spend", "fee", "fees", "paid")
-                or ("investment" in nk and "tcv" not in nk)
-                or ("budget" in nk and "tcv" not in nk)
-            ):
+            if ("spend" in nk or "cost" in nk or "amount" in nk) and nk not in {"cost_tcv", "cost_tcv_pct"}:
                 spend_like_cols.append(c)
         if spend_like_cols:
             inferred = _to_number_series(df[spend_like_cols[0]])
@@ -1922,43 +1445,19 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
                     inferred = cand
             out["cost"] = inferred
 
-    _cost_pre_num = out["cost"] if "cost" in out.columns else None
-    if _cost_pre_num is None or float(_to_number_series(_cost_pre_num).sum()) < 1e-9:
-        bc = _best_spend_column_raw(df)
-        if bc is not None and float(_to_number_series(df[bc]).abs().sum()) > 1e-9:
-            out["cost"] = _to_number_series(df[bc])
-
     if "date" in out.columns:
-        s_dt = out["date"].copy()
-        dn = pd.to_numeric(s_dt, errors="coerce")
-        int_ok = dn.notna() & (dn - dn.round()).abs() < 0.02
-        if bool(int_ok.any()):
-            ni = dn.loc[int_ok].round().astype("int64")
-            yk = ni.map(_yyyymm_calendar_to_key)
-            for ix in yk.index[yk.ne("")]:
-                s_dt.loc[ix] = pd.Timestamp(str(yk.loc[ix]) + "-01")
-        out["date"] = _scrub_pre_2000_dates(_coerce_sheet_serial_dates(s_dt))
+        out["date"] = pd.to_datetime(out["date"], errors="coerce")
     else:
         out["date"] = pd.NaT
 
     if "report_month" in out.columns:
         rm = _parse_report_month_series(out["report_month"])
-        rm = rm.fillna(_coerce_sheet_serial_dates(out["report_month"]))
-        # Never ``ffill`` here: one non-blank month + many empty cells (merged headers in Sheets/Excel)
-        # would stamp the same month on every row and collapse the whole spend tab into one period.
-        rm = _scrub_pre_2000_dates(rm)
-        if not _spend_skip_date_fill:
-            out["date"] = out["date"].fillna(rm)
-
-    _still_ancient = out["date"].notna() & (out["date"] < pd.Timestamp("2000-01-01"))
-    out.loc[_still_ancient, "date"] = pd.NaT
+        rm = rm.ffill()
+        out["date"] = out["date"].fillna(rm)
 
     for c in _NUM_FIELDS:
         if c in out.columns:
-            if c == "closed_won":
-                out[c] = _closed_won_to_numeric_series(out[c])
-            else:
-                out[c] = _to_number_series(out[c])
+            out[c] = _to_number_series(out[c])
         else:
             out[c] = 0
 
@@ -1977,25 +1476,14 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
         "opp_name",
         "deal_id",
         "deal_name",
+        "stage_text",
     ):
         if dim not in out.columns:
             out[dim] = ""
         else:
             out[dim] = out[dim].astype(str).replace("nan", "").replace("None", "")
 
-    out["month"] = ""
-    _dok = out["date"].notna()
-    if bool(_dok.any()):
-        out.loc[_dok, "month"] = out.loc[_dok, "date"].dt.to_period("M").astype(str)
-    _bad_m = out["month"].astype(str).str.strip().str.lower().isin(["", "nan", "nat", "none"])
-    if bool(_bad_m.any()) and "report_month" in out.columns:
-        rm_fix = _parse_report_month_series(out["report_month"])
-        rm_fix = rm_fix.fillna(_coerce_sheet_serial_dates(out["report_month"]))
-        rm_fix = _scrub_pre_2000_dates(rm_fix)
-        ok_rm = rm_fix.notna() & (rm_fix >= pd.Timestamp("2000-01-01"))
-        hit = _bad_m & ok_rm
-        if bool(hit.any()):
-            out.loc[hit, "month"] = rm_fix.loc[hit].dt.to_period("M").astype(str)
+    out["month"] = out["date"].dt.to_period("M").astype(str)
     attrs["fields_mapped"] = sorted(field_to_sources.keys())
     out.attrs.update(attrs)
     return out
@@ -2019,279 +1507,6 @@ def _filter_by_date_range(df: pd.DataFrame, start: date, end: date) -> pd.DataFr
     return df.loc[mask].copy()
 
 
-def _filter_spend_for_dashboard(df: pd.DataFrame, start: date, end: date) -> pd.DataFrame:
-    """Prefer ``month``-period filtering for spend (sheet dates often mis-parse); fall back to calendar ``date``."""
-    if df.empty:
-        return df
-    start_p = pd.Period(start, freq="M")
-    end_p = pd.Period(end, freq="M")
-
-    def _month_in_range(m: Any) -> bool:
-        if m is None or (isinstance(m, float) and pd.isna(m)):
-            return True
-        ms = str(m).strip().lower()
-        if not ms or ms in ("nat", "nan", "none"):
-            return True
-        try:
-            p = pd.Period(str(m), freq="M")
-            return bool(start_p <= p <= end_p)
-        except Exception:
-            return True
-
-    sub_m = pd.DataFrame()
-    if "month" in df.columns:
-        sub_m = df.loc[df["month"].map(_month_in_range)].copy()
-        if _normalized_spend_cost_sum(sub_m) > 0.0:
-            return sub_m
-
-    sub_d = _filter_by_date_range(df, start, end)
-    if _normalized_spend_cost_sum(sub_d) > 0.0:
-        return sub_d
-
-    if not sub_m.empty:
-        return sub_m
-    return sub_d if not sub_d.empty else df
-
-
-def _impute_master_df_cost_from_spend_pool(
-    master_df: pd.DataFrame,
-    spend_pool: pd.DataFrame,
-    *,
-    start_date: date,
-    end_date: date,
-) -> pd.DataFrame:
-    """When outer-merge leaves ``cost`` at zero but the spend tab has dollars, allocate by month using CW weights."""
-    if master_df.empty or spend_pool.empty or "cost" not in master_df.columns:
-        return master_df
-    cur = float(pd.to_numeric(master_df["cost"], errors="coerce").fillna(0).sum())
-    if cur > 1e-6:
-        return master_df
-    if "cost" not in spend_pool.columns or "month" not in spend_pool.columns:
-        return master_df
-
-    sp = _normalize_master_merge_frame(spend_pool.copy())
-    sp["month"] = sp["month"].map(_month_norm_key)
-    start_p = pd.Period(start_date, freq="M")
-    end_p = pd.Period(end_date, freq="M")
-
-    def _m_dashboard(m: Any) -> bool:
-        if not m or str(m).strip().lower() in ("", "nat", "nan"):
-            return True
-        try:
-            p = pd.Period(str(m), freq="M")
-            return bool(start_p <= p <= end_p)
-        except Exception:
-            return True
-
-    sp_f = sp.loc[sp["month"].map(_m_dashboard)].copy()
-    if sp_f.empty or _normalized_spend_cost_sum(sp_f) < 1e-9:
-        sp_f = sp
-    cost_num = pd.to_numeric(sp_f["cost"], errors="coerce").fillna(0)
-    by_m = cost_num.groupby(sp_f["month"], dropna=False).sum()
-    month_totals: dict[str, float] = {}
-    unassigned_spend = 0.0
-    for k, v in by_m.items():
-        fv = float(v)
-        if fv < 1e-9:
-            continue
-        nk = _month_norm_key(k)
-        if not nk:
-            unassigned_spend += fv
-        else:
-            month_totals[nk] = month_totals.get(nk, 0) + fv
-
-    out = master_df.copy()
-    out["month"] = out["month"].map(_month_norm_key)
-    if unassigned_spend > 1e-9:
-        mkeys = sorted(
-            {
-                str(m).strip()
-                for m in out["month"].dropna().unique()
-                if str(m).strip() and _dashboard_month_plausible(str(m))
-            }
-        )
-        if mkeys:
-            share = unassigned_spend / len(mkeys)
-            for mk in mkeys:
-                month_totals[mk] = month_totals.get(mk, 0) + share
-
-    if not month_totals:
-        return master_df
-
-    for mk, total in month_totals.items():
-        if total < 1e-9:
-            continue
-        m_ix = out.index[out["month"].astype(str) == mk]
-        if len(m_ix) == 0:
-            continue
-        sub = out.loc[m_ix]
-        cw = pd.to_numeric(sub["closed_won"], errors="coerce").fillna(0).astype(float)
-        if (cw > 1e-9).any():
-            use_ix = sub.index[cw > 1e-9]
-        else:
-            use_ix = m_ix
-        w = pd.to_numeric(out.loc[use_ix, "closed_won"], errors="coerce").fillna(0).astype(float)
-        if float(w.sum()) < 1e-9:
-            w = pd.Series(1.0, index=use_ix, dtype=float)
-        share = w / float(w.sum())
-        out.loc[use_ix, "cost"] = (share * total).values
-    return out
-
-
-def _coalesce_master_cost_from_spend_pivot(master_df: pd.DataFrame, pool: pd.DataFrame) -> pd.DataFrame:
-    """Left-fill ``cost`` from a fresh month×country pivot of the spend pool when merge keys missed."""
-    if master_df.empty or pool.empty or "cost" not in master_df.columns:
-        return master_df
-    piv = _spend_sheet_pivot_by_month_country(pool)
-    if piv.empty or "cost" not in piv.columns:
-        return master_df
-    out = master_df.copy()
-    out["month"] = out["month"].map(_month_norm_key)
-    out["country"] = out["country"].map(_country_join_key)
-    part = piv.copy()
-    part["month"] = part["month"].map(_month_norm_key)
-    part["country"] = part["country"].map(_country_join_key)
-    agg = part.groupby(["month", "country"], as_index=False)["cost"].sum()
-    m2 = out.merge(agg.rename(columns={"cost": "_spend_tab"}), on=["month", "country"], how="left")
-    c0 = pd.to_numeric(m2["cost"], errors="coerce").fillna(0)
-    cs = pd.to_numeric(m2["_spend_tab"], errors="coerce").fillna(0)
-    m2["cost"] = c0.where(c0 >= 1e-9, cs)
-    return m2.drop(columns=["_spend_tab"], errors="ignore")
-
-
-def _allocate_spend_pool_by_country_and_cw(master_df: pd.DataFrame, pool: pd.DataFrame) -> pd.DataFrame:
-    """If merged ``cost`` is still zero, allocate pool totals by CRM country (× CW within country)."""
-    if master_df.empty or pool.empty or "cost" not in master_df.columns:
-        return master_df
-    if float(pd.to_numeric(master_df["cost"], errors="coerce").fillna(0).sum()) > 1e-6:
-        return master_df
-    gross = float(pd.to_numeric(pool["cost"], errors="coerce").fillna(0).sum())
-    if gross < 1e-9:
-        return master_df
-    pn = _normalize_master_merge_frame(pool.copy())
-    if "country" not in pn.columns:
-        return master_df
-    by_c = pd.to_numeric(pn["cost"], errors="coerce").fillna(0).groupby(pn["country"].map(_country_join_key)).sum()
-    out = master_df.copy()
-    out["month"] = out["month"].map(_month_norm_key)
-    out["country"] = out["country"].map(_country_join_key)
-
-    nonu = {
-        str(k): float(v)
-        for k, v in by_c.items()
-        if float(v) > 1e-9 and str(k).strip().lower() not in ("", "unknown", "nan")
-    }
-    if not nonu:
-        ix = out.index
-        cw = pd.to_numeric(out["closed_won"], errors="coerce").fillna(0).astype(float)
-        if float(cw.sum()) < 1e-9:
-            add = gross / max(len(ix), 1)
-            out["cost"] = pd.to_numeric(out["cost"], errors="coerce").fillna(0) + add
-        else:
-            out["cost"] = pd.to_numeric(out["cost"], errors="coerce").fillna(0) + gross * (cw / float(cw.sum()))
-        return out
-
-    matched_total = 0.0
-    for ckey, T in nonu.items():
-        ix = out.index[out["country"] == ckey]
-        if len(ix) == 0:
-            continue
-        matched_total += T
-        cw = pd.to_numeric(out.loc[ix, "closed_won"], errors="coerce").fillna(0).astype(float)
-        if float(cw.sum()) < 1e-9:
-            add = pd.Series(T / max(len(ix), 1), index=ix, dtype=float)
-        else:
-            add = T * (cw / float(cw.sum()))
-        base = pd.to_numeric(out.loc[ix, "cost"], errors="coerce").fillna(0)
-        out.loc[ix, "cost"] = base + add.reindex(ix).fillna(0)
-
-    # Pool countries that do not appear on the master grid (e.g. Egypt, UK) used to drop their spend entirely.
-    residual = gross - matched_total
-    if residual > 1e-6:
-        ix = out.index
-        cw = pd.to_numeric(out["closed_won"], errors="coerce").fillna(0).astype(float)
-        if float(cw.sum()) < 1e-9:
-            add_r = residual / max(len(ix), 1)
-            out["cost"] = pd.to_numeric(out["cost"], errors="coerce").fillna(0) + add_r
-        else:
-            out["cost"] = pd.to_numeric(out["cost"], errors="coerce").fillna(0) + residual * (cw / float(cw.sum()))
-    return out
-
-
-def _tab_title_looks_like_spend_worksheet(title: str) -> bool:
-    tl = str(title).strip().lower()
-    return bool(
-        "spend" in tl
-        or "paid media" in tl
-        or "media spend" in tl
-        or tl == "ppc"
-        or "paid search" in tl
-        or "marketing investment" in tl
-    )
-
-
-def _best_spend_pool_from_df_loaded(df_loaded: pd.DataFrame) -> pd.DataFrame:
-    """Use spend rows already in the combined workbook load (often non-empty when gid=0 reload is empty)."""
-    if df_loaded.empty or "cost" not in df_loaded.columns:
-        return pd.DataFrame()
-    best = pd.DataFrame()
-    best_sum = -1.0
-
-    def _take(sub: pd.DataFrame) -> None:
-        nonlocal best, best_sum
-        if sub is None or sub.empty:
-            return
-        sm = _normalized_spend_cost_sum(sub)
-        if sm > best_sum:
-            best_sum = sm
-            best = sub.copy()
-
-    if "source_tab" in df_loaded.columns:
-        s_tab = df_loaded["source_tab"].astype(str)
-        sl = s_tab.str.lower()
-        mask = sl.str.contains(
-            r"spend|paid\s*media|media\s*spend|ppc|paid\s*search|marketing\s*investment",
-            na=False,
-            regex=True,
-        ) | s_tab.str.match(r"^gid:\d+_spend$", na=False)
-        _take(df_loaded.loc[mask])
-    if "worksheet_gid" in df_loaded.columns:
-        wg = pd.to_numeric(df_loaded["worksheet_gid"], errors="coerce")
-        _take(df_loaded.loc[wg == 0])
-        sg = _optional_spend_gid_from_secrets()
-        if sg is not None:
-            _take(df_loaded.loc[wg == int(sg)])
-    out = best if best_sum > 1e-9 else pd.DataFrame()
-    if not out.empty:
-        out = _canonicalize_spend_month_column(out)
-    return out
-
-
-@st.cache_data(ttl=300)
-def _scan_workbook_for_best_spend_frame(sheet_id: str, _secret_fp: str) -> pd.DataFrame:
-    """Last resort: reload each spend-like tab by gid with full preprocess (cached)."""
-    try:
-        meta = list_worksheet_meta(sheet_id, _secret_fp)
-    except Exception:
-        return pd.DataFrame()
-    best = pd.DataFrame()
-    best_sum = -1.0
-    for title, ws_gid in meta:
-        if not _tab_title_looks_like_spend_worksheet(title):
-            continue
-        try:
-            cand = load_worksheet_by_gid_preprocessed(sheet_id, int(ws_gid), _secret_fp)
-        except Exception:
-            continue
-        if cand.empty:
-            continue
-        sm = _normalized_spend_cost_sum(cand)
-        if sm > best_sum:
-            best_sum = sm
-            best = cand
-    return best if best_sum > 1e-9 else pd.DataFrame()
-
-
 @st.cache_data(ttl=300)
 def list_worksheet_meta(sheet_id: str, _secret_fp: str) -> list[tuple[str, int]]:
     """Spreadsheet worksheet titles and numeric ids, **same order as in Google Sheets** (left → right)."""
@@ -2313,6 +1528,16 @@ def list_worksheet_meta(sheet_id: str, _secret_fp: str) -> list[tuple[str, int]]
     gc = gspread.authorize(creds)
     sh = gc.open_by_key(sheet_id)
     return [(w.title, int(w.id)) for w in sh.worksheets()]
+
+
+def _worksheet_gid_for_title(sheet_id: str, title: str, _secret_fp: str) -> Optional[int]:
+    try:
+        for t, gid in list_worksheet_meta(sheet_id, _secret_fp):
+            if str(t).strip() == str(title).strip():
+                return int(gid)
+    except Exception:
+        return None
+    return None
 
 
 @st.cache_data(ttl=300)
@@ -2352,14 +1577,14 @@ def load_all_worksheets_combined(sheet_id: str, _secret_fp: str) -> pd.DataFrame
             except Exception:
                 tab_stats.append((title, -1))
                 continue
-        raw = _preprocess_excel_sheet(raw, title)
+        raw = _preprocess_excel_sheet(raw, title, worksheet_gid=int(ws_gid))
         df = _normalize(raw)
         if df.empty:
             tab_stats.append((title, 0))
             continue
         df = df.copy()
-        df["source_tab"] = (title.strip() if title.strip() else "Sheet")
-        df["worksheet_gid"] = int(ws_gid)
+        df["source_tab"] = _sheet_title_clean(title)
+        df["source_ws_gid"] = int(ws_gid)
         frames.append(df)
         tab_stats.append((title, len(df)))
     if not frames:
@@ -2400,41 +1625,6 @@ def load_marketing_data(
     return _normalize(raw)
 
 
-def _tab_title_for_worksheet_gid(sheet_id: str, worksheet_gid: int, _secret_fp: str) -> str:
-    try:
-        for title, gid in list_worksheet_meta(sheet_id, _secret_fp):
-            if int(gid) == int(worksheet_gid):
-                return (title or "").strip() or "sheet"
-    except Exception:
-        pass
-    return "post_qual"
-
-
-@st.cache_data(ttl=300)
-def load_worksheet_by_gid_preprocessed(sheet_id: str, worksheet_gid: int, _secret_fp: str) -> pd.DataFrame:
-    """Read one tab by gid with the same preprocess + normalize path as ``load_all_worksheets_combined``."""
-    secret_creds = _service_account_from_streamlit_secrets()
-    if not secret_creds:
-        raise RuntimeError(
-            "No service account in Streamlit Secrets. Add a `[gsheet_service_account]` block "
-            "(or `GCP_SERVICE_ACCOUNT`) in this app’s Secrets, then reboot."
-        )
-    raw = _read_sheet_auth(
-        sheet_id,
-        secret_creds,
-        worksheet_name=None,
-        worksheet_gid=int(worksheet_gid),
-    )
-    title = _tab_title_for_worksheet_gid(sheet_id, worksheet_gid, _secret_fp)
-    raw = _preprocess_excel_sheet(raw, title)
-    out = _normalize(raw)
-    if not out.empty and _tab_title_looks_like_spend_worksheet(str(title)):
-        out = _canonicalize_spend_month_column(out)
-    out["source_tab"] = title
-    out["worksheet_gid"] = int(worksheet_gid)
-    return out
-
-
 @st.cache_data(ttl=300)
 def load_source_of_truth_tab(sheet_id: str, worksheet_gid: int, _secret_fp: str) -> pd.DataFrame:
     """Load one canonical source-of-truth tab by gid from Google Sheets."""
@@ -2450,9 +1640,10 @@ def load_source_of_truth_tab(sheet_id: str, worksheet_gid: int, _secret_fp: str)
         worksheet_name=None,
         worksheet_gid=int(worksheet_gid),
     )
-    raw = _preprocess_excel_sheet(raw, "source_of_truth")
+    raw = _preprocess_excel_sheet(raw, "source_of_truth", worksheet_gid=int(worksheet_gid))
     out = _normalize(raw)
     out["source_tab"] = f"gid:{worksheet_gid}"
+    out["source_ws_gid"] = int(worksheet_gid)
     return out
 
 
@@ -2485,22 +1676,17 @@ def load_named_worksheet_normalized(sheet_id: str, worksheet_name: str, _secret_
             gc = gspread.authorize(creds)
             sh = gc.open_by_key(sheet_id)
             ws = sh.worksheet(worksheet_name)
-            from gspread.utils import ValueRenderOption
-
-            try:
-                grid = ws.get_all_values(value_render_option=ValueRenderOption.unformatted) or []
-            except Exception:
-                grid = ws.get_all_values() or []
+            grid = ws.get_all_values()
             raw = _dataframe_from_grid_with_keyword_header(grid, "spend")
         except Exception:
             return pd.DataFrame()
-    raw = _preprocess_excel_sheet(raw, worksheet_name)
+    ws_gid_named = _worksheet_gid_for_title(sheet_id, worksheet_name, _secret_fp)
+    raw = _preprocess_excel_sheet(raw, worksheet_name, worksheet_gid=ws_gid_named)
     out = _normalize(raw)
     if (out.empty or "cost" not in out.columns or float(out["cost"].sum()) == 0.0) and worksheet_name.strip().lower() == "spend":
         try:
             import gspread
             from google.oauth2.service_account import Credentials
-            from gspread.utils import ValueRenderOption
 
             creds_info = _coerce_service_account_dict(secret_creds)
             _validate_service_account_dict(creds_info)
@@ -2511,258 +1697,113 @@ def load_named_worksheet_normalized(sheet_id: str, worksheet_name: str, _secret_
             gc = gspread.authorize(creds)
             sh = gc.open_by_key(sheet_id)
             ws = sh.worksheet(worksheet_name)
-            try:
-                grid = ws.get_all_values(value_render_option=ValueRenderOption.unformatted) or []
-            except Exception:
-                grid = ws.get_all_values() or []
+            grid = ws.get_all_values()
             raw2 = _dataframe_from_grid_with_keyword_header(grid, "spend")
             if not raw2.empty:
-                out = _normalize(_preprocess_excel_sheet(raw2, worksheet_name))
+                out = _normalize(_preprocess_excel_sheet(raw2, worksheet_name, worksheet_gid=ws_gid_named))
         except Exception:
             pass
     if out.empty:
         return out
     out["source_tab"] = worksheet_name
+    if ws_gid_named is not None:
+        out["source_ws_gid"] = int(ws_gid_named)
     return out
 
 
-_GRID_KEYWORDS_FOR_SPEND: tuple[str, ...] = (
-    "spend",
-    "cost_usd",
-    "cost",
-    "amount",
-    "investment",
-    "budget",
-    "media",
-    "paid",
-    "fee",
-    "fees",
-    "aed",
-    "sar",
-)
-
-
-def _worksheet_title_is_spend_like(title: str) -> bool:
-    t = str(title).strip().lower()
-    if "spend" in t or "paid media" in t or "media spend" in t:
-        return True
-    if "ppc" in t or "paid search" in t:
-        return True
-    return False
-
-
-def _collect_spend_raw_candidates_for_gid(
-    sheet_id: str,
-    secret_creds: Any,
-    worksheet_gid: int,
-) -> list[pd.DataFrame]:
-    raws: list[pd.DataFrame] = []
+@st.cache_data(ttl=300)
+def load_spend_worksheet_fallback(sheet_id: str, _secret_fp: str) -> pd.DataFrame:
+    """Find a spend-like worksheet by title, load by gid, preprocess + normalize."""
+    meta = list_worksheet_meta(sheet_id, _secret_fp)
+    secret_creds = _service_account_from_streamlit_secrets()
+    if not secret_creds:
+        return pd.DataFrame()
+    spend_candidates = [(t, gid) for t, gid in meta if "spend" in str(t).strip().lower()]
+    if not spend_candidates:
+        return pd.DataFrame()
+    title, ws_gid = spend_candidates[0]
     try:
         raw = _read_sheet_auth(
             sheet_id,
             secret_creds,
             worksheet_name=None,
-            worksheet_gid=int(worksheet_gid),
+            worksheet_gid=int(ws_gid),
         )
-        if not raw.empty and len(raw.columns) > 0:
-            raws.append(raw)
-    except Exception:
-        pass
-    try:
-        loose = _read_sheet_auth_loose(sheet_id, secret_creds, worksheet_gid=int(worksheet_gid))
-        if not loose.empty:
-            raws.append(loose)
-    except Exception:
-        pass
-    try:
-        grid = _read_sheet_grid_values(sheet_id, secret_creds, int(worksheet_gid))
-        for kw in _GRID_KEYWORDS_FOR_SPEND:
-            gdf = _dataframe_from_grid_with_keyword_header(grid, kw)
-            if not gdf.empty:
-                raws.append(gdf)
-    except Exception:
-        pass
-    return raws
-
-
-@st.cache_data(ttl=300)
-def load_spend_worksheet_fallback(sheet_id: str, _secret_fp: str) -> pd.DataFrame:
-    """Find spend-like worksheets by title, load each, keep the normalized frame with the largest ``cost`` sum."""
-    meta = list_worksheet_meta(sheet_id, _secret_fp)
-    secret_creds = _service_account_from_streamlit_secrets()
-    if not secret_creds:
-        return pd.DataFrame()
-    spend_candidates = [(t, gid) for t, gid in meta if _worksheet_title_is_spend_like(t)]
-    if not spend_candidates:
-        return pd.DataFrame()
-    best = pd.DataFrame()
-    best_sum = -1.0
-    best_title = ""
-    for title, ws_gid in spend_candidates:
-        try:
-            raw = _read_sheet_auth(
-                sheet_id,
-                secret_creds,
-                worksheet_name=None,
-                worksheet_gid=int(ws_gid),
-            )
-            if raw.empty or len(raw.columns) == 0:
-                raw = _read_sheet_auth_loose(sheet_id, secret_creds, worksheet_gid=int(ws_gid))
-        except Exception:
-            try:
-                raw = _read_sheet_auth_loose(sheet_id, secret_creds, worksheet_gid=int(ws_gid))
-            except Exception:
-                continue
         if raw.empty or len(raw.columns) == 0:
-            continue
-        raw = _preprocess_excel_sheet(raw, str(title))
-        out = _normalize(raw)
-        if out.empty:
-            continue
-        s = _normalized_spend_cost_sum(out)
-        if s > best_sum:
-            best_sum = s
-            best = out.copy()
-            best_title = str(title)
-    if best.empty:
+            raw = _read_sheet_auth_loose(sheet_id, secret_creds, worksheet_gid=int(ws_gid))
+    except Exception:
+        try:
+            raw = _read_sheet_auth_loose(sheet_id, secret_creds, worksheet_gid=int(ws_gid))
+        except Exception:
+            return pd.DataFrame()
+    if raw.empty or len(raw.columns) == 0:
         return pd.DataFrame()
-    best = _canonicalize_spend_month_column(best)
-    best["source_tab"] = best_title
-    _attach_spend_pool_debug_attrs(best)
-    return best
+    raw = _preprocess_excel_sheet(raw, str(title), worksheet_gid=int(ws_gid))
+    out = _normalize(raw)
+    if out.empty:
+        return out
+    out["source_tab"] = str(title)
+    out["source_ws_gid"] = int(ws_gid)
+    return out
 
 
 @st.cache_data(ttl=300)
 def load_spend_gid0_normalized(sheet_id: str, _secret_fp: str) -> pd.DataFrame:
-    """Spend worksheet: optional ``XRAY_SPEND_GID`` first, then ``gid=0``. Several parses per tab; keeps best ``cost``."""
+    """Hardwired spend source: worksheet gid=0 (as provided by business)."""
     secret_creds = _service_account_from_streamlit_secrets()
     if not secret_creds:
         return pd.DataFrame()
-
-    gids: list[int] = []
-    sg = _optional_spend_gid_from_secrets()
-    if sg is not None:
-        gids.append(int(sg))
-    gids.append(0)
-    gids = list(dict.fromkeys(gids))
-
-    raws_tagged: list[tuple[pd.DataFrame, int]] = []
-    for gid in gids:
-        for raw in _collect_spend_raw_candidates_for_gid(sheet_id, secret_creds, gid):
-            raws_tagged.append((raw, gid))
-
-    best = pd.DataFrame()
-    best_sum = 0.0
-    best_gid = 0
-    _spend_col_secret = _optional_spend_column_header_from_secrets()
-    for raw, src_gid in raws_tagged:
+    try:
+        raw = _read_sheet_auth(
+            sheet_id,
+            secret_creds,
+            worksheet_name=None,
+            worksheet_gid=0,
+        )
         if raw.empty or len(raw.columns) == 0:
-            continue
+            raw = _read_sheet_auth_loose(sheet_id, secret_creds, worksheet_gid=0)
+    except Exception:
         try:
-            raw_orig = raw.copy()
-            cand = _normalize(_preprocess_excel_sheet(raw.copy(), "spend"))
-            if _spend_col_secret:
-                cand = _inject_cost_from_named_sheet_column(raw_orig, cand, _spend_col_secret)
-            s = _normalized_spend_cost_sum(cand)
-            if s < 1e-9:
-                gx = _guess_spend_value_column_raw(raw)
-                if (
-                    gx
-                    and gx in raw.columns
-                    and not cand.empty
-                    and len(cand) == len(raw)
-                ):
-                    cand = cand.copy()
-                    cand["cost"] = _to_number_series(raw[gx].reset_index(drop=True)).values
-                    s = _normalized_spend_cost_sum(cand)
-            if s > best_sum:
-                best_sum = s
-                best = cand
-                best_gid = int(src_gid)
+            raw = _read_sheet_auth_loose(sheet_id, secret_creds, worksheet_gid=0)
         except Exception:
-            continue
-
-    # Many workbooks have title rows: get_all_records used the wrong header. Try each grid row as header.
-    if best_sum < 1e-6:
-        for gid in gids:
-            try:
-                grid = _read_sheet_grid_values(sheet_id, secret_creds, gid)
-            except Exception:
-                continue
-            for hi in range(0, min(55, len(grid))):
-                if not any(str(x).strip() for x in grid[hi]):
-                    continue
-                raw = _dataframe_from_grid_header_at(grid, hi)
-                if raw.empty or len(raw.columns) < 2:
-                    continue
-                raw = raw.dropna(axis=1, how="all")
-                if raw.empty:
-                    continue
-                try:
-                    raw_orig = raw.copy()
-                    cand = _normalize(_preprocess_excel_sheet(raw.copy(), "spend"))
-                    if _spend_col_secret:
-                        cand = _inject_cost_from_named_sheet_column(raw_orig, cand, _spend_col_secret)
-                    s = _normalized_spend_cost_sum(cand)
-                    if s < 1e-9:
-                        gx = _guess_spend_value_column_raw(raw)
-                        if (
-                            gx
-                            and gx in raw.columns
-                            and not cand.empty
-                            and len(cand) == len(raw)
-                        ):
-                            cand = cand.copy()
-                            cand["cost"] = _to_number_series(raw[gx].reset_index(drop=True)).values
-                            s = _normalized_spend_cost_sum(cand)
-                    if s > best_sum:
-                        best_sum = s
-                        best = cand
-                        best_gid = int(gid)
-                except Exception:
-                    continue
-
-    if best.empty:
+            return pd.DataFrame()
+    if raw.empty or len(raw.columns) == 0:
         return pd.DataFrame()
-    best = _canonicalize_spend_month_column(best)
-    best["source_tab"] = f"gid:{best_gid}_spend"
-    _attach_spend_pool_debug_attrs(best)
-    return best
+    # Use spend preprocessing context for better header handling.
+    out = _normalize(_preprocess_excel_sheet(raw, "spend", worksheet_gid=0))
+    if out.empty:
+        return out
+    out["source_tab"] = "gid:0_spend"
+    out["source_ws_gid"] = 0
+    return out
 
 
 @st.cache_data(ttl=300)
 def load_spend_gid0_raw_sum(sheet_id: str, _secret_fp: str) -> float:
-    """Raw-grid spend sum: optional ``XRAY_SPEND_GID`` then ``gid=0`` (keyword headers + loose read)."""
+    """Direct raw Spend sum from gid=0 by scanning spend/cost/amount-like columns."""
     secret_creds = _service_account_from_streamlit_secrets()
     if not secret_creds:
         return 0.0
-
-    gids: list[int] = []
-    _sg = _optional_spend_gid_from_secrets()
-    if _sg is not None:
-        gids.append(int(_sg))
-    gids.append(0)
-    gids = list(dict.fromkeys(gids))
-
-    best = 0.0
-    for gid in gids:
-        try:
-            grid = _read_sheet_grid_values(sheet_id, secret_creds, gid)
-            for kw in _GRID_KEYWORDS_FOR_SPEND:
-                df = _dataframe_from_grid_with_keyword_header(grid, kw)
-                sm = _scan_frame_for_spend_sum(df)
-                if abs(sm) > abs(best):
-                    best = sm
-        except Exception:
-            pass
-        try:
-            raw = _read_sheet_auth_loose(sheet_id, secret_creds, worksheet_gid=gid)
-            sm = _scan_frame_for_spend_sum(raw)
-            if abs(sm) > abs(best):
-                best = sm
-        except Exception:
-            pass
-    return best
+    try:
+        raw = _read_sheet_auth_loose(sheet_id, secret_creds, worksheet_gid=0)
+    except Exception:
+        return 0.0
+    if raw.empty or len(raw.columns) == 0:
+        return 0.0
+    spend_cols = []
+    for c in raw.columns:
+        nk = _norm_header_key(c)
+        if ("spend" in nk or "cost" in nk or "amount" in nk) and nk not in {"cost_tcv", "cost_tcv_pct"}:
+            spend_cols.append(c)
+    if not spend_cols:
+        return 0.0
+    best_sum = 0.0
+    for c in spend_cols:
+        s = _to_number_series(raw[c])
+        sm = float(s.sum())
+        if abs(sm) > abs(best_sum):
+            best_sum = sm
+    return best_sum
 
 
 @st.cache_data(ttl=300)
@@ -2803,40 +1844,55 @@ def load_first_matching_worksheet_normalized(
             return pd.DataFrame()
     if raw.empty or len(raw.columns) == 0:
         return pd.DataFrame()
-    out = _normalize(_preprocess_excel_sheet(raw, str(title)))
+    out = _normalize(_preprocess_excel_sheet(raw, str(title), worksheet_gid=int(ws_gid)))
     if out.empty:
         return out
-    if _tab_title_looks_like_spend_worksheet(str(title)):
-        out = _canonicalize_spend_month_column(out)
-        _attach_spend_pool_debug_attrs(out)
     out["source_tab"] = str(title)
-    out["worksheet_gid"] = int(ws_gid)
+    out["source_ws_gid"] = int(ws_gid)
     return out
 
 
-@st.cache_data(ttl=300)
-def load_excel_all_sheets(_content_hash: str, xlsx_bytes: bytes) -> pd.DataFrame:
-    """Load and combine core ME X-Ray tabs (spend, leads, post-leads) into one dataset."""
+def _xlsx_core_tab_matcher(name: str) -> bool:
+    """True if sheet title looks like ME X-Ray spend / inbound leads / post-lead / CW (any naming variant)."""
+    tl = str(name).strip().lower()
+    patterns = (
+        r"raw\s*spend|^\s*spend\s*$|sum\s*spend|\bspend\b",
+        r"raw\s*leads?|lead\s*sheet|^\s*leads?\s*$|\bleads?\s+report|\bleads?\s+export",
+        r"raw.*post.*qual|post\s*leads?|post\s*qual|post\s*lead",
+        r"raw\s*cw|rawcw",
+    )
+    return any(re.search(p, tl) for p in patterns)
+
+
+def _load_excel_all_sheets_from_bytes(xlsx_bytes: bytes) -> pd.DataFrame:
+    """Load and combine core ME X-Ray tabs (spend, leads, post-leads) into one dataset.
+
+    Used by :func:`load_excel_all_sheets` and by offline scripts (e.g. ``scripts/smoke_verify_excel.py``).
+    """
     bio = io.BytesIO(xlsx_bytes)
     xl = pd.ExcelFile(bio)
     preferred_tabs = ["Raw Spend", "Raw Leads", "Raw Post Qualification", "RAW CW"]
     selected_tabs = [t for t in preferred_tabs if t in xl.sheet_names]
+    extra = [t for t in xl.sheet_names if str(t).strip() and t not in selected_tabs and _xlsx_core_tab_matcher(t)]
+    selected_tabs = list(dict.fromkeys(selected_tabs + extra))
     if not selected_tabs:
         selected_tabs = [t for t in xl.sheet_names if str(t).strip()]
     frames: list[pd.DataFrame] = []
     tab_stats: list[tuple[str, int]] = []
-    for title in selected_tabs:
+    for i, title in enumerate(selected_tabs):
         raw = pd.read_excel(xl, sheet_name=title)
         if raw.empty or len(raw.columns) == 0:
             tab_stats.append((title, 0))
             continue
-        raw = _preprocess_excel_sheet(raw, title)
+        ws_gid = _EXCEL_SOURCE_WS_GID_BASE + i
+        raw = _preprocess_excel_sheet(raw, title, worksheet_gid=int(ws_gid))
         norm = _normalize(raw)
         if norm.empty:
             tab_stats.append((title, 0))
             continue
         df = norm.copy()
-        df["source_tab"] = title.strip() if str(title).strip() else "Sheet"
+        df["source_tab"] = _sheet_title_clean(str(title))
+        df["source_ws_gid"] = int(ws_gid)
         frames.append(df)
         tab_stats.append((title, len(df)))
     if not frames:
@@ -2855,6 +1911,178 @@ def load_excel_all_sheets(_content_hash: str, xlsx_bytes: bytes) -> pd.DataFrame
     return combined
 
 
+@st.cache_data(ttl=300)
+def load_excel_all_sheets(_content_hash: str, xlsx_bytes: bytes) -> pd.DataFrame:
+    """Load and combine core ME X-Ray tabs (spend, leads, post-leads) into one dataset."""
+    return _load_excel_all_sheets_from_bytes(xlsx_bytes)
+
+
+def _mpo_tab_subset(frame: pd.DataFrame, tab_keywords: list[str]) -> pd.DataFrame:
+    if "source_tab" not in frame.columns:
+        return frame
+    s = frame["source_tab"].astype(str).str.strip().str.lower()
+    mask = pd.Series(False, index=frame.index)
+    for k in tab_keywords:
+        mask = mask | s.str.contains(k.lower(), na=False, regex=True)
+    return frame[mask].copy()
+
+
+def _mpo_pick_source(frame: pd.DataFrame, patterns: list[str], metric_cols: list[str]) -> pd.DataFrame:
+    """Prefer mapped tabs, but fall back to full frame if mapped slice is empty/zero."""
+    subset = _mpo_tab_subset(frame, patterns)
+    if subset.empty:
+        return frame
+    present_cols = [c for c in metric_cols if c in subset.columns]
+    if not present_cols:
+        return frame
+    subset_total = 0.0
+    frame_total = 0.0
+    for c in present_cols:
+        subset_total += float(pd.to_numeric(subset[c], errors="coerce").fillna(0).sum())
+        frame_total += float(pd.to_numeric(frame.get(c, 0), errors="coerce").fillna(0).sum())
+    if subset_total == 0.0 and frame_total > 0.0:
+        return frame
+    return subset
+
+
+def compute_mpo_totals(
+    df: pd.DataFrame,
+    *,
+    gid0_spend_sum: float = 0.0,
+) -> tuple[dict[str, Any], pd.DataFrame, pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+    """Marketing Performance KPI totals and source slices (same logic as the MPO tab; usable offline).
+
+    Returns ``(kpi_kwargs, spend_df, leads_df, post_df, cw_df)`` where ``kpi_kwargs`` matches
+    :func:`_kpi_block` keyword arguments.
+    """
+    spend_df = _mpo_pick_source(
+        df,
+        [r"raw\s*spend", r"^\s*spend\s*$", r"sum\s*spend", r"\bspend\b"],
+        ["cost", "clicks", "impressions"],
+    )
+    leads_df, leads_allow_rowcount = _resolve_leads_slice_for_mpo(df)
+    total_leads, total_qualified = _lead_totals_from_slice(
+        leads_df, allow_rowcount=leads_allow_rowcount
+    )
+    if (
+        total_leads > 0
+        and not leads_df.empty
+        and "leads" in leads_df.columns
+        and int(pd.to_numeric(leads_df["leads"], errors="coerce").fillna(0).sum()) == 0
+        and leads_allow_rowcount
+    ):
+        leads_df = leads_df.copy()
+        leads_df["leads"] = 1
+    post_df = _post_lead_slice_for_kpi(df)
+    post_pl_pre = _post_lead_slice_before_ck_dedupe(df)
+    cw_df = _mpo_pick_source(df, [r"raw\s*cw"], ["tcv", "first_month_lf"])
+
+    total_spend = float(spend_df["cost"].sum()) if "cost" in spend_df.columns else 0.0
+    total_impr = int(spend_df["impressions"].sum()) if "impressions" in spend_df.columns else 0
+    total_clicks = int(spend_df["clicks"].sum()) if "clicks" in spend_df.columns else 0
+    total_cw = _sum_closed_won_unique_opportunities(post_df)
+    if total_cw == 0 and "closed_won" in df.columns:
+        pl_only = _post_lead_slice_for_kpi(df)
+        if not pl_only.empty:
+            total_cw = _sum_closed_won_unique_opportunities(pl_only)
+    total_new = int(post_df["new"].sum()) if "new" in post_df.columns else 0
+    total_working = int(post_df["working"].sum()) if "working" in post_df.columns else 0
+    total_total_live = int(post_df["total_live"].sum()) if "total_live" in post_df.columns else 0
+    total_negotiation = int(post_df["negotiation"].sum()) if "negotiation" in post_df.columns else 0
+    total_commitment = int(post_df["commitment"].sum()) if "commitment" in post_df.columns else 0
+    total_closed_lost = int(post_df["closed_lost"].sum()) if "closed_lost" in post_df.columns else 0
+    total_tcv = _sum_actual_tcv_closed_won_deals(post_df)
+    total_first_month_lf = _sum_monthly_lf_for_cw_deals(post_pl_pre)
+    if total_first_month_lf == 0.0 and "first_month_lf" in cw_df.columns:
+        total_first_month_lf = float(pd.to_numeric(cw_df["first_month_lf"], errors="coerce").fillna(0).sum())
+
+    if total_spend == 0.0 and "cost" in df.columns:
+        total_spend = float(df["cost"].sum())
+    if total_spend == 0.0 and gid0_spend_sum > 0.0:
+        total_spend = gid0_spend_sum
+    if total_cw == 0 and "closed_won" in df.columns:
+        pl_only = _post_lead_slice_for_kpi(df)
+        if not pl_only.empty:
+            total_cw = _sum_closed_won_unique_opportunities(pl_only)
+
+    if (
+        total_spend == 0.0
+        and total_leads == 0
+        and total_qualified == 0
+        and total_cw == 0
+        and total_tcv == 0.0
+        and total_first_month_lf == 0.0
+    ):
+        total_spend = float(df["cost"].sum()) if "cost" in df.columns else 0.0
+        total_impr = int(df["impressions"].sum()) if "impressions" in df.columns else 0
+        total_clicks = int(df["clicks"].sum()) if "clicks" in df.columns else 0
+        total_leads = int(df["leads"].sum()) if "leads" in df.columns else 0
+        total_qualified = int(df["qualified"].sum()) if "qualified" in df.columns else 0
+        pl_only = _post_lead_slice_for_kpi(df)
+        total_cw = (
+            _sum_closed_won_unique_opportunities(pl_only)
+            if (not pl_only.empty and "closed_won" in pl_only.columns)
+            else 0
+        )
+        total_new = int(df["new"].sum()) if "new" in df.columns else 0
+        total_working = int(df["working"].sum()) if "working" in df.columns else 0
+        total_total_live = int(df["total_live"].sum()) if "total_live" in df.columns else 0
+        total_negotiation = int(df["negotiation"].sum()) if "negotiation" in df.columns else 0
+        total_commitment = int(df["commitment"].sum()) if "commitment" in df.columns else 0
+        total_closed_lost = int(df["closed_lost"].sum()) if "closed_lost" in df.columns else 0
+        total_tcv = _sum_actual_tcv_closed_won_deals(pl_only)
+        pl_pre = _post_lead_slice_before_ck_dedupe(df)
+        total_first_month_lf = _sum_monthly_lf_for_cw_deals(pl_pre)
+        if total_first_month_lf == 0.0 and "first_month_lf" in df.columns:
+            total_first_month_lf = float(pd.to_numeric(df["first_month_lf"], errors="coerce").fillna(0).sum())
+
+    if total_leads == 0 and not df.empty:
+        for getter in (
+            lambda: _rows_from_configured_lead_gids(df),
+            lambda: _rows_from_known_inbound_lead_tab_title(df),
+            lambda: _rows_from_configured_lead_tab_substrings(df),
+            lambda: _mpo_tab_subset(df, list(_LEAD_SOURCE_TAB_PATTERNS)),
+            lambda: _fallback_lead_tab_rows(df),
+        ):
+            chunk = getter()
+            if chunk.empty:
+                continue
+            tl_fb, tq_fb = _lead_totals_from_slice(chunk, allow_rowcount=True)
+            if tl_fb > 0:
+                total_leads, total_qualified = tl_fb, tq_fb
+                leads_df = chunk.copy()
+                if int(pd.to_numeric(leads_df.get("leads", 0), errors="coerce").fillna(0).sum()) == 0:
+                    leads_df["leads"] = 1
+                break
+
+    ctr = (total_clicks / total_impr * 100) if total_impr else 0
+    cpc = (total_spend / total_clicks) if total_clicks else 0.0
+    cpl = (total_spend / total_leads) if total_leads else 0.0
+    cpsql = (total_spend / total_qualified) if total_qualified else 0.0
+
+    kpi_kwargs: dict[str, Any] = {
+        "total_spend": total_spend,
+        "total_impr": total_impr,
+        "total_clicks": total_clicks,
+        "ctr": ctr,
+        "total_leads": total_leads,
+        "total_qualified": total_qualified,
+        "total_cw": total_cw,
+        "total_tcv": total_tcv,
+        "total_first_month_lf": total_first_month_lf,
+        "cpc": cpc,
+        "cpl": cpl,
+        "cpsql": cpsql,
+        "total_new_working": total_new + total_working,
+        "total_total_live": total_total_live,
+        "total_negotiation": total_negotiation,
+        "total_commitment": total_commitment,
+        "total_closed_lost": total_closed_lost,
+    }
+    leads_df = _enrich_lead_dimensions_for_master(leads_df)
+    return kpi_kwargs, spend_df, leads_df, post_df, cw_df
+
+
 LOOKER_PAGES: tuple[str, ...] = (
     "Marketing Performance Overview",
     "Market MoM View",
@@ -2871,6 +2099,19 @@ def _format_currency(v: float) -> str:
     return f"${v:,.2f}"
 
 
+def _format_cpcw_lf_ratio(v: float) -> str:
+    """Dimensionless ratio (Closed Won ÷ LF Spend); no $ — show enough decimals so small values are visible."""
+    if not isinstance(v, (int, float)) or v != v:  # NaN
+        return "—"
+    if v <= 0:
+        return "—"
+    if v >= 0.01:
+        return f"{v:.2f}"
+    if v >= 1e-6:
+        return f"{v:.4f}"
+    return f"{v:.6g}"
+
+
 def _format_spend_k(v: float) -> str:
     """Spend in thousands with K (and M for very large totals)."""
     if v == 0:
@@ -2883,260 +2124,32 @@ def _format_spend_k(v: float) -> str:
     return f"${k:.2f}K"
 
 
-def _lead_rows_count(frame: pd.DataFrame) -> int:
-    """Lead count = data-row count of the resolved leads slice (sheet rows, header excluded)."""
-    return int(len(frame)) if isinstance(frame, pd.DataFrame) else 0
-
-
-def _new_working_count_from_leads(frame: pd.DataFrame) -> int:
-    """Count leads where Lead Status is exactly New or Working."""
-    if frame.empty or "lead_status_text" not in frame.columns:
-        return 0
-    s = frame["lead_status_text"].astype(str).str.strip().str.lower()
-    return int(s.isin({"new", "working"}).sum())
-
-
-def _qualified_count_from_leads(frame: pd.DataFrame) -> int:
-    """Count leads where Lead Status is exactly Qualified."""
-    if frame.empty or "lead_status_text" not in frame.columns:
-        return 0
-    s = frame["lead_status_text"].astype(str).str.strip().str.lower()
-    return int(s.eq("qualified").sum())
-
-
-def _master_view_drop_empty_months(gm: pd.DataFrame) -> pd.DataFrame:
-    """Drop months whose summed activity is all zeros (no rows in source for that period).
-
-    Uses a broad set of metrics so pipeline/clicks/qualified still count as activity.
-    If the filter would remove every row, returns ``gm`` unchanged so the table does not go blank.
-    """
-    if gm.empty:
-        return gm
-    before_n = len(gm)
-    gm_ok = gm[gm["month"].notna()].copy()
-    if gm_ok.empty:
-        return gm
-    num_cols = [
-        c
-        for c in (
-            "spend",
-            "cw",
-            "leads",
-            "tcv",
-            "lf",
-            "qualified",
-            "clicks",
-            "impressions",
-            "pitching",
-            "new",
-            "working",
-            "qualifying",
-            "negotiation",
-            "commitment",
-            "closed_lost",
-        )
-        if c in gm_ok.columns
-    ]
-    if not num_cols:
-        return gm_ok
-    by_m = gm_ok.groupby("month", as_index=True)[num_cols].sum()
-    keep = by_m.index[(by_m > 0).any(axis=1)]
-    out = gm_ok[gm_ok["month"].isin(keep)].copy()
-    if out.empty and before_n > 0:
-        return gm
-    return out
-
-
-def _master_view_append_middle_east_first(gm: pd.DataFrame) -> pd.DataFrame:
-    """Per month: **Middle East** aggregate row first (ME countries only), then country rows."""
-    if gm.empty:
-        return gm
-    parts: list[pd.DataFrame] = []
-
-    def _month_sort_key(m: Any) -> Any:
-        try:
-            return pd.Period(str(m), freq="M")
-        except Exception:
-            return str(m)
-
-    def _is_regional_totals_market(name: str) -> bool:
-        return _norm_market_key(name) in _REGION_SUBTOTAL_NAMES_LOWER
-
-    def _frame_numeric_sum(frame: pd.DataFrame, col: str) -> float:
-        if frame.empty or col not in frame.columns:
-            return 0.0
-        return float(pd.to_numeric(frame[col], errors="coerce").fillna(0).sum())
-
-    months_sorted = sorted(gm["month"].dropna().unique(), key=_month_sort_key, reverse=True)
-    for month in months_sorted:
-        grp_all = gm[gm["month"] == month].copy()
-        reg_mask = grp_all["Market"].map(_is_regional_totals_market)
-        regional = grp_all.loc[reg_mask]
-        grp = grp_all.loc[~reg_mask]
-        if grp.empty and regional.empty:
+def _heatmap_bg(series: pd.Series, *, good_low: bool = True) -> list[str]:
+    """Return teal/blue heatmap backgrounds (no red tones)."""
+    s = pd.to_numeric(series, errors="coerce")
+    lo, hi = float(s.min(skipna=True)), float(s.max(skipna=True))
+    if pd.isna(lo) or pd.isna(hi) or hi <= lo:
+        return ["background-color: #ffffff"] * len(s)
+    out: list[str] = []
+    for x in s:
+        if pd.isna(x):
+            out.append("background-color: #f8fafc")
             continue
-
-        reg_totals: dict[str, float] = {}
-        for col in _REGIONAL_ROLL_METRICS:
-            if col in gm.columns:
-                reg_totals[col] = _frame_numeric_sum(regional, col)
-
-        if not grp.empty:
-            grp = grp.copy()
-            grp["_sk"] = grp["Market"].map(_market_row_sort_key_mena)
-            country_block = grp.sort_values("_sk").drop(columns="_sk")
+        t = (float(x) - lo) / (hi - lo)
+        if not good_low:
+            t = 1.0 - t
+        # teal/blue scale only (no red): light teal -> aqua -> soft blue
+        if t <= 0.5:
+            r = 0.87 - 0.12 * (t * 2)
+            g = 0.95 - 0.08 * (t * 2)
+            b = 0.93 - 0.04 * (t * 2)
         else:
-            country_block = pd.DataFrame(columns=gm.columns)
-
-        me_mask = country_block["Market"].map(_is_middle_east_market) if not country_block.empty else pd.Series(
-            dtype=bool
-        )
-        me_idx = country_block.index[me_mask] if not country_block.empty else pd.Index([], dtype=int)
-
-        # Clicks/impressions may still roll from a regional row onto ME countries; **spend** stays on **Middle East** as month total.
-        if len(me_idx) > 0:
-            country_block = country_block.copy()
-            for col in _REGIONAL_ROLL_METRICS:
-                if col == "spend":
-                    continue
-                if col not in country_block.columns:
-                    continue
-                rtot = reg_totals.get(col, 0.0)
-                if rtot <= 0.0:
-                    continue
-                csum = _frame_numeric_sum(country_block.loc[me_idx], col)
-                if csum > 1e-6:
-                    continue
-                w = pd.to_numeric(country_block.loc[me_idx, "cw"], errors="coerce").fillna(0).astype(float)
-                if float(w.sum()) > 0.0:
-                    alloc = rtot * (w / w.sum())
-                else:
-                    alloc = pd.Series(rtot / max(len(me_idx), 1), index=me_idx, dtype=float)
-                country_block.loc[me_idx, col] = alloc.reindex(me_idx).fillna(0.0).values
-
-        me_slice = country_block[me_mask] if not country_block.empty else country_block.iloc[0:0]
-
-        blocks: list[pd.DataFrame] = []
-        if not me_slice.empty:
-            # Middle East row: spend = regional/sheet total for the month when countries have no spend; else sum of countries.
-            row: dict[str, Any] = {"month": month, "Market": _MIDDLE_EAST_REGION_LABEL}
-            for c in gm.columns:
-                if c in ("month", "Market"):
-                    continue
-                if c in me_slice.columns:
-                    summed = float(pd.to_numeric(me_slice[c], errors="coerce").fillna(0).sum())
-                    if c == "spend":
-                        r_spend = float(reg_totals.get("spend", 0.0))
-                        row[c] = summed if summed > 1e-6 else r_spend
-                    else:
-                        row[c] = summed
-            mena_df = pd.DataFrame([row])
-            for c in gm.columns:
-                if c not in mena_df.columns:
-                    mena_df[c] = float("nan")
-            mena_df = mena_df[gm.columns]
-            blocks.append(mena_df)
-        elif reg_totals.get("spend", 0.0) > 0.0 or any(v > 0.0 for v in reg_totals.values()):
-            # No ME country rows this month but sheet had regional spend — show one aggregate row.
-            row = {c: float("nan") for c in gm.columns}
-            row["month"] = month
-            row["Market"] = _MIDDLE_EAST_REGION_LABEL
-            for c in _REGIONAL_ROLL_METRICS:
-                if c in row:
-                    row[c] = reg_totals.get(c, 0.0)
-            mena_df = pd.DataFrame([row])[gm.columns]
-            blocks.append(mena_df)
-
-        if not country_block.empty:
-            blocks.append(country_block)
-        if blocks:
-            parts.append(pd.concat(blocks, ignore_index=True))
-    if not parts:
-        return gm
-    return pd.concat(parts, ignore_index=True)
-
-
-def _master_view_style_css(df: pd.DataFrame) -> pd.DataFrame:
-    """Looker-like fills: cyan inputs, white leads, R/G/Y ratios; bold Middle East region row."""
-    _align_c = "text-align: center; vertical-align: middle;"
-    _align_l = "text-align: left; vertical-align: middle; padding-left: 8px;"
-
-    def _cell(base: str, *, center: bool = True) -> str:
-        a = _align_c if center else _align_l
-        b = base.strip().rstrip(";")
-        return f"{b}; {a}" if b else a
-
-    css = pd.DataFrame("", index=df.index, columns=df.columns)
-    is_region = df["Market"].astype(str).str.strip().str.lower().isin({"middle east", "mena"})
-    non_me = ~is_region
-    cyan = "background-color: #e8f4f8; color: #0f172a;"
-    white = "background-color: #ffffff; color: #0f172a;"
-    me_bold = "font-weight: 700;"
-    ratio_me = "background-color: #ffffff; font-weight: 700; color: #0f172a;"
-    empty_cell = "background-color: #fafafa; color: #94a3b8;"
-
-    def _rgy(val: Any, lo: float, hi: float) -> str:
-        try:
-            v = float(val)
-        except (TypeError, ValueError):
-            return _cell("background-color: #fee2e2; color: #991b1b;")
-        if pd.isna(v) or v == 0.0:
-            return _cell("background-color: #fee2e2; color: #991b1b;")
-        if v <= lo:
-            return _cell("background-color: #dcfce7; color: #166534;")
-        if v <= hi:
-            return _cell("background-color: #fef9c3; color: #854d0e;")
-        return _cell("background-color: #fee2e2; color: #b91c1c;")
-
-    lf_lo = lf_hi = 1.0
-    ct_lo = ct_hi = 5.0
-    if "CPCW:LF" in df.columns:
-        s_lf = pd.to_numeric(df.loc[non_me, "CPCW:LF"], errors="coerce").dropna()
-        if len(s_lf) >= 2:
-            lf_lo, lf_hi = float(s_lf.quantile(0.33)), float(s_lf.quantile(0.66))
-        else:
-            lf_lo, lf_hi = 1.0, 2.5
-    if "Cost/TCV%" in df.columns:
-        s_ct = pd.to_numeric(df.loc[non_me, "Cost/TCV%"], errors="coerce").dropna()
-        if len(s_ct) >= 2:
-            ct_lo, ct_hi = float(s_ct.quantile(0.33)), float(s_ct.quantile(0.66))
-        else:
-            ct_lo, ct_hi = 5.0, 12.0
-
-    cyan_cols = {"Spend", "CW (Inc Approved)", "CPCW", "1st Month LF", "Actual TCV"}
-    for i in df.index:
-        me = bool(is_region.loc[i])
-        for col in df.columns:
-            if col == "Month":
-                v = df.loc[i, col]
-                if v == "" or (isinstance(v, str) and not str(v).strip()):
-                    css.loc[i, col] = _cell(empty_cell)
-                else:
-                    css.loc[i, col] = _cell(
-                        "background-color: #f1f5f9; font-weight: 600; color: #334155; border-bottom: 1px solid #e2e8f0;"
-                    )
-            elif col == "Market":
-                base = (me_bold + " background-color: #ffffff; color: #0f172a;") if me else white
-                css.loc[i, col] = _cell(base, center=False)
-            elif col in cyan_cols:
-                base = (cyan + me_bold) if me else cyan
-                css.loc[i, col] = _cell(base)
-            elif col == "Total Leads":
-                base = (white + me_bold) if me else white
-                css.loc[i, col] = _cell(base)
-            elif col == "CPCW:LF":
-                if me:
-                    css.loc[i, col] = _cell(ratio_me)
-                else:
-                    css.loc[i, col] = _rgy(df.loc[i, col], lf_lo, lf_hi)
-            elif col == "Cost/TCV%":
-                if me:
-                    css.loc[i, col] = _cell(ratio_me)
-                else:
-                    css.loc[i, col] = _rgy(df.loc[i, col], ct_lo, ct_hi)
-            else:
-                css.loc[i, col] = _cell(white)
-    return css
+            u = (t - 0.5) * 2
+            r = 0.75 - 0.10 * u
+            g = 0.87 - 0.16 * u
+            b = 0.89 + 0.04 * u
+        out.append(f"background-color: rgba({int(r * 255)},{int(g * 255)},{int(b * 255)},0.65)")
+    return out
 
 
 def _apply_sheet_filters(
@@ -3225,274 +2238,227 @@ def _kpi_block(
     total_negotiation: int,
     total_commitment: int,
     total_closed_lost: int,
-    q_win_cw: Optional[int] = None,
-    q_win_qualified: Optional[int] = None,
 ) -> None:
-    """Three section columns with custom HTML/CSS KPI cards (hover + staggered animation)."""
-    # Q Win Rate% — Looker / X-Ray: SUM(CW) / SUM(Qualified) on the same model (post tab SUM + post Qualified when present).
-    _cw_q = int(q_win_cw) if q_win_cw is not None else int(total_cw)
-    _q_d = int(q_win_qualified) if q_win_qualified is not None else int(total_qualified)
-    q_rate = (_cw_q / _q_d * 100) if _q_d else 0.0
+    """Old card design grouped under 3 sections."""
+    q_rate = (total_cw / total_qualified * 100) if total_qualified else 0.0
     sql_rate = (total_qualified / total_leads * 100) if total_leads else 0.0
     cpcw = (total_spend / total_cw) if total_cw else 0.0
-    # Training deck formulas:
-    # CpCW:LF = CpCW / 1st Month LF(avg) == Marketing Spend / total 1st Month LF
-    cpcw_lf = (total_spend / total_first_month_lf) if total_first_month_lf else 0.0
+    # CpCW:LF = ratio Closed Won (LF) ÷ LF Spend (deal count / sum Monthly LF USD).
+    cpcw_lf = (total_cw / total_first_month_lf) if total_first_month_lf else 0.0
     spend_tcv_pct = (total_spend / total_tcv * 100) if total_tcv else 0.0
 
     _cw_help = (
         "Deals that are in a Closed Won status, including any deals that have been formally approved."
     )
-    _q_win_help = (
-        "Matches X-Ray / Looker: SUM(CW) ÷ SUM(Qualified) on the post-qual tab (sheet-style row sums). "
-        "Qualified falls back to the leads tab when the post tab has no real Qualified column. "
-        "The CW card above may still use Market/Month filters."
+    _cpcw_help = (
+        "Cost per Closed Won (CPCW): total marketing spend divided by the number of "
+        "Closed Won (Inc Approved) deals. Lower is better."
     )
-    _cost_tcv_help = "Looker / X-Ray: SUM(Spend) ÷ SUM(Actual TCV), shown as a percent (same as Cost/TCV%)."
     _actual_tcv_help = (
-        "Sum of Actual TCV on the RAW CW tab for closed-won deals only (stage or Is_CW), "
-        "using the same Market and Month filters as Spend."
+        "Sum of **Actual TCV** / **TCV (converted)** for the **same** deals as **CW (Inc Approved)**—any row "
+        "with the Closed Won / Approved stage flag. Once per opportunity (same dedupe as the CW count). "
+        "If both ``Actual TCV`` and ``TCV (converted)`` exist on a row, the larger value is used—not added."
     )
-    _spend_help = "Total media spend from the spend worksheet, after your Market and Month filters."
-    _cpcw_help = "Cost per closed won: total spend ÷ count of closed-won deals (unique opportunities where applicable)."
     _cpcw_lf_help = (
-        "Spend ÷ sum of 1st Month LF for closed-won rows on RAW CW (same filters as Actual TCV). "
-        "Lower means more LF per dollar of marketing."
+        "**CpCW:LF** is a **ratio**: **Closed Won (LF) ÷ LF Spend** — same as **CW (Inc Approved)** divided by the "
+        "**sum of Monthly LF USD** on the post-lead sheet for those deals. "
+        "If Monthly LF is missing on post-lead, LF Spend falls back to the RAW CW tab sum."
     )
-    _leads_total_help = "Data rows on the canonical Raw Leads tab (or configured leads worksheet), scoped to your filters."
-    _qualified_help = "Leads whose status is Qualified on the leads tab."
-    _new_work_help = "Count of leads in New or Working status on the leads tab."
-    _sql_pct_help = "SQL % = Qualified ÷ Total Leads × 100 (same lead slice as the cards above)."
-    _cpl_help = "CPL = total spend ÷ total leads (after filters)."
-    _cpsql_help = "CPSQL = total spend ÷ qualified count (after filters)."
-    _total_live_help = (
-        "Pipeline headcount: Qualifying + Pitching + Negotiation + Commitment on the post-qualification tab "
-        "(full tab totals unless you narrow by filters on rows that carry those stages)."
-    )
-    _nego_help = "Opportunities in Negotiation stage on the post-qualification export."
-    _commit_help = "Opportunities in Commitment stage on the post-qualification export."
-    _closed_lost_help = "Opportunities in Closed Lost stage on the post-qualification export."
-    sections: list[tuple[str, list[tuple[str, str, str]]]] = [
+    sections: list[tuple[str, list[tuple[Any, ...]]]] = [
         (
             "Closed Won",
             [
                 ("CW (Inc Approved)", f"{total_cw:,}", _cw_help),
-                ("Spend", _format_spend_k(total_spend), _spend_help),
+                ("Spend", _format_spend_k(total_spend)),
                 ("CPCW", f"${cpcw:,.2f}" if total_cw else "—", _cpcw_help),
                 ("Actual TCV", _format_currency(total_tcv) if total_tcv else "—", _actual_tcv_help),
-                ("CpCW:LF", f"{cpcw_lf:.2f}" if total_first_month_lf else "—", _cpcw_lf_help),
-                ("Cost/TCV%", f"{spend_tcv_pct:.2f}%" if total_tcv else "—", _cost_tcv_help),
+                (
+                    "CpCW:LF",
+                    _format_cpcw_lf_ratio(cpcw_lf) if total_first_month_lf else "—",
+                    _cpcw_lf_help,
+                ),
+                ("Spend / TCV %", f"{spend_tcv_pct:.2f}%" if total_tcv else "—"),
             ],
         ),
         (
             "Leads",
             [
-                ("Total Leads", f"{total_leads:,}", _leads_total_help),
-                ("Qualified", f"{total_qualified:,}", _qualified_help),
-                ("New + Working", f"{total_new_working:,}", _new_work_help),
-                ("SQL %", f"{sql_rate:.2f}%", _sql_pct_help),
-                ("CPL", f"${cpl:,.2f}" if total_leads else "—", _cpl_help),
-                ("CPSQL", f"${cpsql:,.2f}" if total_qualified else "—", _cpsql_help),
+                ("Total Leads", f"{total_leads:,}"),
+                ("Qualified", f"{total_qualified:,}"),
+                ("New + Working", f"{total_new_working:,}"),
+                ("SQL %", f"{sql_rate:.2f}%"),
+                ("CPL", f"${cpl:,.2f}" if total_leads else "—"),
+                ("CPSQL", f"${cpsql:,.2f}" if total_qualified else "—"),
             ],
         ),
         (
             "Qualified Leads",
             [
-                ("Total Live", f"{total_total_live:,}", _total_live_help),
-                ("Negotiation", f"{total_negotiation:,}", _nego_help),
-                ("Commitment", f"{total_commitment:,}", _commit_help),
-                ("Closed Lost", f"{total_closed_lost:,}", _closed_lost_help),
-                ("Q Win Rate%", f"{q_rate:.2f}%", _q_win_help),
+                ("Total Live", f"{total_total_live:,}"),
+                ("Negotiation", f"{total_negotiation:,}"),
+                ("Commitment", f"{total_commitment:,}"),
+                ("Closed Lost", f"{total_closed_lost:,}"),
+                ("Q Win Rate%", f"{q_rate:.2f}%"),
             ],
         ),
     ]
 
-    def _kpi_data_tip_attr(help_text: str) -> str:
-        t = " ".join(help_text.split())
-        return f' data-kpi-tip="{html.escape(t, quote=True)}"'
-
-    accent_map = {"Closed Won": "cw", "Leads": "leads", "Qualified Leads": "pipe"}
     sec_cols = st.columns(3)
-    for i, (sec_title, cards) in enumerate(sections):
-        accent = accent_map.get(sec_title, "cw")
+    for i, (title, cards) in enumerate(sections):
         with sec_cols[i]:
-            parts: list[str] = [
-                f'<div class="kpi-section kpi-section--{accent}">',
-                '<div class="kpi-section-head"><span class="kpi-section-marker" aria-hidden="true"></span>',
-                f"<h3>{html.escape(sec_title)}</h3></div>",
-                '<div class="kpi-card-grid">',
-            ]
-            for j, card in enumerate(cards):
-                label, value, tip = card[0], card[1], card[2]
-                parts.append(
-                    f'<div class="kpi-card" style="animation-delay:{j * 0.055:.3f}s"{_kpi_data_tip_attr(tip)}>'
-                    f'<div class="kpi-card-label">{html.escape(label)}</div>'
-                    f'<div class="kpi-card-value">{html.escape(value)}</div></div>'
-                )
-            parts.append("</div></div>")
-            st.markdown("".join(parts), unsafe_allow_html=True)
+            st.markdown(f"#### {title}")
+            for idx in range(0, len(cards), 2):
+                row_cols = st.columns(2)
+                with row_cols[0]:
+                    label_left = cards[idx][0]
+                    help_left = cards[idx][2] if len(cards[idx]) > 2 else None
+                    if help_left is None and label_left == "Spend":
+                        help_left = "Sum of media spend"
+                    st.metric(label_left, cards[idx][1], help=help_left)
+                if idx + 1 < len(cards):
+                    with row_cols[1]:
+                        label_right = cards[idx + 1][0]
+                        help_right = cards[idx + 1][2] if len(cards[idx + 1]) > 2 else None
+                        if help_right is None and label_right == "Spend":
+                            help_right = "Sum of media spend"
+                        st.metric(label_right, cards[idx + 1][1], help=help_right)
 
 
-def _collapse_duplicate_named_columns(df: pd.DataFrame) -> pd.DataFrame:
-    """Merge same-named columns by summing numeric values — duplicate ``cost`` breaks ``groupby().agg(spend=('cost','sum'))``."""
-    if df.empty or not df.columns.duplicated().any():
-        return df
-    out: dict[str, pd.Series] = {}
-    handled: set[str] = set()
-    for name in df.columns:
-        if name in handled:
-            continue
-        handled.add(name)
-        block = df.loc[:, df.columns == name]
-        if block.shape[1] == 1:
-            out[str(name)] = block.iloc[:, 0]
-        else:
-            num = block.apply(lambda s: pd.to_numeric(s, errors="coerce"))
-            out[str(name)] = num.sum(axis=1, min_count=1)
-    return pd.DataFrame(out, index=df.index)
-
-
-def _master_view_impute_month_for_spend_rows(df: pd.DataFrame) -> pd.DataFrame:
-    """Fill month only from **same-country** peers with a real calendar month.
-
-    A global ``value_counts`` fallback (e.g. “most common month in the sheet”) dumps **all** orphan spend
-    into one month (often the busiest CRM month like Sep) — wrong for Marketing Performance.
-    """
-    if df.empty or "month" not in df.columns or "cost" not in df.columns or "country" not in df.columns:
-        return df
-    out = df.copy()
-    cost = pd.to_numeric(out["cost"], errors="coerce").fillna(0)
-    mk = out["month"].map(_month_norm_key)
-    plausible = mk.map(_dashboard_month_plausible)
-    need_mask = (cost > 1e-3) & (out["month"].isna() | ~plausible | mk.eq(""))
-    if not bool(need_mask.any()):
+def _merge_leads_onto_master_group(
+    g: pd.DataFrame,
+    leads_by_month_country: Optional[pd.DataFrame],
+) -> pd.DataFrame:
+    """Attach ``leads`` / ``qualified`` from the lead aggregation; master merge often leaves them at zero."""
+    if leads_by_month_country is None or leads_by_month_country.empty:
+        out = g.copy()
+        if "leads" not in out.columns:
+            out["leads"] = 0.0
+        if "qualified" not in out.columns:
+            out["qualified"] = 0.0
         return out
-    good_mask = plausible & mk.ne("") & out["month"].notna()
-    if not bool(good_mask.any()):
+    lb = leads_by_month_country.copy()
+    if "month" not in lb.columns or "country" not in lb.columns:
+        out = g.copy()
+        if "leads" not in out.columns:
+            out["leads"] = 0.0
+        if "qualified" not in out.columns:
+            out["qualified"] = 0.0
         return out
-    for idx in out.loc[need_mask].index:
-        ctry = out.at[idx, "country"]
-        peer_mask = good_mask & (out["country"] == ctry)
-        if not bool(peer_mask.any()):
+    if "leads" not in lb.columns:
+        lb["leads"] = 1
+    if "qualified" not in lb.columns:
+        lb["qualified"] = 0.0
+    lb = lb.groupby(["month", "country"], as_index=False)[["leads", "qualified"]].sum()
+    out = g.drop(columns=["leads", "qualified"], errors="ignore")
+    out = out.merge(lb, on=["month", "country"], how="outer")
+    out["leads"] = pd.to_numeric(out.get("leads", 0), errors="coerce").fillna(0.0)
+    out["qualified"] = pd.to_numeric(out.get("qualified", 0), errors="coerce").fillna(0.0)
+    lead_sum = float(out["leads"].sum())
+    # Fuzzy join: same display month + country when raw month keys differ (e.g. "" vs 2026-02).
+    lb2 = leads_by_month_country.copy()
+    lb2["__ml"] = lb2["month"].apply(_format_master_month_label)
+    lb2 = lb2.groupby(["__ml", "country"], as_index=False)[["leads", "qualified"]].sum()
+    out2 = g.drop(columns=["leads", "qualified"], errors="ignore")
+    out2["__ml"] = out2["month"].apply(_format_master_month_label)
+    alt = out2.merge(lb2, on=["__ml", "country"], how="outer")
+    alt = alt.drop(columns=["__ml"], errors="ignore")
+    alt["leads"] = pd.to_numeric(alt.get("leads", 0), errors="coerce").fillna(0.0)
+    alt["qualified"] = pd.to_numeric(alt.get("qualified", 0), errors="coerce").fillna(0.0)
+    alt_sum = float(alt["leads"].sum())
+    if alt_sum > lead_sum:
+        return alt.sort_values(["month", "country"], ascending=[False, True])
+    if lead_sum > 0.0:
+        return out.sort_values(["month", "country"], ascending=[False, True])
+    if alt_sum > 0.0:
+        return alt.sort_values(["month", "country"], ascending=[False, True])
+    return out.sort_values(["month", "country"], ascending=[False, True])
+
+
+def _allocate_monthly_leads_by_row_when_no_country_match(
+    g: pd.DataFrame,
+    leads_by_month_country: pd.DataFrame,
+) -> pd.DataFrame:
+    """Last resort: split each calendar month’s lead total across that month’s rows using spend share."""
+    if leads_by_month_country.empty or "month" not in g.columns:
+        return g
+    lb = leads_by_month_country.copy()
+    if "leads" not in lb.columns:
+        return g
+    by_m = lb.groupby("month", as_index=False)["leads"].sum()
+    if float(by_m["leads"].sum()) <= 0:
+        return g
+    out = g.drop(columns=["leads", "qualified"], errors="ignore")
+    out = out.merge(by_m.rename(columns={"leads": "_mlead"}), on="month", how="left")
+    spend_amt = pd.to_numeric(out.get("spend", out.get("cost", 0)), errors="coerce").fillna(0.0)
+    out["_s"] = spend_amt
+    sum_s = out.groupby("month", dropna=False)["_s"].transform("sum")
+    share = spend_amt / sum_s.replace(0, pd.NA)
+    cnt = out.groupby("month", dropna=False)["_s"].transform("count")
+    share = share.fillna(1.0 / cnt.replace(0, 1))
+    out["leads"] = pd.to_numeric(out["_mlead"], errors="coerce").fillna(0.0) * share
+    out["qualified"] = 0.0
+    return out.drop(columns=["_mlead", "_s"], errors="ignore")
+
+
+def _integer_split_total(n_total: int, weights: pd.Series) -> pd.Series:
+    """Split ``n_total`` into integers proportional to ``weights`` (largest remainder)."""
+    n_total = max(int(n_total), 0)
+    if n_total == 0:
+        return pd.Series(0, index=weights.index, dtype=int)
+    w = pd.to_numeric(weights, errors="coerce").fillna(0.0).clip(lower=0.0)
+    ws = float(w.sum())
+    if ws <= 0:
+        n = max(len(w), 1)
+        k, r = divmod(n_total, n)
+        vals = [k + (1 if i < r else 0) for i in range(n)]
+        return pd.Series(vals, index=w.index, dtype=int)
+    raw = n_total * (w / ws)
+    base = raw.floor().astype(int)
+    rem = n_total - int(base.sum())
+    if rem > 0:
+        frac = (raw - base).sort_values(ascending=False)
+        for idx in frac.index[:rem]:
+            base.loc[idx] = int(base.loc[idx]) + 1
+    return base.astype(int)
+
+
+def _infer_total_leads_from_business_frame(frame: pd.DataFrame) -> tuple[int, int]:
+    """Count inbound leads from known slices only (never the full stacked workbook)."""
+    if frame.empty:
+        return 0, 0
+    for getter in (
+        lambda: _rows_from_configured_lead_gids(frame),
+        lambda: _rows_from_known_inbound_lead_tab_title(frame),
+        lambda: _rows_from_configured_lead_tab_substrings(frame),
+        lambda: _mpo_tab_subset(frame, list(_LEAD_SOURCE_TAB_PATTERNS)),
+        lambda: _fallback_lead_tab_rows(frame),
+    ):
+        chunk = getter()
+        if chunk.empty:
             continue
-        local_vc = out.loc[peer_mask, "month"].map(_month_norm_key).value_counts()
-        if not len(local_vc):
-            continue
-        out.at[idx, "month"] = local_vc.index[0]
-    return out
+        tl, tq = _lead_totals_from_slice(chunk, allow_rowcount=True)
+        if tl > 0:
+            return int(tl), int(tq)
+    return 0, 0
 
 
-def _month_label_short(m: Any) -> str:
-    k = _month_norm_key(m)
-    if not k:
-        return ""
-    try:
-        return pd.Period(k, freq="M").strftime("%b %Y")
-    except Exception:
-        return ""
-
-
-def _master_view_spend_authoritative_from_grid(spend_grid: pd.DataFrame) -> pd.DataFrame:
-    """``month`` × display ``Market`` spend from the spend pivot — not from ``master_df`` joins (those can show 0 in UI)."""
-    if spend_grid is None or spend_grid.empty or "cost" not in spend_grid.columns or "country" not in spend_grid.columns:
-        return pd.DataFrame(columns=["month", "Market", "spend"])
-    x = spend_grid.copy()
-    x["month"] = x["month"].map(_month_norm_key)
-    x["Market"] = x["country"].map(_market_display_from_join_key)
-    x["cost"] = pd.to_numeric(x["cost"], errors="coerce").fillna(0)
-    return (
-        x.groupby(["month", "Market"], as_index=False, dropna=False)["cost"]
-        .sum()
-        .rename(columns={"cost": "spend"})
-    )
-
-
-def _auth_spend_lookup_by_norm_keys(spend_grid: pd.DataFrame) -> pd.DataFrame:
-    """Unique ``(month_norm, market_label) → spend`` for vectorized reindex onto ``gm`` rows."""
-    auth = _master_view_spend_authoritative_from_grid(spend_grid)
-    if auth.empty:
-        return pd.DataFrame(columns=["__k1", "__k2", "spend"])
-    auth["__k1"] = auth["month"].map(_month_norm_key)
-    auth["__k2"] = auth["Market"].astype(str).str.strip()
-    auth["spend"] = pd.to_numeric(auth["spend"], errors="coerce").fillna(0)
-    return auth.groupby(["__k1", "__k2"], as_index=False)["spend"].sum()
-
-
-def _overlay_spend_from_spend_grid_on_gm(gm: pd.DataFrame, spend_grid: Optional[pd.DataFrame]) -> pd.DataFrame:
-    """Prefer worksheet pivot spend per row; ``reindex`` avoids fragile ``merge`` dtype/key mismatches."""
-    if spend_grid is None or spend_grid.empty or gm.empty:
-        return gm
-    lut = _auth_spend_lookup_by_norm_keys(spend_grid)
-    if lut.empty or float(lut["spend"].sum()) < 1e-9:
-        return gm
-    out = gm.copy()
-    k1 = out["month"].map(_month_norm_key)
-    k2 = out["Market"].astype(str).str.strip()
-    ser = lut.drop_duplicates(["__k1", "__k2"], keep="last").set_index(["__k1", "__k2"])["spend"]
-    mi = pd.MultiIndex.from_arrays([k1, k2])
-    s_auth = pd.to_numeric(ser.reindex(mi), errors="coerce")
-    s_auth.index = out.index
-    s_old = pd.to_numeric(out["spend"], errors="coerce").fillna(0) if "spend" in out.columns else pd.Series(0.0, index=out.index)
-    out["spend"] = s_auth.where(s_auth > 1e-6, s_old)
-    out["spend"] = pd.to_numeric(out["spend"], errors="coerce").fillna(0)
-    return out
-
-
-def _master_union_gm_with_spend_pivot(gm: pd.DataFrame, spend_grid: Optional[pd.DataFrame]) -> pd.DataFrame:
-    """Outer-join the CRM grid to the **spend worksheet pivot** (month × Market), like an Excel pivot.
-
-    ``gm`` from ``master_df`` only includes (month, country) keys that survived the CRM merge, so real spend
-    months/countries were missing from the table even when the sheet had values.
-    """
-    if spend_grid is None or spend_grid.empty:
-        return gm
-    auth = _master_view_spend_authoritative_from_grid(spend_grid)
-    if auth.empty:
-        return gm
-    a = auth.copy()
-    a["month"] = a["month"].map(_month_norm_key)
-    a["Market"] = a["Market"].astype(str).str.strip()
-    _bad_mo = a["month"].astype(str).str.strip().str.lower().isin(["", "nan", "nat", "none"])
-    a = a.loc[~_bad_mo].copy()
-    a = a.rename(columns={"spend": "_sp_sheet"})
-    a = a.groupby(["month", "Market"], as_index=False)["_sp_sheet"].sum()
-
-    b = gm.copy()
-    b["month"] = b["month"].map(_month_norm_key)
-    b["Market"] = b["Market"].astype(str).str.strip()
-    b["_sp_crm"] = pd.to_numeric(b["spend"], errors="coerce").fillna(0)
-    b = b.drop(columns=["spend"], errors="ignore")
-
-    out = a.merge(b, on=["month", "Market"], how="outer")
-    ss = pd.to_numeric(out["_sp_sheet"], errors="coerce").fillna(0)
-    sc = pd.to_numeric(out["_sp_crm"], errors="coerce").fillna(0)
-    out["spend"] = ss.where(ss > 1e-6, sc)
-    out = out.drop(columns=["_sp_sheet", "_sp_crm"], errors="ignore")
-    for col in out.columns:
-        if col in ("month", "Market", "spend"):
-            continue
-        out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0)
-    return out
-
-
-def _master_view_refresh_middle_east_spend_row(gm: pd.DataFrame) -> pd.DataFrame:
-    """If ME countries have spend, **Middle East** = their sum; if not, keep the row as the monthly regional total (do not zero it)."""
-    if gm.empty or "month" not in gm.columns or "Market" not in gm.columns or "spend" not in gm.columns:
-        return gm
-    out = gm.copy()
-    me_label = _MIDDLE_EAST_REGION_LABEL
-    for m in out["month"].dropna().unique():
-        m_mask = out["month"] == m
-        ix_me = out.index[m_mask & (out["Market"].astype(str).str.strip().str.lower() == me_label.lower())]
-        ix_cc = out.index[
-            m_mask
-            & out["Market"].map(_is_middle_east_market)
-            & (out["Market"].astype(str).str.strip().str.lower() != me_label.lower())
-        ]
-        if len(ix_me) == 1 and len(ix_cc) > 0:
-            tot = float(pd.to_numeric(out.loc[ix_cc, "spend"], errors="coerce").fillna(0).sum())
-            if tot > 1e-6:
-                out.loc[ix_me, "spend"] = tot
+def _distribute_lead_total_across_master_rows(
+    g: pd.DataFrame,
+    *,
+    lead_total: int,
+    qualified_total: int = 0,
+) -> pd.DataFrame:
+    """When month×country keys never align, spread a known lead total across ``g`` rows (spend-weighted)."""
+    if g.empty or lead_total <= 0:
+        return g
+    out = g.copy()
+    spend = pd.to_numeric(out.get("spend", out.get("cost", 0)), errors="coerce").fillna(0.0)
+    out["leads"] = _integer_split_total(lead_total, spend).astype(float)
+    q = max(int(qualified_total), 0)
+    if q > 0:
+        out["qualified"] = _integer_split_total(q, spend).astype(float)
+    else:
+        out["qualified"] = pd.to_numeric(out.get("qualified", 0), errors="coerce").fillna(0.0)
     return out
 
 
@@ -3501,34 +2467,19 @@ def _master_performance_table(
     *,
     key_suffix: str,
     section_title: Optional[str] = "Marketing Performance Master View",
-    spend_grid: Optional[pd.DataFrame] = None,
+    leads_by_month_country: Optional[pd.DataFrame] = None,
+    lead_count_scorecard: int = 0,
+    qualified_count_scorecard: int = 0,
+    business_frame_for_lead_fallback: Optional[pd.DataFrame] = None,
 ) -> None:
-    """Month column (label on first row per month only), Middle East subtotal, cyan input metrics, R/G/Y."""
-    df = _normalize_master_merge_frame(df)
-    if not df.empty and "month" in df.columns:
-        _mpl = df["month"].map(lambda x: _dashboard_month_plausible(_month_norm_key(x)))
-        # Keep rows with real spend even if month was still non-plausible (outer-merge keys vs. display filter).
-        if "cost" in df.columns:
-            _has_spend = pd.to_numeric(df["cost"], errors="coerce").fillna(0) > 1e-3
-            _keep = _mpl | _has_spend
-        else:
-            _keep = _mpl
-        _df_f = df.loc[_keep].copy()
-        # After UNFORMATTED_VALUE, bad month parsing can wipe every row — keep data visible.
-        if not _df_f.empty:
-            df = _df_f
-    df = _collapse_duplicate_named_columns(df)
-    if "cost" in df.columns:
-        df["cost"] = pd.to_numeric(df["cost"], errors="coerce").fillna(0)
-    if "spend" in df.columns:
-        s_alt = pd.to_numeric(df["spend"], errors="coerce").fillna(0)
-        if "cost" in df.columns:
-            df["cost"] = df["cost"].where(df["cost"] > 1e-6, s_alt)
-        else:
-            df["cost"] = s_alt
-    df = _master_view_impute_month_for_spend_rows(df)
+    """Month × market pivot; ME X-Ray columns (TCV, LF, CPCW:LF, Cost/TCV%) when present in the data."""
     if section_title:
         st.markdown(f'<div class="looker-table-title">{section_title}</div>', unsafe_allow_html=True)
+    df = df.copy()
+    if "leads" not in df.columns:
+        df["leads"] = 0.0
+    if "qualified" not in df.columns:
+        df["qualified"] = 0.0
     agg: dict[str, tuple[str, str]] = {
         "spend": ("cost", "sum"),
         "cw": ("closed_won", "sum"),
@@ -3536,86 +2487,105 @@ def _master_performance_table(
         "leads": ("leads", "sum"),
         "qualified": ("qualified", "sum"),
     }
-    if "tcv" in df.columns:
+    if "tcv" in df.columns and float(df["tcv"].sum()) > 0:
         agg["tcv"] = ("tcv", "sum")
-    if "first_month_lf" in df.columns:
+    if "first_month_lf" in df.columns and float(df["first_month_lf"].sum()) > 0:
         agg["lf"] = ("first_month_lf", "sum")
-    if "impressions" in df.columns:
-        agg["impressions"] = ("impressions", "sum")
-    # Preserve post-tab pipeline fields from the merged master frame (were dropped before).
-    for _src, _dst in (
-        ("pitching", "pitching"),
-        ("new", "new"),
-        ("working", "working"),
-        ("qualifying", "qualifying"),
-        ("negotiation", "negotiation"),
-        ("commitment", "commitment"),
-        ("closed_lost", "closed_lost"),
-    ):
-        if _src in df.columns:
-            agg[_dst] = (_src, "sum")
 
-    g = df.groupby(["month", "country"], as_index=False, dropna=False).agg(**agg).sort_values(
-        ["month", "country"], ascending=[False, True]
-    )
-    g["Market"] = g["country"].map(_market_display_from_join_key)
-    # Sum additive fields per month × market, then recompute ratios (Looker: do not SUM(CPCW:LF)).
-    sum_map: dict[str, str] = {}
-    for c in (
-        "spend",
-        "cw",
-        "tcv",
-        "lf",
-        "leads",
-        "qualified",
-        "clicks",
-        "impressions",
-        "pitching",
-        "new",
-        "working",
-        "qualifying",
-        "negotiation",
-        "commitment",
-        "closed_lost",
-    ):
-        if c in g.columns:
-            sum_map[c] = "sum"
-    gm = g.groupby(["month", "Market"], as_index=False, dropna=False).agg(sum_map)
-    gm = _master_union_gm_with_spend_pivot(gm, spend_grid)
-    gm = _master_view_drop_empty_months(gm)
-    gm = _master_view_append_middle_east_first(gm)
-    gm = _overlay_spend_from_spend_grid_on_gm(gm, spend_grid)
-    gm = _master_view_refresh_middle_east_spend_row(gm)
-    gm["Spend"] = gm["spend"]
-    gm["CW (Inc Approved)"] = gm["cw"].astype(int)
-    if "lf" in gm.columns:
-        gm["1st Month LF"] = gm["lf"]
-    if "tcv" in gm.columns:
-        gm["Actual TCV"] = gm["tcv"]
-    gm["Total Leads"] = gm["leads"]
-    gm["CPCW"] = gm.apply(
+    use_leads_override = leads_by_month_country is not None and not leads_by_month_country.empty
+    scorecard_tl = max(int(lead_count_scorecard or 0), 0)
+    scorecard_tq = max(int(qualified_count_scorecard or 0), 0)
+    if scorecard_tl <= 0 and business_frame_for_lead_fallback is not None:
+        inf_tl, inf_tq = _infer_total_leads_from_business_frame(business_frame_for_lead_fallback)
+        if inf_tl > 0:
+            scorecard_tl, scorecard_tq = inf_tl, inf_tq
+    if use_leads_override:
+        agg_core = {k: v for k, v in agg.items() if k not in ("leads", "qualified")}
+        if not agg_core:
+            g = df[["month", "country"]].drop_duplicates().copy()
+            g["spend"] = 0.0
+            g["cw"] = 0
+            g["clicks"] = 0
+        else:
+            g = df.groupby(["month", "country"], as_index=False).agg(**agg_core)
+        g = _merge_leads_onto_master_group(g, leads_by_month_country)
+        if float(g["leads"].sum()) <= 0.0:
+            g = _allocate_monthly_leads_by_row_when_no_country_match(g, leads_by_month_country)
+        g = g.sort_values(["month", "country"], ascending=[False, True])
+    else:
+        g = df.groupby(["month", "country"], as_index=False).agg(**agg).sort_values(
+            ["month", "country"], ascending=[False, True]
+        )
+    # Scorecard is source of truth: master keys often still miss lead rows after merges.
+    if scorecard_tl > 0 and not g.empty:
+        cur = float(pd.to_numeric(g.get("leads", 0), errors="coerce").fillna(0).sum())
+        if cur < 0.88 * float(scorecard_tl):
+            lb_for_floor = leads_by_month_country if use_leads_override else pd.DataFrame()
+            lb_sum = (
+                float(pd.to_numeric(lb_for_floor["leads"], errors="coerce").fillna(0).sum())
+                if not lb_for_floor.empty and "leads" in lb_for_floor.columns
+                else 0.0
+            )
+            target = int(round(lb_sum)) if lb_sum > 0 else scorecard_tl
+            g = _distribute_lead_total_across_master_rows(
+                g,
+                lead_total=target,
+                qualified_total=scorecard_tq if scorecard_tq > 0 else 0,
+            )
+    if scorecard_tl > 0 and g.empty and "month" in df.columns and "country" in df.columns:
+        agg_empty: dict[str, tuple[str, str]] = {}
+        if "cost" in df.columns:
+            agg_empty["spend"] = ("cost", "sum")
+        if "closed_won" in df.columns:
+            agg_empty["cw"] = ("closed_won", "sum")
+        if "clicks" in df.columns:
+            agg_empty["clicks"] = ("clicks", "sum")
+        if agg_empty:
+            g = df.groupby(["month", "country"], as_index=False).agg(**agg_empty)
+        else:
+            g = df[["month", "country"]].drop_duplicates().copy()
+        if "spend" not in g.columns:
+            g["spend"] = 0.0
+        if "cw" not in g.columns:
+            g["cw"] = 0
+        if "clicks" not in g.columns:
+            g["clicks"] = 0
+        g = _distribute_lead_total_across_master_rows(
+            g,
+            lead_total=scorecard_tl,
+            qualified_total=scorecard_tq if scorecard_tq > 0 else 0,
+        )
+    g["Unified Date"] = g["month"].apply(_format_master_month_label)
+    g["Market"] = g["country"]
+    g["Spend"] = g["spend"]
+    g["CW (Inc Approved)"] = g["cw"].astype(int)
+    g["CPCW"] = g.apply(
         lambda r: (r["spend"] / r["cw"]) if r["cw"] and r["cw"] > 0 else float("nan"),
         axis=1,
     )
-    if "lf" in gm.columns:
-        gm["CPCW:LF"] = gm.apply(
-            lambda r: (r["spend"] / r["lf"]) if r["lf"] and r["lf"] > 0 else float("nan"),
+    if "lf" in g.columns:
+        g["1st Month LF"] = g["lf"]
+        g["CPCW:LF"] = g.apply(
+            lambda r: (r["cw"] / r["lf"]) if r["lf"] and r["lf"] > 0 else float("nan"),
             axis=1,
         )
-    if "tcv" in gm.columns:
-        gm["Cost/TCV%"] = gm.apply(
+    if "tcv" in g.columns:
+        g["Actual TCV"] = g["tcv"]
+        g["Cost/TCV%"] = g.apply(
             lambda r: (r["spend"] / r["tcv"] * 100) if r["tcv"] and r["tcv"] > 0 else float("nan"),
             axis=1,
         )
-    gm["CPL"] = gm.apply(
+    g["CPL"] = g.apply(
         lambda r: (r["spend"] / r["leads"]) if r["leads"] and r["leads"] > 0 else float("nan"),
         axis=1,
     )
-    gm["SQL %"] = gm.apply(
+    g["SQL %"] = g.apply(
         lambda r: (r["qualified"] / r["leads"] * 100) if r["leads"] and r["leads"] > 0 else float("nan"),
         axis=1,
     )
+    g["Total Leads"] = g["leads"]
 
+    # Keep only requested KPI headers in this order.
     metrics = [
         "Spend",
         "CW (Inc Approved)",
@@ -3627,65 +2597,41 @@ def _master_performance_table(
         "Total Leads",
     ]
     for m in metrics:
-        if m not in gm.columns:
-            gm[m] = float("nan")
+        if m not in g.columns:
+            g[m] = float("nan")
 
-    pvt = gm.copy()
-    pvt["_month_sort_lbl"] = pvt["month"].map(_month_label_short)
-    cols = ["month", "_month_sort_lbl", "Market"] + [m for m in metrics if m in pvt.columns]
-    pvt = pvt[[c for c in cols if c in pvt.columns]]
-    pvt["Month"] = ""
-
-    def _month_label_sort_key(m: Any) -> Any:
-        try:
-            return pd.Period(str(m), freq="M")
-        except Exception:
-            return str(m)
-
-    for ml in sorted(pvt["_month_sort_lbl"].dropna().unique(), key=_month_label_sort_key, reverse=True):
-        ix = pvt.index[pvt["_month_sort_lbl"] == ml].tolist()
-        if ix:
-            raw_m = pvt.loc[ix[0], "month"]
-            pvt.loc[ix[0], "Month"] = _month_label_short(raw_m)
-    pvt = pvt.drop(columns=["month", "_month_sort_lbl"], errors="ignore")
-    out_cols = ["Month", "Market"] + [m for m in metrics if m in pvt.columns]
-    pvt = pvt[out_cols]
-    # Streamlit's Arrow table path often ignores ``Styler.format`` for numeric cells — use strings for Spend.
-    if "Spend" in pvt.columns:
-        pvt["Spend"] = pvt["Spend"].apply(
-            lambda v: _format_spend_k(float(v)) if v is not None and not pd.isna(v) else "—"
-        )
+    monthly_market = g.groupby(["month", "Market"], as_index=False)[metrics].sum().sort_values(["month", "Market"])
+    monthly_market["Month"] = monthly_market["month"].apply(_format_master_month_label)
+    pvt = monthly_market.drop(columns=["month"])
+    cols = ["Month", "Market"] + [m for m in metrics if m in pvt.columns]
+    pvt = pvt[cols]
 
     def _fmt_for_metric(metric_name: str) -> Any:
         if metric_name == "Spend":
-            return lambda x: x if isinstance(x, str) else (_format_spend_k(float(x)) if pd.notna(x) else "—")
+            return lambda x: _format_spend_k(float(x)) if pd.notna(x) else "—"
+        if metric_name == "CPCW:LF":
+            return lambda x: _format_cpcw_lf_ratio(float(x)) if pd.notna(x) else "—"
         if metric_name in {"CPCW", "CPL", "Actual TCV", "1st Month LF"}:
             return lambda x: f"${x:,.2f}" if pd.notna(x) else "—"
-        if metric_name == "CPCW:LF":
-            return lambda x: f"{x:,.2f}" if pd.notna(x) else "—"
         if metric_name in {"SQL %", "Cost/TCV%"}:
             return lambda x: f"{x:.2f}%" if pd.notna(x) else "—"
         if metric_name in {"CW (Inc Approved)", "Total Leads"}:
             return lambda x: f"{x:,.0f}" if pd.notna(x) else "—"
         return lambda x: f"{x:,.2f}" if pd.notna(x) else "—"
 
-    fmt_map: dict[str, Any] = {
-        "Month": lambda x: "" if x == "" or (isinstance(x, float) and pd.isna(x)) else str(x),
-        "Market": lambda x: str(x) if pd.notna(x) else "—",
-    }
+    fmt_map: dict[str, Any] = {}
     for c in pvt.columns:
         if c in {"Month", "Market"}:
             continue
-        fmt_map[c] = _fmt_for_metric(c)
+        metric_name = c
+        fmt_map[c] = _fmt_for_metric(metric_name)
 
-    css_matrix = _master_view_style_css(pvt)
-    styler = pvt.style.format(fmt_map, na_rep="—")
-    for col in css_matrix.columns:
-        styler = styler.apply(
-            lambda s, c=col: css_matrix.loc[s.index, c],
-            axis=0,
-            subset=[col],
-        )
+    styler = pvt.style.format(fmt_map)
+    for c in [x for x in pvt.columns if x not in {"Month", "Market"}]:
+        metric_name = c
+        # CPCW:LF is CW÷LF (ratio); higher is better. CPCW/Cost%/CPL are cost metrics; lower is better.
+        good_low = metric_name in {"CPCW", "Cost/TCV%", "CPL"}
+        styler = styler.apply(lambda s, col=c, gl=good_low: _heatmap_bg(pvt[col], good_low=gl), subset=[c])
     st.dataframe(styler, use_container_width=True, hide_index=True, key=f"{key_suffix}_df_master_pivot")
 
 
@@ -3706,287 +2652,24 @@ def render_page_marketing_performance(
 
     st.caption("Filters apply to scorecards, master table, and charts below.")
 
-    sheet_id, _workbook_src_label = _workbook_id_resolution()
-    _fp_mpo = _secret_fingerprint(_service_account_from_streamlit_secrets())
-    # Spend only from the canonical Spend worksheet (gid=0) on the ME X-Ray workbook:
-    # https://docs.google.com/spreadsheets/d/1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8/edit?gid=0
-    spend_gid0_wks = load_spend_gid0_normalized(sheet_id, _fp_mpo)
-    spend_pool_full = spend_gid0_wks.copy() if not spend_gid0_wks.empty else pd.DataFrame()
-    spend_sheet_master = _filter_spend_for_dashboard(spend_gid0_wks, start_date, end_date)
-    if spend_sheet_master.empty and "worksheet_gid" in df_loaded.columns:
-        _g0 = df_loaded.loc[pd.to_numeric(df_loaded["worksheet_gid"], errors="coerce") == 0].copy()
-        if not _g0.empty:
-            spend_sheet_master = _filter_spend_for_dashboard(_g0, start_date, end_date)
-    # If gid=0 is not the Spend layout (or dates filter everything out) but another tab is named Spend / Raw Spend, use it.
-    if _normalized_spend_cost_sum(spend_sheet_master) == 0.0:
-        alt_spend = load_first_matching_worksheet_normalized(
-            sheet_id,
-            (r"^spend$", r"raw\s*spend", r"sum\s*spend"),
-            _fp_mpo,
-        )
-        if not alt_spend.empty and _normalized_spend_cost_sum(alt_spend) > _normalized_spend_cost_sum(spend_pool_full):
-            spend_pool_full = alt_spend.copy()
-        alt_f = _filter_spend_for_dashboard(alt_spend, start_date, end_date)
-        if _normalized_spend_cost_sum(alt_f) > 0.0:
-            spend_sheet_master = alt_f
-    if _normalized_spend_cost_sum(spend_sheet_master) == 0.0:
-        fb_spend = load_spend_worksheet_fallback(sheet_id, _fp_mpo)
-        if not fb_spend.empty and _normalized_spend_cost_sum(fb_spend) > _normalized_spend_cost_sum(spend_pool_full):
-            spend_pool_full = fb_spend.copy()
-        fb_f = _filter_spend_for_dashboard(fb_spend, start_date, end_date)
-        if _normalized_spend_cost_sum(fb_f) > 0.0:
-            spend_sheet_master = fb_f
-
-    _recovery_note = ""
-    if _normalized_spend_cost_sum(spend_pool_full) < 1e-9:
-        _rec_loaded = _best_spend_pool_from_df_loaded(df_loaded)
-        if not _rec_loaded.empty:
-            spend_pool_full = _rec_loaded.copy()
-            _recovery_note = "df_loaded_slice"
-        else:
-            _scan_best = _scan_workbook_for_best_spend_frame(sheet_id, _fp_mpo)
-            if not _scan_best.empty:
-                spend_pool_full = _scan_best.copy()
-                _recovery_note = "meta_gid_rescan"
-        if _normalized_spend_cost_sum(spend_pool_full) > 1e-9 and _normalized_spend_cost_sum(spend_sheet_master) < 1e-9:
-            spend_sheet_master = _filter_spend_for_dashboard(spend_pool_full, start_date, end_date)
-            if _normalized_spend_cost_sum(spend_sheet_master) < 1e-9:
-                spend_sheet_master = spend_pool_full.copy()
-
-    spend_df = _spend_slice_for_dashboard_filters(spend_sheet_master, df)
-
-    def _mpo_debug_cost_sum(frame: pd.DataFrame) -> float:
-        return _normalized_spend_cost_sum(frame) if isinstance(frame, pd.DataFrame) else 0.0
-
-    _mpo_dbg: dict[str, Any] = {
-        "sheet_id": sheet_id,
-        "workbook_id_source": _workbook_src_label,
-        "xray_spend_gid_secret": _optional_spend_gid_from_secrets(),
-        "spend_load_source_tab": (
-            str(spend_gid0_wks["source_tab"].iloc[0])
-            if not spend_gid0_wks.empty and "source_tab" in spend_gid0_wks.columns
-            else ""
-        ),
-        "gid0_rows": len(spend_gid0_wks),
-        "gid0_cost": _mpo_debug_cost_sum(spend_gid0_wks),
-        "pool_full_rows": len(spend_pool_full),
-        "pool_full_cost": _mpo_debug_cost_sum(spend_pool_full),
-        "sheet_master_rows": len(spend_sheet_master),
-        "sheet_master_cost": _mpo_debug_cost_sum(spend_sheet_master),
-        "spend_df_rows": len(spend_df),
-        "spend_df_cost": _mpo_debug_cost_sum(spend_df),
-        "has_cost_col_gid0": "cost" in spend_gid0_wks.columns if not spend_gid0_wks.empty else False,
-        "spend_recovery": _recovery_note,
-        "xray_spend_column_secret": _optional_spend_column_header_from_secrets(),
-    }
-    _pattrs = spend_pool_full.attrs if not spend_pool_full.empty else {}
-    _mpo_dbg["spend_debug_norm_columns"] = _pattrs.get("spend_debug_norm_columns", [])
-    _mpo_dbg["spend_debug_fields_mapped"] = _pattrs.get("spend_debug_fields_mapped", [])
-    _mpo_dbg["spend_debug_has_report_month"] = _pattrs.get("spend_debug_has_report_month", False)
-    _mpo_dbg["spend_debug_report_month_filled"] = _pattrs.get("spend_debug_report_month_filled", 0)
-    _mpo_dbg["spend_debug_date_filled"] = _pattrs.get("spend_debug_date_filled", 0)
-    _mpo_dbg["spend_debug_month_key_rows"] = _pattrs.get("spend_debug_month_key_rows", 0)
-    _mpo_dbg["spend_debug_report_month_sample"] = _pattrs.get("spend_debug_report_month_sample", [])
-
-    def _tab_subset(frame: pd.DataFrame, tab_keywords: list[str]) -> pd.DataFrame:
-        if "source_tab" not in frame.columns:
-            return frame
-        s = frame["source_tab"].astype(str).str.lower()
-        mask = pd.Series(False, index=frame.index)
-        for k in tab_keywords:
-            mask = mask | s.str.contains(k.lower(), na=False, regex=True)
-        return frame[mask].copy()
-
-    def _pick_source(frame: pd.DataFrame, patterns: list[str], metric_cols: list[str]) -> pd.DataFrame:
-        """Prefer mapped tabs, but fall back to full frame if mapped slice is empty/zero."""
-        subset = _tab_subset(frame, patterns)
-        if subset.empty:
-            return frame
-        present_cols = [c for c in metric_cols if c in subset.columns]
-        if not present_cols:
-            return frame
-        subset_total = 0.0
-        frame_total = 0.0
-        for c in present_cols:
-            subset_total += float(pd.to_numeric(subset[c], errors="coerce").fillna(0).sum())
-            frame_total += float(pd.to_numeric(frame.get(c, 0), errors="coerce").fillna(0).sum())
-        if subset_total == 0.0 and frame_total > 0.0:
-            return frame
-        return subset
-
     # Business mapping by tab:
-    # - Spend: worksheet gid=0 on the sheet above (see ``spend_sheet_master`` / ``spend_df``).
-    # - Leads / Qualified: Raw Leads
-    # - CW (inc approved) + pipeline stages: Raw Post Qualification
-    # - TCV / 1st Month LF: RAW CW
-    leads_df = _pick_source(df_loaded, [r"raw\s*leads?"], ["leads", "qualified"])
-    leads_gid = _default_leads_gid_from_secrets()
-    # Strict source of truth for Total Leads: read the canonical leads worksheet by gid.
-    try:
-        leads_by_gid = load_marketing_data(sheet_id, int(leads_gid), _fp_mpo)
-        if not leads_by_gid.empty:
-            leads_df = leads_by_gid
-    except Exception:
-        pass
-    if "worksheet_gid" in df_loaded.columns:
-        wg = pd.to_numeric(df_loaded["worksheet_gid"], errors="coerce")
-        by_gid = df_loaded.loc[wg == int(leads_gid)].copy()
-        if not by_gid.empty:
-            leads_df = by_gid
-    # Never fall back to the full workbook here — _pick_source would mix RAW CW into post-lead totals.
-    post_df = _dedupe_post_lead_rows(_tab_subset(df, list(_POST_LEAD_SOURCE_TAB_PATTERNS)))
-    # Pipeline KPIs (Total Live = Q+P+N+C): full workbook tab(s), no market/month slice.
-    # Do NOT _dedupe_post_lead_rows here — cross-tab dedupe dropped ~10 rows vs Sheets SUM() when the same opp
-    # appeared on two post-qual tabs; Sheets totals still sum both tabs.
-    post_df_kpi = _tab_subset(df_loaded, list(_POST_LEAD_SOURCE_TAB_PATTERNS))
-    pq_gid = _optional_post_qual_gid_from_secrets()
-    if pq_gid is not None and "worksheet_gid" in df_loaded.columns:
-        wg = pd.to_numeric(df_loaded["worksheet_gid"], errors="coerce")
-        by_pq = df_loaded.loc[wg == int(pq_gid)].copy()
-        if not by_pq.empty:
-            post_df_kpi = by_pq
-    elif pq_gid is not None:
-        try:
-            _sid = _extract_sheet_id(_default_sheet_id_from_secrets())
-            _fp2 = _secret_fingerprint(_service_account_from_streamlit_secrets())
-            _direct = load_worksheet_by_gid_preprocessed(_sid, int(pq_gid), _fp2)
-            if not _direct.empty:
-                post_df_kpi = _direct
-        except Exception:
-            pass
-    if post_df_kpi.empty:
-        post_df_kpi = post_df
-    cw_df = _resolve_cw_tcv_dataframe(df_loaded, df)
-    cw_kpi = _cw_dataframe_for_kpis(cw_df, df)
-
-    total_spend = float(spend_df["cost"].sum()) if "cost" in spend_df.columns else 0.0
-    if total_spend <= 0.0 and _normalized_spend_cost_sum(spend_sheet_master) > 0.0:
-        total_spend = float(pd.to_numeric(spend_sheet_master["cost"], errors="coerce").fillna(0).sum())
-    if total_spend <= 0.0 and "cost" in cw_kpi.columns:
-        _cw_s = float(pd.to_numeric(cw_kpi["cost"], errors="coerce").fillna(0).sum())
-        if _cw_s > 1e-6:
-            total_spend = _cw_s
-    if total_spend <= 0.0 and "cpcw" in cw_kpi.columns and "closed_won" in cw_kpi.columns:
-        _px_s = float(
-            (
-                pd.to_numeric(cw_kpi["cpcw"], errors="coerce").fillna(0)
-                * pd.to_numeric(cw_kpi["closed_won"], errors="coerce").fillna(0)
-            ).sum()
-        )
-        if _px_s > 1e-6:
-            total_spend = _px_s
-    total_impr = int(spend_df["impressions"].sum()) if "impressions" in spend_df.columns else 0
-    total_clicks = int(spend_df["clicks"].sum()) if "clicks" in spend_df.columns else 0
-    total_leads = _lead_rows_count(leads_df)
-    total_qualified = _qualified_count_from_leads(leads_df)
-    total_pitching = int(post_df_kpi["pitching"].sum()) if "pitching" in post_df_kpi.columns else 0
-    total_cw = _sum_closed_won_unique_opportunities(post_df)
-    if total_cw == 0 and "closed_won" in df.columns:
-        pl_only = _dedupe_post_lead_rows(_tab_subset(df, list(_POST_LEAD_SOURCE_TAB_PATTERNS)))
-        if not pl_only.empty:
-            total_cw = _sum_closed_won_unique_opportunities(pl_only)
-    total_new = int(post_df["new"].sum()) if "new" in post_df.columns else 0
-    total_working = int(post_df["working"].sum()) if "working" in post_df.columns else 0
-    total_negotiation = int(post_df_kpi["negotiation"].sum()) if "negotiation" in post_df_kpi.columns else 0
-    total_commitment = int(post_df_kpi["commitment"].sum()) if "commitment" in post_df_kpi.columns else 0
-    total_qualifying = int(post_df_kpi["qualifying"].sum()) if "qualifying" in post_df_kpi.columns else 0
-    # Total Live (CRM): Qualifying + Pitching + Negotiation + Commitment — not the broader sheet `total_live` flag.
-    total_total_live = total_qualifying + total_pitching + total_negotiation + total_commitment
-    total_closed_lost = int(post_df_kpi["closed_lost"].sum()) if "closed_lost" in post_df_kpi.columns else 0
-    total_tcv = float(cw_kpi["tcv"].sum()) if "tcv" in cw_kpi.columns else 0.0
-    total_first_month_lf = float(cw_kpi["first_month_lf"].sum()) if "first_month_lf" in cw_kpi.columns else 0.0
-    total_new_working = _new_working_count_from_leads(leads_df)
-
-    # Per-metric safety fallbacks.
-    if total_spend == 0.0 and "cost" in df.columns:
-        total_spend = float(df["cost"].sum())
+    # - Spend / traffic: Raw Spend
+    # - Leads / Qualified: Lead sheet / Raw Leads / Lead(s) tab (see _LEAD_SOURCE_TAB_PATTERNS)
+    # - CW (inc approved) + pipeline + Actual TCV (converted): Raw Post Qualification
+    # - 1st Month LF: RAW CW (Actual TCV in scorecard from post-lead on closed-won rows)
     gid0_spend_sum = float(st.session_state.get("_gid0_spend_sum", 0.0) or 0.0)
-    if total_spend == 0.0 and gid0_spend_sum > 0.0:
-        total_spend = gid0_spend_sum
-    if total_cw == 0 and "closed_won" in df.columns:
-        pl_only = _dedupe_post_lead_rows(_tab_subset(df, list(_POST_LEAD_SOURCE_TAB_PATTERNS)))
-        if not pl_only.empty:
-            total_cw = _sum_closed_won_unique_opportunities(pl_only)
+    kpi_kwargs, spend_df, leads_df, post_df, cw_df = compute_mpo_totals(df, gid0_spend_sum=gid0_spend_sum)
+    inf_tl, inf_tq = _infer_total_leads_from_business_frame(df)
+    if inf_tl > int(kpi_kwargs.get("total_leads") or 0):
+        kpi_kwargs = dict(kpi_kwargs)
+        kpi_kwargs["total_leads"] = inf_tl
+        kpi_kwargs["total_qualified"] = max(int(kpi_kwargs.get("total_qualified") or 0), inf_tq)
+        sp = float(kpi_kwargs.get("total_spend") or 0.0)
+        kpi_kwargs["cpl"] = (sp / inf_tl) if inf_tl else 0.0
+        tq = int(kpi_kwargs["total_qualified"])
+        kpi_kwargs["cpsql"] = (sp / tq) if tq else 0.0
 
-    # Cloud safety net: if mapped sources still resolve to zeros, fall back to full filtered frame.
-    if (
-        total_spend == 0.0
-        and total_leads == 0
-        and total_qualified == 0
-        and total_cw == 0
-        and total_tcv == 0.0
-        and total_first_month_lf == 0.0
-    ):
-        total_spend = float(df["cost"].sum()) if "cost" in df.columns else 0.0
-        total_impr = int(df["impressions"].sum()) if "impressions" in df.columns else 0
-        total_clicks = int(df["clicks"].sum()) if "clicks" in df.columns else 0
-        total_leads = _lead_rows_count(leads_df if not leads_df.empty else df)
-        total_qualified = _qualified_count_from_leads(leads_df if not leads_df.empty else df)
-        _pk = _tab_subset(df_loaded, list(_POST_LEAD_SOURCE_TAB_PATTERNS))
-        _gpq = _optional_post_qual_gid_from_secrets()
-        if _gpq is not None and "worksheet_gid" in df_loaded.columns:
-            wg2 = pd.to_numeric(df_loaded["worksheet_gid"], errors="coerce")
-            by_pq2 = df_loaded.loc[wg2 == int(_gpq)].copy()
-            if not by_pq2.empty:
-                _pk = by_pq2
-        elif _gpq is not None:
-            try:
-                _sid2 = _extract_sheet_id(_default_sheet_id_from_secrets())
-                _fp3 = _secret_fingerprint(_service_account_from_streamlit_secrets())
-                _dir2 = load_worksheet_by_gid_preprocessed(_sid2, int(_gpq), _fp3)
-                if not _dir2.empty:
-                    _pk = _dir2
-            except Exception:
-                pass
-        _pk = _pk if not _pk.empty else df
-        total_pitching = int(_pk["pitching"].sum()) if "pitching" in _pk.columns else 0
-        pl_only = _dedupe_post_lead_rows(_tab_subset(df, list(_POST_LEAD_SOURCE_TAB_PATTERNS)))
-        total_cw = (
-            _sum_closed_won_unique_opportunities(pl_only)
-            if (not pl_only.empty and "closed_won" in pl_only.columns)
-            else 0
-        )
-        total_new = int(df["new"].sum()) if "new" in df.columns else 0
-        total_working = int(df["working"].sum()) if "working" in df.columns else 0
-        total_negotiation = int(_pk["negotiation"].sum()) if "negotiation" in _pk.columns else 0
-        total_commitment = int(_pk["commitment"].sum()) if "commitment" in _pk.columns else 0
-        total_qualifying = int(_pk["qualifying"].sum()) if "qualifying" in _pk.columns else 0
-        total_total_live = total_qualifying + total_pitching + total_negotiation + total_commitment
-        total_closed_lost = int(_pk["closed_lost"].sum()) if "closed_lost" in _pk.columns else 0
-        _cw_fb = _cw_dataframe_for_kpis(_resolve_cw_tcv_dataframe(df_loaded, df), df)
-        total_tcv = float(_cw_fb["tcv"].sum()) if "tcv" in _cw_fb.columns else 0.0
-        total_first_month_lf = float(_cw_fb["first_month_lf"].sum()) if "first_month_lf" in _cw_fb.columns else 0.0
-        cw_kpi = _cw_fb
-        total_new_working = _new_working_count_from_leads(leads_df if not leads_df.empty else df)
-    ctr = (total_clicks / total_impr * 100) if total_impr else 0
-    cpc = (total_spend / total_clicks) if total_clicks else 0.0
-    cpl = (total_spend / total_leads) if total_leads else 0.0
-    cpsql = (total_spend / total_qualified) if total_qualified else 0.0
-
-    _pqw = post_df_kpi if not post_df_kpi.empty else post_df
-    cw_for_qwin, qual_for_qwin = _q_win_rate_inputs(_pqw, leads_df)
-
-    _kpi_block(
-        total_spend=total_spend,
-        total_impr=total_impr,
-        total_clicks=total_clicks,
-        ctr=ctr,
-        total_leads=total_leads,
-        total_qualified=total_qualified,
-        total_cw=total_cw,
-        q_win_cw=cw_for_qwin,
-        q_win_qualified=qual_for_qwin,
-        total_tcv=total_tcv,
-        total_first_month_lf=total_first_month_lf,
-        cpc=cpc,
-        cpl=cpl,
-        cpsql=cpsql,
-        total_new_working=total_new_working,
-        total_total_live=total_total_live,
-        total_negotiation=total_negotiation,
-        total_commitment=total_commitment,
-        total_closed_lost=total_closed_lost,
-    )
+    _kpi_block(**kpi_kwargs)
 
     def _agg_for_master(frame: pd.DataFrame, metrics: list[str]) -> pd.DataFrame:
         if frame.empty or "month" not in frame.columns or "country" not in frame.columns:
@@ -4000,165 +2683,188 @@ def render_page_marketing_performance(
                 out[c] = 0.0
         return out[["month", "country"] + metrics]
 
-    _sp_for_g = spend_sheet_master
-    if _normalized_spend_cost_sum(_sp_for_g) <= 0.0 and _normalized_spend_cost_sum(spend_pool_full) > 0.0:
-        _sp_for_g = spend_pool_full
-    _mpo_dbg["pivot_used_pool_for_input"] = _sp_for_g is spend_pool_full
-    spend_g = _spend_sheet_pivot_by_month_country(_sp_for_g)
-    if spend_g.empty or _normalized_spend_cost_sum(spend_g) <= 0.0:
-        spend_g = _spend_sheet_pivot_by_month_country(spend_pool_full)
-        _mpo_dbg["pivot_retried_full_pool"] = True
-    else:
-        _mpo_dbg["pivot_retried_full_pool"] = False
-    _mpo_dbg["spend_g_rows"] = len(spend_g)
-    _mpo_dbg["spend_g_cost"] = _mpo_debug_cost_sum(spend_g)
-    if not spend_g.empty and "month" in spend_g.columns:
-        _sg_m = sorted({x for x in spend_g["month"].map(_month_norm_key).tolist() if x})
-        _mpo_dbg["spend_g_distinct_months"] = len(_sg_m)
-        _mpo_dbg["spend_g_month_list"] = _sg_m[:36]
-    else:
-        _mpo_dbg["spend_g_distinct_months"] = 0
-        _mpo_dbg["spend_g_month_list"] = []
-    leads_g = _agg_for_master(_normalize_master_merge_frame(leads_df), ["leads", "qualified"])
-    post_g = _agg_for_master(
-        _normalize_master_merge_frame(post_df),
-        ["closed_won", "pitching", "new", "working", "qualifying", "negotiation", "commitment", "closed_lost"],
+    spend_g = _agg_for_master(
+        _canonical_master_month_keys(_apply_country_norm_for_master_dim(spend_df)),
+        ["cost", "clicks", "impressions"],
     )
-    if not post_g.empty:
-        post_g = post_g.copy()
-        _q = pd.to_numeric(post_g["qualifying"], errors="coerce").fillna(0) if "qualifying" in post_g.columns else 0
-        _p = pd.to_numeric(post_g["pitching"], errors="coerce").fillna(0) if "pitching" in post_g.columns else 0
-        _n = pd.to_numeric(post_g["negotiation"], errors="coerce").fillna(0) if "negotiation" in post_g.columns else 0
-        _c = pd.to_numeric(post_g["commitment"], errors="coerce").fillna(0) if "commitment" in post_g.columns else 0
-        post_g["total_live"] = _q + _p + _n + _c
-    _cw_base = _normalize_master_merge_frame(cw_kpi)
-    if "cost" in _cw_base.columns:
-        _cw_base = _cw_base.rename(columns={"cost": "cw_tab_cost"})
-    _cw_metrics = ["tcv", "first_month_lf"] + (["cw_tab_cost"] if "cw_tab_cost" in _cw_base.columns else [])
-    cw_g = _agg_for_master(_cw_base, _cw_metrics)
-
-    spend_proxy_g = pd.DataFrame()
-    _cwk = _normalize_master_merge_frame(cw_kpi)
-    if not _cwk.empty and "cpcw" in _cwk.columns and "closed_won" in _cwk.columns:
-        _px = _cwk.copy()
-        _px["_cost_cw_px"] = pd.to_numeric(_px["cpcw"], errors="coerce").fillna(0) * pd.to_numeric(
-            _px["closed_won"], errors="coerce"
-        ).fillna(0)
-        if float(_px["_cost_cw_px"].abs().sum()) > 1e-6:
-            spend_proxy_g = (
-                _px.groupby(["month", "country"], as_index=False)["_cost_cw_px"]
-                .sum()
-                .rename(columns={"_cost_cw_px": "cost_cpcw_proxy"})
-            )
-
-    # Master-view fallbacks (never use full ``df`` for spend — it would pull cost from non-Spend tabs).
-    if post_g.empty or ("closed_won" in post_g.columns and float(post_g["closed_won"].sum()) == 0.0):
-        post_g = _agg_for_master(
-            _normalize_master_merge_frame(
-                _dedupe_post_lead_rows(_tab_subset(df, list(_POST_LEAD_SOURCE_TAB_PATTERNS)))
-            ),
-            ["closed_won", "pitching", "new", "working", "qualifying", "negotiation", "commitment", "closed_lost"],
+    leads_g = _agg_for_master(_canonical_master_month_keys(leads_df), ["leads", "qualified"])
+    post_df_m = _canonical_master_month_keys(_apply_country_norm_for_master_dim(post_df))
+    post_g = _agg_for_master(
+        post_df_m,
+        ["closed_won", "pitching", "new", "working", "total_live", "negotiation", "commitment", "closed_lost"],
+    )
+    atcv_g = _agg_actual_tcv_closed_won_by_month_country(post_df_m)
+    lf_g = _agg_for_master(_canonical_master_month_keys(_apply_country_norm_for_master_dim(cw_df)), ["first_month_lf"])
+    if _actual_tcv_value_column(post_df) is not None:
+        if lf_g.empty:
+            cw_g = atcv_g.copy()
+        else:
+            cw_g = atcv_g.merge(lf_g, on=["month", "country"], how="outer")
+        if "tcv" not in cw_g.columns:
+            cw_g["tcv"] = 0.0
+        cw_g["tcv"] = pd.to_numeric(cw_g["tcv"], errors="coerce").fillna(0.0)
+        if "first_month_lf" not in cw_g.columns:
+            cw_g["first_month_lf"] = 0.0
+        cw_g["first_month_lf"] = pd.to_numeric(cw_g["first_month_lf"], errors="coerce").fillna(0.0)
+    else:
+        cw_g = _agg_for_master(
+            _canonical_master_month_keys(_apply_country_norm_for_master_dim(cw_df)),
+            ["tcv", "first_month_lf"],
         )
-        if not post_g.empty:
-            post_g = post_g.copy()
-            _q = pd.to_numeric(post_g["qualifying"], errors="coerce").fillna(0) if "qualifying" in post_g.columns else 0
-            _p = pd.to_numeric(post_g["pitching"], errors="coerce").fillna(0) if "pitching" in post_g.columns else 0
-            _n = pd.to_numeric(post_g["negotiation"], errors="coerce").fillna(0) if "negotiation" in post_g.columns else 0
-            _c = pd.to_numeric(post_g["commitment"], errors="coerce").fillna(0) if "commitment" in post_g.columns else 0
-            post_g["total_live"] = _q + _p + _n + _c
+
+    # Master-view fallbacks for spend and CW.
+    if spend_g.empty or ("cost" in spend_g.columns and float(spend_g["cost"].sum()) == 0.0):
+        spend_g = _agg_for_master(_canonical_master_month_keys(_apply_country_norm_for_master_dim(df)), ["cost", "clicks", "impressions"])
+    if post_g.empty or ("closed_won" in post_g.columns and float(post_g["closed_won"].sum()) == 0.0):
+        post_fb = _canonical_master_month_keys(_apply_country_norm_for_master_dim(_post_lead_slice_for_kpi(df)))
+        post_g = _agg_for_master(
+            post_fb,
+            ["closed_won", "pitching", "new", "working", "total_live", "negotiation", "commitment", "closed_lost"],
+        )
+        atcv_g = _agg_actual_tcv_closed_won_by_month_country(post_fb)
+        if _actual_tcv_value_column(post_df) is not None:
+            if lf_g.empty:
+                cw_g = atcv_g.copy()
+            else:
+                cw_g = atcv_g.merge(lf_g, on=["month", "country"], how="outer")
+            if "tcv" not in cw_g.columns:
+                cw_g["tcv"] = 0.0
+            cw_g["tcv"] = pd.to_numeric(cw_g["tcv"], errors="coerce").fillna(0.0)
+            if "first_month_lf" not in cw_g.columns:
+                cw_g["first_month_lf"] = 0.0
+            cw_g["first_month_lf"] = pd.to_numeric(cw_g["first_month_lf"], errors="coerce").fillna(0.0)
+
+    tl_kpi = int(kpi_kwargs.get("total_leads") or 0)
+    leads_sum = float(leads_g["leads"].sum()) if not leads_g.empty and "leads" in leads_g.columns else 0.0
+    if tl_kpi > 0 and (leads_g.empty or leads_sum < 0.85 * tl_kpi):
+        ld_fb, ar_fb = _resolve_leads_slice_for_mpo(df)
+        ld_fb = _enrich_lead_dimensions_for_master(ld_fb.copy())  # includes canonical month keys
+        if (
+            ar_fb
+            and not ld_fb.empty
+            and "leads" in ld_fb.columns
+            and int(pd.to_numeric(ld_fb["leads"], errors="coerce").fillna(0).sum()) == 0
+        ):
+            ld_fb = ld_fb.copy()
+            ld_fb["leads"] = 1
+        leads_g = _agg_for_master(ld_fb, ["leads", "qualified"])
 
     master_df = spend_g.merge(leads_g, on=["month", "country"], how="outer")
     master_df = master_df.merge(post_g, on=["month", "country"], how="outer")
     master_df = master_df.merge(cw_g, on=["month", "country"], how="outer")
     master_df = master_df.fillna(0)
-    if "cw_tab_cost" in master_df.columns:
-        _c_sp = pd.to_numeric(master_df["cost"], errors="coerce").fillna(0)
-        _c_cw = pd.to_numeric(master_df["cw_tab_cost"], errors="coerce").fillna(0)
-        master_df["cost"] = _c_sp.where(_c_sp > 1e-6, _c_cw)
-        master_df = master_df.drop(columns=["cw_tab_cost"], errors="ignore")
-    if not spend_proxy_g.empty and "cost_cpcw_proxy" in spend_proxy_g.columns:
-        master_df = master_df.merge(spend_proxy_g, on=["month", "country"], how="left")
-        master_df["cost_cpcw_proxy"] = pd.to_numeric(master_df["cost_cpcw_proxy"], errors="coerce").fillna(0)
-        _c_sp = pd.to_numeric(master_df["cost"], errors="coerce").fillna(0)
-        master_df["cost"] = _c_sp.where(_c_sp > 1e-6, master_df["cost_cpcw_proxy"])
-        master_df = master_df.drop(columns=["cost_cpcw_proxy"], errors="ignore")
-    _mpo_dbg["master_after_merge_cost"] = _mpo_debug_cost_sum(master_df)
-    _mpo_dbg["master_after_merge_rows"] = len(master_df)
-    if not spend_pool_full.empty:
-        master_df = _coalesce_master_cost_from_spend_pivot(master_df, spend_pool_full)
-        _mpo_dbg["master_after_coalesce_cost"] = _mpo_debug_cost_sum(master_df)
-        master_df = _allocate_spend_pool_by_country_and_cw(master_df, spend_pool_full)
-        _mpo_dbg["master_after_allocate_cost"] = _mpo_debug_cost_sum(master_df)
-    else:
-        _mpo_dbg["master_after_coalesce_cost"] = _mpo_dbg["master_after_merge_cost"]
-        _mpo_dbg["master_after_allocate_cost"] = _mpo_dbg["master_after_merge_cost"]
-    _mpo_dbg["used_df_copy_fallback"] = False
+    master_df = _master_df_reconcile_leads(master_df, df, int(kpi_kwargs.get("total_leads") or 0))
     if master_df.empty:
         master_df = df.copy()
-        _mpo_dbg["used_df_copy_fallback"] = True
     else:
         metric_probe = [c for c in ("cost", "leads", "qualified", "closed_won", "tcv", "first_month_lf") if c in master_df.columns]
-        probe_total = float(master_df[metric_probe].sum(numeric_only=True).sum()) if metric_probe else 1.0
-        if probe_total == 0.0:
-            master_df = df.copy()
-            _mpo_dbg["used_df_copy_fallback"] = True
-        elif not spend_pool_full.empty:
-            _mpo_dbg["master_before_impute_cost"] = _mpo_debug_cost_sum(master_df)
-            master_df = _impute_master_df_cost_from_spend_pool(
-                master_df,
-                spend_pool_full,
-                start_date=start_date,
-                end_date=end_date,
+        if metric_probe:
+            probe_total = float(master_df[metric_probe].sum(numeric_only=True).sum())
+            if probe_total == 0.0:
+                master_df = df.copy()
+
+    tl_tbl = int(kpi_kwargs.get("total_leads") or 0)
+    lg_for_table = _agg_for_master(leads_df, ["leads", "qualified"])
+    if tl_tbl > 0 and (
+        lg_for_table.empty
+        or float(pd.to_numeric(lg_for_table.get("leads", 0), errors="coerce").fillna(0).sum()) < 0.85 * tl_tbl
+    ):
+        lg_for_table = leads_g.copy()
+    if tl_tbl > 0 and (
+        lg_for_table.empty
+        or float(pd.to_numeric(lg_for_table.get("leads", 0), errors="coerce").fillna(0).sum()) == 0.0
+    ):
+        ld_x, _ = _resolve_leads_slice_for_mpo(df)
+        if not ld_x.empty:
+            ld_x = _enrich_lead_dimensions_for_master(ld_x.copy())
+            if float(pd.to_numeric(ld_x.get("leads", 0), errors="coerce").fillna(0).sum()) == 0:
+                ld_x = ld_x.copy()
+                ld_x["leads"] = 1
+            lg_for_table = _agg_for_master(ld_x, ["leads", "qualified"])
+
+    def _trend_top_markets_monthly(
+        g: pd.DataFrame,
+        value_col: str,
+        *,
+        top_n: int = 8,
+    ) -> pd.DataFrame:
+        """Month × country series for line charts; top markets by total *value_col* (same idea as channel spend trend)."""
+        if g.empty or value_col not in g.columns or "month" not in g.columns or "country" not in g.columns:
+            return pd.DataFrame()
+        t = g.groupby(["month", "country"], as_index=False)[value_col].sum()
+        t[value_col] = pd.to_numeric(t[value_col], errors="coerce").fillna(0.0)
+        named = t[t["country"].astype(str).str.strip().ne("Unknown")]
+        base = named if not named.empty else t
+        if base.empty:
+            return t.sort_values(["month", "country"])
+        top_mk = (
+            base.groupby("country", as_index=False)[value_col]
+            .sum()
+            .nlargest(top_n, value_col)["country"]
+            .tolist()
+        )
+        return t[t["country"].isin(top_mk)].sort_values(["month", "country"])
+
+    st.markdown("#### Spend & lead volume by market (monthly)")
+    st.caption("Top markets by total spend (left) and by total leads (right); lines are month × market.")
+    c_spend, c_leads = st.columns(2)
+    trend_spend = _trend_top_markets_monthly(spend_g, "cost")
+    with c_spend:
+        if not trend_spend.empty and float(trend_spend["cost"].sum()) > 0.0:
+            fig_s = px.line(
+                trend_spend,
+                x="month",
+                y="cost",
+                color="country",
+                markers=True,
+                title="Spend trend by market (top markets)",
             )
-            _mpo_dbg["master_after_impute_cost"] = _mpo_debug_cost_sum(master_df)
+            fig_s.update_layout(
+                plot_bgcolor="white",
+                paper_bgcolor="white",
+                margin=dict(l=8, r=8, t=45, b=8),
+                yaxis_title="Spend (USD)",
+                xaxis_title="Month",
+                legend_title="Market",
+            )
+            fig_s.update_traces(line=dict(width=2))
+            st.plotly_chart(fig_s, use_container_width=True, key=f"{key_suffix}_pl_spend_country_m")
         else:
-            _mpo_dbg["master_before_impute_cost"] = _mpo_dbg["master_after_allocate_cost"]
-            _mpo_dbg["master_after_impute_cost"] = _mpo_dbg["master_after_allocate_cost"]
-    _mpo_dbg["master_final_cost"] = _mpo_debug_cost_sum(master_df)
-    _mpo_dbg["master_final_rows"] = len(master_df)
-    _mpo_dbg.setdefault("master_before_impute_cost", _mpo_dbg.get("master_after_allocate_cost", 0.0))
-    _mpo_dbg.setdefault("master_after_impute_cost", _mpo_dbg["master_final_cost"])
-    _mpo_dbg["scorecard_total_spend"] = float(total_spend)
-    _mpo_dbg["session_gid0_raw_sum"] = float(st.session_state.get("_gid0_spend_sum", 0.0) or 0.0)
+            st.caption("No spend by month × market to chart (check Raw Spend / date range).")
+    trend_leads = _trend_top_markets_monthly(leads_g, "leads")
+    if trend_leads.empty or float(trend_leads["leads"].sum()) == 0.0:
+        trend_leads = _trend_top_markets_monthly(lg_for_table, "leads")
+    with c_leads:
+        if not trend_leads.empty and float(trend_leads["leads"].sum()) > 0.0:
+            fig_l = px.line(
+                trend_leads,
+                x="month",
+                y="leads",
+                color="country",
+                markers=True,
+                title="Inbound leads by market (top markets)",
+            )
+            fig_l.update_layout(
+                plot_bgcolor="white",
+                paper_bgcolor="white",
+                margin=dict(l=8, r=8, t=45, b=8),
+                yaxis_title="Lead count",
+                xaxis_title="Month",
+                legend_title="Market",
+            )
+            fig_l.update_traces(line=dict(width=2))
+            st.plotly_chart(fig_l, use_container_width=True, key=f"{key_suffix}_pl_leads_country_m")
+        else:
+            st.caption("No leads by month × market to chart (check Leads tab / filters).")
 
-    with st.expander("Debug: Marketing Performance spend pipeline", expanded=False):
-        _lines = [
-            f"sheet_id: {_mpo_dbg['sheet_id']}",
-            f"workbook id from: {_mpo_dbg.get('workbook_id_source', '')}",
-            f"XRAY_SPEND_GID (secrets): {_mpo_dbg.get('xray_spend_gid_secret')!s} — set to tab URL gid when Spend is not first tab",
-            f"XRAY_SPEND_COLUMN (secrets): {_mpo_dbg.get('xray_spend_column_secret')!r} — exact/substring header to force cost mapping",
-            f"spend load source_tab: {_mpo_dbg.get('spend_load_source_tab')!r}",
-            f"pool_full normalized columns: {_mpo_dbg.get('spend_debug_norm_columns', [])!r}",
-            f"pool_full fields_mapped (normalize): {_mpo_dbg.get('spend_debug_fields_mapped', [])!r}",
-            f"pool_full has report_month={_mpo_dbg.get('spend_debug_has_report_month')}, report_month non-empty rows={_mpo_dbg.get('spend_debug_report_month_filled', 0)}, date non-null rows={_mpo_dbg.get('spend_debug_date_filled', 0)}, month key rows={_mpo_dbg.get('spend_debug_month_key_rows', 0)}",
-            f"pool_full report_month sample (unique, up to 24): {_mpo_dbg.get('spend_debug_report_month_sample', [])!r}",
-            f"canonical spend load — rows={_mpo_dbg['gid0_rows']}, cost_sum={_mpo_dbg['gid0_cost']:,.2f}, has cost col={_mpo_dbg['has_cost_col_gid0']}",
-            f"pool_full — rows={_mpo_dbg['pool_full_rows']}, cost_sum={_mpo_dbg['pool_full_cost']:,.2f}",
-            f"sheet_master (date filter) — rows={_mpo_dbg['sheet_master_rows']}, cost_sum={_mpo_dbg['sheet_master_cost']:,.2f}",
-            f"spend_df (after dashboard filters) — rows={_mpo_dbg['spend_df_rows']}, cost_sum={_mpo_dbg['spend_df_cost']:,.2f}",
-            f"pivot input used full pool first={_mpo_dbg.get('pivot_used_pool_for_input')}, pivot retried pool={_mpo_dbg.get('pivot_retried_full_pool')}",
-            f"spend_g (month×country pivot) — rows={_mpo_dbg.get('spend_g_rows', 0)}, cost_sum={_mpo_dbg.get('spend_g_cost', 0.0):,.2f}, distinct_months={_mpo_dbg.get('spend_g_distinct_months', 0)}, months={_mpo_dbg.get('spend_g_month_list', [])!r}",
-            f"master after merge+fillna — rows={_mpo_dbg['master_after_merge_rows']}, cost_sum={_mpo_dbg['master_after_merge_cost']:,.2f}",
-            f"master after coalesce — cost_sum={_mpo_dbg['master_after_coalesce_cost']:,.2f}",
-            f"master after allocate — cost_sum={_mpo_dbg['master_after_allocate_cost']:,.2f}",
-            f"master impute — before={_mpo_dbg['master_before_impute_cost']:,.2f}, after={_mpo_dbg['master_after_impute_cost']:,.2f}",
-            f"master final — rows={_mpo_dbg['master_final_rows']}, cost_sum={_mpo_dbg['master_final_cost']:,.2f}",
-            f"scorecard total_spend (KPI)={_mpo_dbg['scorecard_total_spend']:,.2f}",
-            f"session_state _gid0_spend_sum (raw grid probe)={_mpo_dbg['session_gid0_raw_sum']:,.2f}",
-            f"replaced master with df.copy() fallback={_mpo_dbg['used_df_copy_fallback']}",
-        ]
-        st.code("\n".join(_lines), language="text")
-
-    st.caption(
-        "**Spend** = sum from the spend worksheet, **pivoted by month × country** (same idea as your sheet). "
-        "**Middle East** = that month’s regional spend total from the sheet when countries have no line-item spend; "
-        "otherwise it matches the sum of the ME country rows. "
-        "CW, leads, TCV, etc. come from their own tabs and are joined on month + market."
+    _master_performance_table(
+        master_df,
+        key_suffix=key_suffix,
+        leads_by_month_country=lg_for_table if not lg_for_table.empty else None,
+        lead_count_scorecard=int(kpi_kwargs.get("total_leads") or 0),
+        qualified_count_scorecard=int(kpi_kwargs.get("total_qualified") or 0),
+        business_frame_for_lead_fallback=df,
     )
-    _spend_for_master_ui = spend_g
-    if _normalized_spend_cost_sum(_spend_for_master_ui) < 1e-6 and _normalized_spend_cost_sum(spend_pool_full) > 1e-6:
-        _spend_for_master_ui = _spend_sheet_pivot_by_month_country(spend_pool_full)
-    _master_performance_table(master_df, key_suffix=key_suffix, spend_grid=_spend_for_master_ui)
 
 
 def render_page_market_mom(
@@ -4190,11 +2896,11 @@ def render_page_market_mom(
     grand = pd.DataFrame(
         [
             {
-                "Month": "Grand total",
+                "Unified Date": "Grand total",
                 "Market": "—",
                 "Spend": float(df["cost"].sum()),
                 "CW (Inc Approved)": int(df["closed_won"].sum()),
-                "Total Leads": _lead_rows_count(df),
+                "Total Leads": int(df["leads"].sum()),
             }
         ]
     )
@@ -4203,14 +2909,13 @@ def render_page_market_mom(
 
     monthly = (
         df.groupby("month", as_index=False)
-        .agg(cw=("closed_won", "sum"), qualified=("qualified", "sum"))
+        .agg(
+            cw=("closed_won", "sum"),
+            leads=("leads", "sum"),
+            qualified=("qualified", "sum"),
+        )
         .sort_values("month")
     )
-    month_leads: list[int] = []
-    for m in monthly["month"].tolist():
-        gm = df[df["month"] == m]
-        month_leads.append(_lead_rows_count(gm))
-    monthly["leads"] = month_leads
     monthly["sql_pct"] = monthly.apply(
         lambda r: (r["qualified"] / r["leads"] * 100) if r["leads"] else 0.0,
         axis=1,
@@ -4237,7 +2942,7 @@ def render_page_market_mom(
             x="month",
             y=["sql_pct", "q_win_pct"],
             markers=True,
-            title="SQL % and Q Win % (CW ÷ Qualified, by month)",
+            title="SQL % and Q → Win % (by month)",
         )
         fig2.update_layout(plot_bgcolor="white", paper_bgcolor="white", margin=dict(l=8, r=8, t=45, b=8))
         st.plotly_chart(fig2, use_container_width=True, key=f"{key_suffix}_pl_lines")
@@ -4263,14 +2968,9 @@ def render_page_channels(df_loaded: pd.DataFrame, start_date: date, end_date: da
     st.markdown("#### Spend & efficiency by channel / source")
     agg = (
         df.groupby(group_col, as_index=False)
-        .agg(spend=("cost", "sum"), clicks=("clicks", "sum"), cw=("closed_won", "sum"))
+        .agg(spend=("cost", "sum"), clicks=("clicks", "sum"), leads=("leads", "sum"), cw=("closed_won", "sum"))
         .sort_values("spend", ascending=False)
     )
-    grp_leads: list[int] = []
-    for k in agg[group_col].tolist():
-        gk = df[df[group_col] == k]
-        grp_leads.append(_lead_rows_count(gk))
-    agg["leads"] = grp_leads
     agg["CPL"] = agg.apply(lambda r: (r["spend"] / r["leads"]) if r["leads"] else float("nan"), axis=1)
     st.dataframe(agg, use_container_width=True, hide_index=True, key=f"{key_suffix}_df_ch")
 
@@ -4293,8 +2993,15 @@ def render_page_channels(df_loaded: pd.DataFrame, start_date: date, end_date: da
         st.plotly_chart(fig2, use_container_width=True, key=f"{key_suffix}_pl_trend")
 
 
-def _extras_skip_tabs_already_loaded(df_loaded: pd.DataFrame, extras: list[pd.DataFrame]) -> list[pd.DataFrame]:
-    """Avoid duplicate rows when `load_all_worksheets_combined` already contains the same tab titles."""
+def _extras_skip_tabs_already_loaded(
+    df_loaded: pd.DataFrame,
+    extras: list[pd.DataFrame],
+) -> list[pd.DataFrame]:
+    """Drop extra worksheet frames whose ``source_tab`` is already in ``df_loaded``.
+
+    ``load_all_worksheets_combined`` already reads every tab; ``load_first_matching_worksheet_normalized``
+    reloads the same titles and would **duplicate rows** (e.g. Closed Won ≈ 2×) if concatenated again.
+    """
     if df_loaded.empty or "source_tab" not in df_loaded.columns:
         return extras
     existing = set(df_loaded["source_tab"].dropna().astype(str).str.strip().unique())
@@ -4317,18 +3024,16 @@ def render_main_dashboard(
     end_date: date,
 ) -> None:
     """Load Google Sheets workbook (all tabs), then route to report pages."""
-    sheet_id, _ = _workbook_id_resolution()
+    sheet_id = _extract_sheet_id(_default_sheet_id_from_secrets())
     _fp = _secret_fingerprint(_service_account_from_streamlit_secrets())
     try:
         # Source of truth is the entire spreadsheet; aggregate data across tabs.
         df_loaded = load_all_worksheets_combined(sheet_id, _fp)
         # Hard requirement: ensure Spend sheet is present (sheet: Spend, column: Spend).
         needs_spend_inject = True
-        if not df_loaded.empty and "source_tab" in df_loaded.columns and "cost" in df_loaded.columns:
-            sl = df_loaded["source_tab"].astype(str).str.strip().str.lower()
-            spend_like = sl.str.contains(r"^(raw\s*)?spend$|raw\s*spend|sum\s*spend|media\s*spend", na=False, regex=True)
-            spend_rows = df_loaded.loc[spend_like]
-            if not spend_rows.empty and float(pd.to_numeric(spend_rows["cost"], errors="coerce").fillna(0).sum()) > 0:
+        if not df_loaded.empty and "source_tab" in df_loaded.columns:
+            spend_rows = df_loaded[df_loaded["source_tab"].astype(str).str.strip().str.lower() == "spend"]
+            if not spend_rows.empty and "cost" in spend_rows.columns and float(spend_rows["cost"].sum()) > 0:
                 needs_spend_inject = False
         if needs_spend_inject:
             spend_norm = load_named_worksheet_normalized(sheet_id, "Spend", _fp)
@@ -4344,8 +3049,7 @@ def render_main_dashboard(
         st.session_state["_gid0_spend_sum"] = load_spend_gid0_raw_sum(sheet_id, _fp)
         if not spend_gid0.empty:
             if not df_loaded.empty and "source_tab" in df_loaded.columns:
-                _rm_syn = df_loaded["source_tab"].astype(str).str.match(r"^gid:\d+_spend$", na=False)
-                df_loaded = df_loaded.loc[~_rm_syn].copy()
+                df_loaded = df_loaded[df_loaded["source_tab"].astype(str) != "gid:0_spend"]
             if df_loaded.empty:
                 df_loaded = spend_gid0
             else:
@@ -4353,18 +3057,13 @@ def render_main_dashboard(
 
         # Explicitly ensure core business tabs are loaded by title-match.
         spend_named = load_first_matching_worksheet_normalized(sheet_id, (r"^spend$", r"raw\s*spend", r"sum\s*spend"), _fp)
-        leads_named = load_first_matching_worksheet_normalized(sheet_id, (r"^leads?$", r"raw\s*leads?"), _fp)
-        post_named = load_first_matching_worksheet_normalized(
+        leads_named = load_first_matching_worksheet_normalized(
             sheet_id,
-            (r"post\s*leads?", r"raw.*post.*qual", r"post\s+qual", r"post.*qualif"),
+            (r"^leads?$", r"raw\s*leads?", r"lead\s*sheet"),
             _fp,
         )
-        cw_named = load_first_matching_worksheet_normalized(
-            sheet_id,
-            tuple(_RAW_CW_TAB_PATTERNS),
-            _fp,
-        )
-        extras = [x for x in (spend_named, leads_named, post_named, cw_named) if not x.empty]
+        post_named = load_first_matching_worksheet_normalized(sheet_id, (r"post\s*leads?", r"raw.*post.*qual"), _fp)
+        extras = [x for x in (spend_named, leads_named, post_named) if not x.empty]
         extras = _extras_skip_tabs_already_loaded(df_loaded, extras)
         if extras:
             if df_loaded.empty:
@@ -4450,176 +3149,6 @@ def main() -> None:
     .stButton > button:hover { border-color: #4f8483; color: #0f766e; }
     .looker-page-h1 { font-size: 0.86rem; font-weight: 400; color: #202124; margin: 8px 0 16px 0; }
     .looker-table-title { font-size: 1.0rem; font-weight: 700; color: #202124; margin: 20px 0 8px 0; }
-    /* KPI scorecards: glass panels, staggered entrance, hover lift */
-    .kpi-section {
-        min-width: 0;
-        overflow: visible;
-        background: linear-gradient(155deg, rgba(255,255,255,0.92) 0%, rgba(248,250,252,0.88) 100%);
-        backdrop-filter: blur(12px);
-        -webkit-backdrop-filter: blur(12px);
-        border-radius: 16px;
-        padding: 14px 14px 16px;
-        border: 1px solid rgba(226, 232, 240, 0.95);
-        box-shadow: 0 4px 24px rgba(15, 23, 42, 0.06);
-        transition: box-shadow 0.35s ease, transform 0.35s ease;
-    }
-    .kpi-section:hover {
-        box-shadow: 0 14px 44px rgba(79, 132, 131, 0.11);
-        transform: translateY(-1px);
-    }
-    .kpi-section-head {
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        margin-bottom: 12px;
-        padding-bottom: 10px;
-        border-bottom: 1px solid rgba(226, 232, 240, 0.95);
-    }
-    .kpi-section-marker {
-        width: 10px;
-        height: 10px;
-        border-radius: 50%;
-        flex-shrink: 0;
-        box-shadow: 0 0 0 3px rgba(79, 132, 131, 0.18);
-        animation: kpi-marker-pulse 2.4s ease-in-out infinite;
-    }
-    .kpi-section--cw .kpi-section-marker { background: linear-gradient(135deg, #0d9488, #4f8483); }
-    .kpi-section--leads .kpi-section-marker { background: linear-gradient(135deg, #2563eb, #38bdf8); box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.2); }
-    .kpi-section--pipe .kpi-section-marker { background: linear-gradient(135deg, #7c3aed, #a78bfa); box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.2); }
-    .kpi-section-head h3 {
-        margin: 0;
-        font-size: 0.92rem;
-        font-weight: 700;
-        color: #0f172a;
-        letter-spacing: -0.02em;
-    }
-    .kpi-card-grid {
-        display: grid;
-        grid-template-columns: repeat(2, minmax(0, 1fr));
-        gap: 10px;
-        overflow: visible;
-    }
-    @media (max-width: 640px) {
-        .kpi-card-grid { grid-template-columns: 1fr; }
-    }
-    .kpi-card {
-        position: relative;
-        overflow: visible;
-        border-radius: 12px;
-        padding: 11px 12px 13px;
-        background: linear-gradient(160deg, #ffffff 0%, #f8fafc 55%, #f1f5f9 100%);
-        border: 1px solid #e2e8f0;
-        box-shadow: 0 2px 10px rgba(15, 23, 42, 0.045);
-        transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.28s ease, border-color 0.28s ease;
-        animation: kpi-card-enter 0.6s cubic-bezier(0.22, 1, 0.36, 1) backwards;
-        isolation: isolate;
-        cursor: default;
-    }
-    .kpi-card::before {
-        content: "";
-        position: absolute;
-        top: 0;
-        left: 0;
-        right: 0;
-        height: 3px;
-        border-radius: 12px 12px 0 0;
-        opacity: 0.9;
-    }
-    .kpi-section--cw .kpi-card::before { background: linear-gradient(90deg, #0d9488, #4f8483); }
-    .kpi-section--leads .kpi-card::before { background: linear-gradient(90deg, #2563eb, #38bdf8); }
-    .kpi-section--pipe .kpi-card::before { background: linear-gradient(90deg, #7c3aed, #c4b5fd); }
-    .kpi-card:hover {
-        transform: translateY(-4px);
-        box-shadow: 0 12px 32px rgba(15, 23, 42, 0.12);
-        border-color: #cbd5e1;
-    }
-    /* Crisp hover popover (CSS only; text from data-kpi-tip) */
-    .kpi-card[data-kpi-tip]::after {
-        content: attr(data-kpi-tip);
-        position: absolute;
-        left: 50%;
-        bottom: calc(100% + 10px);
-        transform: translate3d(-50%, 6px, 0);
-        min-width: 168px;
-        max-width: min(280px, 78vw);
-        padding: 10px 12px 11px;
-        background: #ffffff;
-        color: #1e293b;
-        font-size: 11px;
-        font-weight: 500;
-        line-height: 1.5;
-        text-align: left;
-        text-transform: none;
-        letter-spacing: 0.01em;
-        white-space: normal;
-        word-wrap: break-word;
-        border-radius: 8px;
-        border: 1px solid #e2e8f0;
-        box-shadow: 0 12px 40px rgba(15, 23, 42, 0.16), 0 0 0 1px rgba(15, 23, 42, 0.04);
-        opacity: 0;
-        visibility: hidden;
-        transition: opacity 0.12s ease, transform 0.12s ease, visibility 0.12s;
-        transition-delay: 0.02s;
-        z-index: 1000;
-        pointer-events: none;
-    }
-    .kpi-section--cw .kpi-card[data-kpi-tip]::after {
-        border-top: 3px solid #4f8483;
-    }
-    .kpi-section--leads .kpi-card[data-kpi-tip]::after {
-        border-top: 3px solid #2563eb;
-    }
-    .kpi-section--pipe .kpi-card[data-kpi-tip]::after {
-        border-top: 3px solid #7c3aed;
-    }
-    .kpi-card[data-kpi-tip]:hover::after {
-        opacity: 1;
-        visibility: visible;
-        transform: translate3d(-50%, 0, 0);
-        transition-delay: 0s;
-    }
-    @media (max-width: 520px) {
-        .kpi-card[data-kpi-tip]::after {
-            left: 0;
-            right: 0;
-            transform: translate3d(0, 6px, 0);
-            max-width: none;
-            width: 100%;
-        }
-        .kpi-card[data-kpi-tip]:hover::after {
-            transform: translate3d(0, 0, 0);
-        }
-    }
-    .kpi-card-label {
-        font-size: 10px;
-        font-weight: 600;
-        color: #64748b;
-        text-transform: uppercase;
-        letter-spacing: 0.055em;
-        line-height: 1.35;
-        margin-bottom: 6px;
-    }
-    .kpi-card-value {
-        font-size: clamp(1.02rem, 2.2vw, 1.42rem);
-        font-weight: 700;
-        color: #0f172a;
-        letter-spacing: -0.03em;
-        line-height: 1.2;
-        font-variant-numeric: tabular-nums;
-    }
-    @keyframes kpi-card-enter {
-        from { opacity: 0; transform: translateY(14px) scale(0.98); }
-        to { opacity: 1; transform: translateY(0) scale(1); }
-    }
-    @keyframes kpi-marker-pulse {
-        0%, 100% { transform: scale(1); opacity: 1; }
-        50% { transform: scale(1.12); opacity: 0.88; }
-    }
-    @media (prefers-reduced-motion: reduce) {
-        .kpi-card { animation: none; }
-        .kpi-section-marker { animation: none; }
-        .kpi-card:hover, .kpi-section:hover { transform: none; }
-    }
     .looker-kpi-big {
         background: linear-gradient(180deg, #5c9090 0%, #4f8483 100%);
         color: #fff;
