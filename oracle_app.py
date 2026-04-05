@@ -3032,7 +3032,7 @@ def _master_view_style_css(df: pd.DataFrame) -> pd.DataFrame:
     for i in df.index:
         me = bool(is_region.loc[i])
         for col in df.columns:
-            if col == "Unified Date":
+            if col == "Month":
                 v = df.loc[i, col]
                 if v == "" or (isinstance(v, str) and not str(v).strip()):
                     css.loc[i, col] = _cell(empty_cell)
@@ -3421,22 +3421,6 @@ def _master_view_refresh_middle_east_spend_row(gm: pd.DataFrame) -> pd.DataFrame
     return out
 
 
-def _unified_date_dmy(m: Any) -> str:
-    """Reporting month as **day/month/year** (first calendar day of that month; grid is month-level)."""
-    if m is None or (isinstance(m, float) and pd.isna(m)):
-        return ""
-    k = _month_norm_key(m)
-    if not k:
-        return ""
-    try:
-        p = pd.Period(k, freq="M")
-        if p.year < 2000:
-            return ""
-        return p.to_timestamp(how="start").strftime("%d/%m/%Y")
-    except Exception:
-        return ""
-
-
 def _master_performance_table(
     df: pd.DataFrame,
     *,
@@ -3444,7 +3428,7 @@ def _master_performance_table(
     section_title: Optional[str] = "Marketing Performance Master View",
     spend_grid: Optional[pd.DataFrame] = None,
 ) -> None:
-    """Unified Date column (DD/MM/YYYY, first row per month only), Middle East subtotal, cyan input metrics, R/G/Y."""
+    """Month column (label on first row per month only), Middle East subtotal, cyan input metrics, R/G/Y."""
     df = _normalize_master_merge_frame(df)
     if not df.empty and "month" in df.columns:
         _mpl = df["month"].map(lambda x: _dashboard_month_plausible(_month_norm_key(x)))
@@ -3572,10 +3556,10 @@ def _master_performance_table(
             gm[m] = float("nan")
 
     pvt = gm.copy()
-    pvt["Month"] = pvt["month"].map(_month_label_short)
-    cols = ["month", "Month", "Market"] + [m for m in metrics if m in pvt.columns]
+    pvt["_month_sort_lbl"] = pvt["month"].map(_month_label_short)
+    cols = ["month", "_month_sort_lbl", "Market"] + [m for m in metrics if m in pvt.columns]
     pvt = pvt[[c for c in cols if c in pvt.columns]]
-    pvt["Unified Date"] = ""
+    pvt["Month"] = ""
 
     def _month_label_sort_key(m: Any) -> Any:
         try:
@@ -3583,13 +3567,13 @@ def _master_performance_table(
         except Exception:
             return str(m)
 
-    for m in sorted(pvt["Month"].dropna().unique(), key=_month_label_sort_key, reverse=True):
-        ix = pvt.index[pvt["Month"] == m].tolist()
+    for ml in sorted(pvt["_month_sort_lbl"].dropna().unique(), key=_month_label_sort_key, reverse=True):
+        ix = pvt.index[pvt["_month_sort_lbl"] == ml].tolist()
         if ix:
             raw_m = pvt.loc[ix[0], "month"]
-            pvt.loc[ix[0], "Unified Date"] = _unified_date_dmy(raw_m)
-    pvt = pvt.drop(columns=["month", "Month"], errors="ignore")
-    out_cols = ["Unified Date", "Market"] + [m for m in metrics if m in pvt.columns]
+            pvt.loc[ix[0], "Month"] = _month_label_short(raw_m)
+    pvt = pvt.drop(columns=["month", "_month_sort_lbl"], errors="ignore")
+    out_cols = ["Month", "Market"] + [m for m in metrics if m in pvt.columns]
     pvt = pvt[out_cols]
     # Streamlit's Arrow table path often ignores ``Styler.format`` for numeric cells — use strings for Spend.
     if "Spend" in pvt.columns:
@@ -3611,11 +3595,11 @@ def _master_performance_table(
         return lambda x: f"{x:,.2f}" if pd.notna(x) else "—"
 
     fmt_map: dict[str, Any] = {
-        "Unified Date": lambda x: "" if x == "" or (isinstance(x, float) and pd.isna(x)) else str(x),
+        "Month": lambda x: "" if x == "" or (isinstance(x, float) and pd.isna(x)) else str(x),
         "Market": lambda x: str(x) if pd.notna(x) else "—",
     }
     for c in pvt.columns:
-        if c in {"Unified Date", "Market"}:
+        if c in {"Month", "Market"}:
             continue
         fmt_map[c] = _fmt_for_metric(c)
 
@@ -4131,7 +4115,7 @@ def render_page_market_mom(
     grand = pd.DataFrame(
         [
             {
-                "Unified Date": "Grand total",
+                "Month": "Grand total",
                 "Market": "—",
                 "Spend": float(df["cost"].sum()),
                 "CW (Inc Approved)": int(df["closed_won"].sum()),
