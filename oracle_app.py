@@ -2932,6 +2932,37 @@ def _lead_rows_count(frame: pd.DataFrame) -> int:
     return int(len(frame)) if isinstance(frame, pd.DataFrame) else 0
 
 
+def _ensure_leads_metric_for_master(ld: pd.DataFrame) -> pd.DataFrame:
+    """Master view sums ``leads``; inbound sheets often have no numeric Leads column (all zeros). One row = one lead."""
+    if ld.empty:
+        return ld
+    out = ld.copy()
+    if "leads" not in out.columns:
+        out["leads"] = 1
+    else:
+        s = pd.to_numeric(out["leads"], errors="coerce").fillna(0)
+        if float(s.sum()) == 0 and len(out) > 0:
+            out["leads"] = 1
+    return out
+
+
+def _leads_pivot_rowcount_by_month_country(ld: pd.DataFrame) -> pd.DataFrame:
+    """``month`` × ``country`` counts from lead **rows** (matches scorecard row-count when the sheet has no Leads metric)."""
+    x = _normalize_master_merge_frame(ld)
+    if x.empty or "month" not in x.columns or "country" not in x.columns:
+        return pd.DataFrame(columns=["month", "country", "leads"])
+    x = x.copy()
+    x["_mk"] = x["month"].map(_month_norm_key).astype(str).str.strip()
+    x = x.loc[x["_mk"].ne("")].copy()
+    if x.empty:
+        return pd.DataFrame(columns=["month", "country", "leads"])
+    x["month"] = x["_mk"]
+    x = x.drop(columns=["_mk"], errors="ignore")
+    cnt = x.groupby(["month", "country"], as_index=False, dropna=False).size().rename(columns={"size": "leads"})
+    cnt["leads"] = pd.to_numeric(cnt["leads"], errors="coerce").fillna(0).astype(int)
+    return cnt
+
+
 def _new_working_count_from_leads(frame: pd.DataFrame) -> int:
     """Count leads where Lead Status is exactly New or Working."""
     if frame.empty or "lead_status_text" not in frame.columns:
@@ -4090,7 +4121,20 @@ def render_page_marketing_performance(
     else:
         _mpo_dbg["spend_g_distinct_months"] = 0
         _mpo_dbg["spend_g_month_list"] = []
-    leads_g = _agg_for_master(_normalize_master_merge_frame(leads_df), ["leads", "qualified"])
+    leads_norm = _normalize_master_merge_frame(leads_df)
+    leads_for_master = _ensure_leads_metric_for_master(leads_norm)
+    leads_g = _agg_for_master(leads_for_master, ["leads", "qualified"])
+    if int(total_leads) > 0:
+        lg_sum = float(pd.to_numeric(leads_g["leads"], errors="coerce").fillna(0).sum()) if not leads_g.empty else 0.0
+        if lg_sum < 0.85 * float(total_leads):
+            lc = _leads_pivot_rowcount_by_month_country(leads_df)
+            if not lc.empty:
+                qg = _agg_for_master(leads_for_master, ["qualified"]) if "qualified" in leads_for_master.columns else pd.DataFrame()
+                leads_g = lc if qg.empty else lc.merge(qg, on=["month", "country"], how="outer")
+                if "qualified" not in leads_g.columns:
+                    leads_g["qualified"] = 0.0
+                leads_g["qualified"] = pd.to_numeric(leads_g["qualified"], errors="coerce").fillna(0.0)
+                leads_g["leads"] = pd.to_numeric(leads_g["leads"], errors="coerce").fillna(0).astype(int)
     post_g = _agg_for_master(
         _normalize_master_merge_frame(post_df),
         ["closed_won", "pitching", "new", "working", "qualifying", "negotiation", "commitment", "closed_lost"],
