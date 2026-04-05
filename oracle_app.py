@@ -694,10 +694,16 @@ def _normalize_master_merge_frame(df: pd.DataFrame) -> pd.DataFrame:
         if "date" in out.columns:
             bad = mk.eq("") | mk.isna()
             if bool(bad.any()):
-                d = pd.to_datetime(out["date"], errors="coerce")
-                fill = d.dt.to_period("M").astype(str)
-                mk = mk.where(~bad, fill)
-        out["month"] = mk
+                d = pd.to_datetime(
+                    _scrub_pre_2000_dates(_coerce_sheet_serial_dates(out["date"])),
+                    errors="coerce",
+                )
+                fill = pd.Series("", index=out.index, dtype=object)
+                dok = d.notna() & (d >= pd.Timestamp("2000-01-01"))
+                if bool(dok.any()):
+                    fill.loc[dok] = d.loc[dok].dt.to_period("M").astype(str)
+                mk = mk.where(~bad, fill.map(_month_norm_key))
+        out["month"] = mk.map(_month_norm_key)
     return out
 
 
@@ -877,7 +883,7 @@ def _spend_sheet_pivot_by_month_country(spend_df: pd.DataFrame) -> pd.DataFrame:
     x = x.loc[x["month"].map(_not_epoch_jan)]
 
     if x.empty and _normalized_spend_cost_sum(spend_df) > 1e-9:
-        y = _normalize_master_merge_frame(spend_df.copy())
+        y = _normalize_master_merge_frame(_canonicalize_spend_month_column(spend_df.copy()))
         cols = [c for c in metrics if c in y.columns]
         if cols and "month" in y.columns and "country" in y.columns and not y.empty:
             g = y.groupby(["month", "country"], as_index=False, dropna=False)[cols].sum()
@@ -1210,6 +1216,10 @@ _NORM_TO_FIELD: dict[str, str] = {
     "utm_source_l": "utm_source_l",
     "utm_source_o": "utm_source_o",
     "month": "report_month",
+    "report_month": "report_month",
+    "calendar_month": "report_month",
+    "month_year": "report_month",
+    "year_month": "report_month",
     "tcv": "tcv",
     "tcv_usd": "tcv",
     "tcv_converted": "tcv",
@@ -1351,23 +1361,42 @@ def _scan_frame_for_spend_sum(raw: pd.DataFrame) -> float:
 
 
 def _parse_report_month_series(s: pd.Series) -> pd.Series:
-    """Parse Excel `Month` cells: datetimes, `Sept`, `December`, etc."""
+    """Parse Excel / Sheets ``Month`` cells: serial day counts, datetimes, ``Sept``, ``December``, etc.
+
+    Plain ``pd.to_datetime`` on numeric 45xxx treats values as ns-since-epoch → junk; we coerce sheet serials first.
+    """
     raw = s.copy()
-    out = pd.to_datetime(raw, errors="coerce")
+    ser = _coerce_sheet_serial_dates(raw)
+    out = pd.to_datetime(ser, errors="coerce")
     mask = out.isna() & raw.notna()
     if not mask.any():
         return out
     for idx in raw.index[mask]:
         v = raw.loc[idx]
-        val = str(v).strip()
         parsed: Optional[pd.Timestamp] = None
-        # Ambiguous month-only labels: prefer current calendar year, then prior years.
-        _cy = date.today().year
-        for y in (_cy, _cy - 1, _cy - 2, _cy + 1):
-            t = pd.to_datetime(f"{val} 1, {y}", errors="coerce")
-            if pd.notna(t):
-                parsed = t
-                break
+        try:
+            if not isinstance(v, bool):
+                n = float(v)
+                if pd.notna(n) and 20000 < n < 100000:
+                    ni = int(round(n))
+                    if abs(n - ni) < 0.02 or abs(n - round(n)) < 1e-6:
+                        base = pd.Timestamp("1899-12-30")
+                        ts = base + pd.to_timedelta(ni, unit="D")
+                        if ts.year >= 2000:
+                            parsed = ts
+        except (TypeError, ValueError, OverflowError):
+            pass
+        if parsed is None:
+            val = str(v).strip()
+            if not val or val.lower() in ("nan", "none", "nat"):
+                out.loc[idx] = pd.NaT
+                continue
+            _cy = date.today().year
+            for y in (_cy, _cy - 1, _cy - 2, _cy + 1):
+                t = pd.to_datetime(f"{val} 1, {y}", errors="coerce")
+                if pd.notna(t):
+                    parsed = t
+                    break
         out.loc[idx] = parsed if parsed is not None else pd.NaT
     return out
 
@@ -1650,13 +1679,19 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
         else:
             out[dim] = out[dim].astype(str).replace("nan", "").replace("None", "")
 
-    out["month"] = out["date"].dt.to_period("M").astype(str)
+    out["month"] = ""
+    _dok = out["date"].notna()
+    if bool(_dok.any()):
+        out.loc[_dok, "month"] = out.loc[_dok, "date"].dt.to_period("M").astype(str)
     _bad_m = out["month"].astype(str).str.strip().str.lower().isin(["", "nan", "nat", "none"])
     if bool(_bad_m.any()) and "report_month" in out.columns:
         rm_fix = _parse_report_month_series(out["report_month"])
         rm_fix = rm_fix.fillna(_coerce_sheet_serial_dates(out["report_month"]))
         rm_fix = _scrub_pre_2000_dates(rm_fix)
-        out.loc[_bad_m, "month"] = rm_fix.loc[_bad_m].dt.to_period("M").astype(str)
+        ok_rm = rm_fix.notna() & (rm_fix >= pd.Timestamp("2000-01-01"))
+        hit = _bad_m & ok_rm
+        if bool(hit.any()):
+            out.loc[hit, "month"] = rm_fix.loc[hit].dt.to_period("M").astype(str)
     attrs["fields_mapped"] = sorted(field_to_sources.keys())
     out.attrs.update(attrs)
     return out
