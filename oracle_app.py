@@ -816,29 +816,53 @@ def _spend_sheet_month_is_blank(s: pd.Series) -> pd.Series:
     return ~(t.str.len() > 0) | t.isin(["nan", "nat", "none"])
 
 
+def _canonicalize_spend_month_column(df: pd.DataFrame) -> pd.DataFrame:
+    """Set ``month`` (YYYY-MM) from row ``date`` when valid; else forward-filled ``report_month`` (merged Month cells).
+
+    ``normalize()`` fills missing ``date`` from **per-row** ``report_month``. Blank Month cells stay blank there,
+    but a **preprocess ffill** on Month (removed) or a single filled cell used to collapse all spend into one
+    period. Here **date wins**; ``report_month.ffill()`` applies only where month is still unknown.
+    """
+    if df.empty:
+        return df
+    out = df.copy()
+    idx = out.index
+    m_new = pd.Series(pd.NA, index=idx, dtype=object)
+    if "date" in out.columns:
+        dser = _coerce_sheet_serial_dates(out["date"])
+        d = pd.to_datetime(_scrub_pre_2000_dates(dser), errors="coerce")
+        okd = d.notna() & (d >= pd.Timestamp("2000-01-01"))
+        if bool(okd.any()):
+            m_new.loc[okd] = d.loc[okd].dt.to_period("M").astype(str)
+    blank = m_new.isna() | m_new.astype(str).str.strip().str.lower().isin(["", "nan", "nat", "none"])
+    if "report_month" in out.columns and bool(blank.any()):
+        rm_ff = out["report_month"].ffill()
+        rser = _parse_report_month_series(rm_ff)
+        rser = rser.fillna(_coerce_sheet_serial_dates(rm_ff))
+        rser = _scrub_pre_2000_dates(rser)
+        okr = blank & rser.notna() & (rser >= pd.Timestamp("2000-01-01"))
+        if bool(okr.any()):
+            m_new.loc[okr] = rser.loc[okr].dt.to_period("M").astype(str)
+    blank2 = m_new.isna() | m_new.astype(str).str.strip().str.lower().isin(["", "nan", "nat", "none"])
+    if "month" in out.columns and bool(blank2.any()):
+        ex = out["month"].map(_month_norm_key)
+        use = blank2 & ex.ne("")
+        if bool(use.any()):
+            m_new.loc[use] = ex.loc[use]
+    out["month"] = m_new.map(lambda v: _month_norm_key(v) if pd.notna(v) and str(v).strip() else "")
+    return out
+
+
 def _spend_sheet_pivot_by_month_country(spend_df: pd.DataFrame) -> pd.DataFrame:
     """Treat the spend tab as a **pivot**: ``SUM(cost)`` [+ clicks/impressions] per ``month`` × ``country``."""
     metrics = ["cost", "clicks", "impressions"]
     if spend_df.empty or "cost" not in spend_df.columns:
         return pd.DataFrame(columns=["month", "country"] + metrics)
-    x = _normalize_master_merge_frame(spend_df.copy())
+    x0 = spend_df.copy()
+    x0 = _canonicalize_spend_month_column(x0)
+    x = _normalize_master_merge_frame(x0)
     if "month" not in x.columns or "country" not in x.columns:
         return pd.DataFrame(columns=["month", "country"] + metrics)
-
-    # Month often goes blank when Date was scrubbed; rebuild from report_month / date (pivot sheets use Month heavily).
-    if "report_month" in x.columns:
-        blank = _spend_sheet_month_is_blank(x["month"])
-        rser = _parse_report_month_series(x["report_month"])
-        rser = rser.fillna(_coerce_sheet_serial_dates(x["report_month"]))
-        ok = blank & rser.notna() & (rser >= pd.Timestamp("2000-01-01"))
-        if bool(ok.any()):
-            x.loc[ok, "month"] = rser.loc[ok].dt.to_period("M").astype(str)
-    if "date" in x.columns:
-        blank = _spend_sheet_month_is_blank(x["month"])
-        d = pd.to_datetime(x["date"], errors="coerce")
-        ok = blank & d.notna() & (d >= pd.Timestamp("2000-01-01"))
-        if bool(ok.any()):
-            x.loc[ok, "month"] = d.loc[ok].dt.to_period("M").astype(str)
 
     x["month"] = x["month"].map(_month_norm_key)
     x = x.loc[~_spend_sheet_month_is_blank(x["month"])]
@@ -1135,6 +1159,12 @@ _NORM_TO_FIELD: dict[str, str] = {
     "create_date": "date",
     "date_formatted": "date",
     "close_date": "date",
+    "reporting_date": "date",
+    "activity_date": "date",
+    "spend_date": "date",
+    "campaign_date": "date",
+    "week_start": "date",
+    "week_starting": "date",
     "country_name": "country",
     "country": "country",
     "market": "country",
@@ -1413,11 +1443,10 @@ def _preprocess_excel_sheet(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
         df = df[~m.str.contains("TOTAL", case=False, na=False)]
     if "spend" in t:
         df = _try_melt_wide_month_spend_df(df)
-        # Long-format spend often repeats one Month label per block (merged cells). Per-tab ffill only — not in
-        # ``normalize()`` — avoids stamping CRM/other sheets while fixing month×country pivots.
-        for _c in df.columns:
-            if _norm_header_key(str(_c)) in {"month", "report_month"}:
-                df[_c] = df[_c].ffill()
+        # Do **not** ffill Month here (merged-cell collapse). Also tell ``normalize()`` not to
+        # ``date.fillna(report_month)`` on spend — Sheets sometimes repeats one Month on every row; that would
+        # stamp the same calendar month onto all undated rows before we can prefer real per-row dates.
+        df.attrs["spend_skip_date_fill_from_month"] = True
     if ("raw" in t and "lead" in t and "post" not in t):
         # Convert lead rows into additive metrics so they can be combined with spend.
         if "Leads" not in df.columns:
@@ -1516,6 +1545,7 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
 
     df = df.copy()
     df.columns = raw_cols
+    _spend_skip_date_fill = bool(df.attrs.get("spend_skip_date_fill_from_month", False))
 
     # Map each sheet column to at most one canonical field (first wins for dims; sum for dup metrics)
     field_to_sources: dict[str, list[str]] = {}
@@ -1587,7 +1617,8 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
         # Never ``ffill`` here: one non-blank month + many empty cells (merged headers in Sheets/Excel)
         # would stamp the same month on every row and collapse the whole spend tab into one period.
         rm = _scrub_pre_2000_dates(rm)
-        out["date"] = out["date"].fillna(rm)
+        if not _spend_skip_date_fill:
+            out["date"] = out["date"].fillna(rm)
 
     _still_ancient = out["date"].notna() & (out["date"] < pd.Timestamp("2000-01-01"))
     out.loc[_still_ancient, "date"] = pd.NaT
@@ -1891,7 +1922,10 @@ def _best_spend_pool_from_df_loaded(df_loaded: pd.DataFrame) -> pd.DataFrame:
         sg = _optional_spend_gid_from_secrets()
         if sg is not None:
             _take(df_loaded.loc[wg == int(sg)])
-    return best if best_sum > 1e-9 else pd.DataFrame()
+    out = best if best_sum > 1e-9 else pd.DataFrame()
+    if not out.empty:
+        out = _canonicalize_spend_month_column(out)
+    return out
 
 
 @st.cache_data(ttl=300)
@@ -2055,6 +2089,8 @@ def load_worksheet_by_gid_preprocessed(sheet_id: str, worksheet_gid: int, _secre
     title = _tab_title_for_worksheet_gid(sheet_id, worksheet_gid, _secret_fp)
     raw = _preprocess_excel_sheet(raw, title)
     out = _normalize(raw)
+    if not out.empty and _tab_title_looks_like_spend_worksheet(str(title)):
+        out = _canonicalize_spend_month_column(out)
     out["source_tab"] = title
     out["worksheet_gid"] = int(worksheet_gid)
     return out
@@ -2251,6 +2287,7 @@ def load_spend_worksheet_fallback(sheet_id: str, _secret_fp: str) -> pd.DataFram
             best_title = str(title)
     if best.empty:
         return pd.DataFrame()
+    best = _canonicalize_spend_month_column(best)
     best["source_tab"] = best_title
     return best
 
@@ -2347,6 +2384,7 @@ def load_spend_gid0_normalized(sheet_id: str, _secret_fp: str) -> pd.DataFrame:
 
     if best.empty:
         return pd.DataFrame()
+    best = _canonicalize_spend_month_column(best)
     best["source_tab"] = f"gid:{best_gid}_spend"
     return best
 
@@ -2427,6 +2465,8 @@ def load_first_matching_worksheet_normalized(
     out = _normalize(_preprocess_excel_sheet(raw, str(title)))
     if out.empty:
         return out
+    if _tab_title_looks_like_spend_worksheet(str(title)):
+        out = _canonicalize_spend_month_column(out)
     out["source_tab"] = str(title)
     out["worksheet_gid"] = int(ws_gid)
     return out
