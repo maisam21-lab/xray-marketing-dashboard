@@ -1,0 +1,14 @@
+---
+description: After code changes in this repo, commit and push to origin
+alwaysApply: true
+---
+
+# Git: always push updates
+
+When you change tracked source files in this repository (e.g. `oracle_app.py`, `app.py`), **finish the task** by:
+
+1. `git add` only intentional changes (exclude `__pycache__/`, local secrets, and unrelated files).
+2. `git commit` with a short, accurate message.
+3. `git push origin main` (or the current branch).
+
+Do not leave fixes only on disk if the user expects GitHub / Streamlit Cloud to deploy from the remote.
