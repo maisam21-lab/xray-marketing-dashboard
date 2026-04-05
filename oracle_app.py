@@ -3678,6 +3678,13 @@ def render_page_marketing_performance(
         _mpo_dbg["pivot_retried_full_pool"] = False
     _mpo_dbg["spend_g_rows"] = len(spend_g)
     _mpo_dbg["spend_g_cost"] = _mpo_debug_cost_sum(spend_g)
+    if not spend_g.empty and "month" in spend_g.columns:
+        _sg_m = sorted({x for x in spend_g["month"].map(_month_norm_key).tolist() if x})
+        _mpo_dbg["spend_g_distinct_months"] = len(_sg_m)
+        _mpo_dbg["spend_g_month_list"] = _sg_m[:36]
+    else:
+        _mpo_dbg["spend_g_distinct_months"] = 0
+        _mpo_dbg["spend_g_month_list"] = []
     leads_g = _agg_for_master(_normalize_master_merge_frame(leads_df), ["leads", "qualified"])
     post_g = _agg_for_master(
         _normalize_master_merge_frame(post_df),
@@ -3792,7 +3799,7 @@ def render_page_marketing_performance(
             f"sheet_master (date filter) — rows={_mpo_dbg['sheet_master_rows']}, cost_sum={_mpo_dbg['sheet_master_cost']:,.2f}",
             f"spend_df (after dashboard filters) — rows={_mpo_dbg['spend_df_rows']}, cost_sum={_mpo_dbg['spend_df_cost']:,.2f}",
             f"pivot input used full pool first={_mpo_dbg.get('pivot_used_pool_for_input')}, pivot retried pool={_mpo_dbg.get('pivot_retried_full_pool')}",
-            f"spend_g (month×country pivot) — rows={_mpo_dbg.get('spend_g_rows', 0)}, cost_sum={_mpo_dbg.get('spend_g_cost', 0.0):,.2f}",
+            f"spend_g (month×country pivot) — rows={_mpo_dbg.get('spend_g_rows', 0)}, cost_sum={_mpo_dbg.get('spend_g_cost', 0.0):,.2f}, distinct_months={_mpo_dbg.get('spend_g_distinct_months', 0)}, months={_mpo_dbg.get('spend_g_month_list', [])!r}",
             f"master after merge+fillna — rows={_mpo_dbg['master_after_merge_rows']}, cost_sum={_mpo_dbg['master_after_merge_cost']:,.2f}",
             f"master after coalesce — cost_sum={_mpo_dbg['master_after_coalesce_cost']:,.2f}",
             f"master after allocate — cost_sum={_mpo_dbg['master_after_allocate_cost']:,.2f}",
