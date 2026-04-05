@@ -828,7 +828,8 @@ def _spend_sheet_pivot_by_month_country(spend_df: pd.DataFrame) -> pd.DataFrame:
     # Month often goes blank when Date was scrubbed; rebuild from report_month / date (pivot sheets use Month heavily).
     if "report_month" in x.columns:
         blank = _spend_sheet_month_is_blank(x["month"])
-        rser = _parse_report_month_series(x["report_month"].ffill())
+        rser = _parse_report_month_series(x["report_month"])
+        rser = rser.fillna(_coerce_sheet_serial_dates(x["report_month"]))
         ok = blank & rser.notna() & (rser >= pd.Timestamp("2000-01-01"))
         if bool(ok.any()):
             x.loc[ok, "month"] = rser.loc[ok].dt.to_period("M").astype(str)
@@ -1578,7 +1579,8 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
     if "report_month" in out.columns:
         rm = _parse_report_month_series(out["report_month"])
         rm = rm.fillna(_coerce_sheet_serial_dates(out["report_month"]))
-        rm = rm.ffill()
+        # Never ``ffill`` here: one non-blank month + many empty cells (merged headers in Sheets/Excel)
+        # would stamp the same month on every row and collapse the whole spend tab into one period.
         rm = _scrub_pre_2000_dates(rm)
         out["date"] = out["date"].fillna(rm)
 
@@ -1615,7 +1617,9 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
     out["month"] = out["date"].dt.to_period("M").astype(str)
     _bad_m = out["month"].astype(str).str.strip().str.lower().isin(["", "nan", "nat", "none"])
     if bool(_bad_m.any()) and "report_month" in out.columns:
-        rm_fix = _parse_report_month_series(out["report_month"].ffill())
+        rm_fix = _parse_report_month_series(out["report_month"])
+        rm_fix = rm_fix.fillna(_coerce_sheet_serial_dates(out["report_month"]))
+        rm_fix = _scrub_pre_2000_dates(rm_fix)
         out.loc[_bad_m, "month"] = rm_fix.loc[_bad_m].dt.to_period("M").astype(str)
     attrs["fields_mapped"] = sorted(field_to_sources.keys())
     out.attrs.update(attrs)
