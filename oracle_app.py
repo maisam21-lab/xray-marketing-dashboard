@@ -21,6 +21,7 @@ from typing import Any, Optional, Union
 import pandas as pd
 import plotly.express as px
 import streamlit as st
+import streamlit.components.v1 as st_components
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 DEFAULT_SOURCE_TRUTH_GID = 8109573
@@ -2808,6 +2809,11 @@ def _format_spend_k(v: float) -> str:
     return f"${k:.2f}K"
 
 
+def _format_spend_hover_full(v: float) -> str:
+    """Full amount for cell hover — no ``$`` (pandas Styler tooltips embed in CSS ``content:`` and ``$`` breaks parsing)."""
+    return f"{v:,.2f} USD"
+
+
 def _lead_rows_count(frame: pd.DataFrame) -> int:
     """Lead count = data-row count of the resolved leads slice (sheet rows, header excluded)."""
     return int(len(frame)) if isinstance(frame, pd.DataFrame) else 0
@@ -3575,6 +3581,11 @@ def _master_performance_table(
     pvt = pvt.drop(columns=["month", "_month_sort_lbl"], errors="ignore")
     out_cols = ["Month", "Market"] + [m for m in metrics if m in pvt.columns]
     pvt = pvt[out_cols]
+    spend_hover = pd.DataFrame("", index=pvt.index, columns=pvt.columns)
+    if "Spend" in pvt.columns:
+        spend_hover["Spend"] = pvt["Spend"].map(
+            lambda v: _format_spend_hover_full(float(v)) if v is not None and not pd.isna(v) else ""
+        )
     # Streamlit's Arrow table path often ignores ``Styler.format`` for numeric cells — use strings for Spend.
     if "Spend" in pvt.columns:
         pvt["Spend"] = pvt["Spend"].apply(
@@ -3611,7 +3622,16 @@ def _master_performance_table(
             axis=0,
             subset=[col],
         )
-    st.dataframe(styler, use_container_width=True, hide_index=True, key=f"{key_suffix}_df_master_pivot")
+    styler = styler.hide(axis="index").set_tooltips(spend_hover)
+    # ``st.dataframe`` does not render Styler hover tooltips; HTML preserves pandas' CSS tooltip spans.
+    _mp_html = styler.to_html()
+    _mp_h = min(920, max(260, 44 * (len(pvt) + 6)))
+    st_components.html(
+        f'<div style="width:100%;overflow-x:auto;">{_mp_html}</div>',
+        height=_mp_h,
+        width=None,
+        scrolling=True,
+    )
 
 
 def render_page_marketing_performance(
