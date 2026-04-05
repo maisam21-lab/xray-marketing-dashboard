@@ -888,7 +888,7 @@ def _best_norm_month_series_from_normalized_frame(df: pd.DataFrame) -> Optional[
         if ct > best_ct:
             best_ct = ct
             best = s
-    need = max(5, int(0.03 * n))
+    need = max(3, int(0.015 * n))
     if best is None or best_ct < need:
         return None
     return best
@@ -940,6 +940,33 @@ def _canonicalize_spend_month_column(df: pd.DataFrame) -> pd.DataFrame:
                 m_new = guess
     out["month"] = m_new.map(lambda v: _month_norm_key(v) if pd.notna(v) and str(v).strip() else "")
     return out
+
+
+def _attach_spend_pool_debug_attrs(frame: pd.DataFrame) -> None:
+    """Stash diagnostics on the normalized spend pool for the MPO debug expander."""
+    if frame is None or getattr(frame, "empty", True):
+        return
+    try:
+        frame.attrs["spend_debug_norm_columns"] = list(frame.columns)
+        frame.attrs["spend_debug_fields_mapped"] = list(frame.attrs.get("fields_mapped", []) or [])
+        frame.attrs["spend_debug_has_report_month"] = bool("report_month" in frame.columns)
+        frame.attrs["spend_debug_report_month_filled"] = (
+            int(
+                (
+                    frame["report_month"].notna()
+                    & frame["report_month"].astype(str).str.strip().ne("")
+                    & ~frame["report_month"].astype(str).str.strip().str.lower().isin(["nan", "none", "nat"])
+                ).sum()
+            )
+            if "report_month" in frame.columns
+            else 0
+        )
+        frame.attrs["spend_debug_date_filled"] = int(frame["date"].notna().sum()) if "date" in frame.columns else 0
+        frame.attrs["spend_debug_month_key_rows"] = (
+            int(frame["month"].map(_month_norm_key).ne("").sum()) if "month" in frame.columns else 0
+        )
+    except Exception:
+        pass
 
 
 def _spend_sheet_pivot_by_month_country(spend_df: pd.DataFrame) -> pd.DataFrame:
@@ -1308,6 +1335,9 @@ _NORM_TO_FIELD: dict[str, str] = {
     "reporting_month": "report_month",
     "billing_month": "report_month",
     "posting_month": "report_month",
+    "reporting_period": "report_month",
+    "time_period": "report_month",
+    "calendar_period": "report_month",
     "tcv": "tcv",
     "tcv_usd": "tcv",
     "tcv_converted": "tcv",
@@ -1568,9 +1598,12 @@ def _preprocess_excel_sheet(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
         # ``date.fillna(report_month)`` on spend — Sheets sometimes repeats one Month on every row; that would
         # stamp the same calendar month onto all undated rows before we can prefer real per-row dates.
         df.attrs["spend_skip_date_fill_from_month"] = True
-        # ``period`` maps to ``date`` only; if those values do not parse as datetimes, ``report_month`` stays
-        # empty. Duplicate Period → Month so the same cells also feed ``report_month``.
-        period_cols = [c for c in df.columns if _norm_header_key(str(c)) == "period"]
+        # ``period`` maps to ``date`` only; ``reporting_period`` / ``Time period`` etc. may not map at all.
+        # Mirror the best *period* column into ``Month`` so ``report_month`` is populated.
+        period_cols = sorted(
+            (c for c in df.columns if "period" in _norm_header_key(str(c))),
+            key=lambda c: (0 if _norm_header_key(str(c)) == "period" else 1, str(c).lower()),
+        )
         month_cols = [c for c in df.columns if _norm_header_key(str(c)) == "month"]
         if period_cols:
             pcol = period_cols[0]
@@ -2438,6 +2471,7 @@ def load_spend_worksheet_fallback(sheet_id: str, _secret_fp: str) -> pd.DataFram
         return pd.DataFrame()
     best = _canonicalize_spend_month_column(best)
     best["source_tab"] = best_title
+    _attach_spend_pool_debug_attrs(best)
     return best
 
 
@@ -2535,6 +2569,7 @@ def load_spend_gid0_normalized(sheet_id: str, _secret_fp: str) -> pd.DataFrame:
         return pd.DataFrame()
     best = _canonicalize_spend_month_column(best)
     best["source_tab"] = f"gid:{best_gid}_spend"
+    _attach_spend_pool_debug_attrs(best)
     return best
 
 
@@ -2616,6 +2651,7 @@ def load_first_matching_worksheet_normalized(
         return out
     if _tab_title_looks_like_spend_worksheet(str(title)):
         out = _canonicalize_spend_month_column(out)
+        _attach_spend_pool_debug_attrs(out)
     out["source_tab"] = str(title)
     out["worksheet_gid"] = int(ws_gid)
     return out
@@ -3602,6 +3638,13 @@ def render_page_marketing_performance(
         "spend_recovery": _recovery_note,
         "xray_spend_column_secret": _optional_spend_column_header_from_secrets(),
     }
+    _pattrs = spend_pool_full.attrs if not spend_pool_full.empty else {}
+    _mpo_dbg["spend_debug_norm_columns"] = _pattrs.get("spend_debug_norm_columns", [])
+    _mpo_dbg["spend_debug_fields_mapped"] = _pattrs.get("spend_debug_fields_mapped", [])
+    _mpo_dbg["spend_debug_has_report_month"] = _pattrs.get("spend_debug_has_report_month", False)
+    _mpo_dbg["spend_debug_report_month_filled"] = _pattrs.get("spend_debug_report_month_filled", 0)
+    _mpo_dbg["spend_debug_date_filled"] = _pattrs.get("spend_debug_date_filled", 0)
+    _mpo_dbg["spend_debug_month_key_rows"] = _pattrs.get("spend_debug_month_key_rows", 0)
 
     def _tab_subset(frame: pd.DataFrame, tab_keywords: list[str]) -> pd.DataFrame:
         if "source_tab" not in frame.columns:
@@ -3943,6 +3986,9 @@ def render_page_marketing_performance(
             f"XRAY_SPEND_GID (secrets): {_mpo_dbg.get('xray_spend_gid_secret')!s} — set to tab URL gid when Spend is not first tab",
             f"XRAY_SPEND_COLUMN (secrets): {_mpo_dbg.get('xray_spend_column_secret')!r} — exact/substring header to force cost mapping",
             f"spend load source_tab: {_mpo_dbg.get('spend_load_source_tab')!r}",
+            f"pool_full normalized columns: {_mpo_dbg.get('spend_debug_norm_columns', [])!r}",
+            f"pool_full fields_mapped (normalize): {_mpo_dbg.get('spend_debug_fields_mapped', [])!r}",
+            f"pool_full has report_month={_mpo_dbg.get('spend_debug_has_report_month')}, report_month non-empty rows={_mpo_dbg.get('spend_debug_report_month_filled', 0)}, date non-null rows={_mpo_dbg.get('spend_debug_date_filled', 0)}, month key rows={_mpo_dbg.get('spend_debug_month_key_rows', 0)}",
             f"canonical spend load — rows={_mpo_dbg['gid0_rows']}, cost_sum={_mpo_dbg['gid0_cost']:,.2f}, has cost col={_mpo_dbg['has_cost_col_gid0']}",
             f"pool_full — rows={_mpo_dbg['pool_full_rows']}, cost_sum={_mpo_dbg['pool_full_cost']:,.2f}",
             f"sheet_master (date filter) — rows={_mpo_dbg['sheet_master_rows']}, cost_sum={_mpo_dbg['sheet_master_cost']:,.2f}",
