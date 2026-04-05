@@ -1313,6 +1313,9 @@ _NORM_TO_FIELD: dict[str, str] = {
     "period": "date",
     "week": "date",
     "create_date": "date",
+    "created_date": "date",
+    "first_lead_created_date": "date",
+    "1st_lead_created_date": "date",
     "date_formatted": "date",
     "close_date": "date",
     "reporting_date": "date",
@@ -1754,12 +1757,27 @@ def _preprocess_excel_sheet(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
             df["Closed Lost"] = stage.str.contains("closed lost", na=False).astype(int)
         if "Total Live" not in df.columns:
             df["Total Live"] = stage.str.contains("new|working|qualifying|pitch|negotiation|commitment", na=False).astype(int)
-        if "Date" not in df.columns:
+        _flc = next(
+            (
+                c
+                for c in df.columns
+                if _norm_header_key(str(c)) in ("first_lead_created_date", "1st_lead_created_date")
+            ),
+            None,
+        )
+        if _flc is not None:
+            _flc_parsed = pd.to_datetime(df[_flc], errors="coerce")
+            if "Date" not in df.columns:
+                df["Date"] = _flc_parsed
+            else:
+                df["Date"] = _flc_parsed.fillna(pd.to_datetime(df["Date"], errors="coerce"))
+        elif "Date" not in df.columns:
             date_col = next(
                 (
                     c
                     for c in df.columns
-                    if _norm_header_key(c) in {"formatted_date", "created_date", "create_date", "date", "date_formatted"}
+                    if _norm_header_key(c)
+                    in {"formatted_date", "created_date", "create_date", "date", "date_formatted"}
                 ),
                 None,
             )
@@ -1830,6 +1848,20 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
             _srcs,
             key=lambda c: (
                 0 if _norm_header_key(str(c)) == "market" else 1 if _norm_header_key(str(c)) == "kitchen_country" else 2,
+                str(c).lower(),
+            ),
+        )
+
+    if "date" in field_to_sources:
+        # Post-Lead: attribute CW / funnel to the **first touch** month (sheet ``First Lead Created Date``).
+        _ds = field_to_sources["date"]
+        field_to_sources["date"] = sorted(
+            _ds,
+            key=lambda c: (
+                0
+                if _norm_header_key(str(c))
+                in ("first_lead_created_date", "1st_lead_created_date")
+                else 1,
                 str(c).lower(),
             ),
         )
