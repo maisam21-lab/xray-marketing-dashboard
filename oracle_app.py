@@ -1361,6 +1361,9 @@ _NORM_TO_FIELD: dict[str, str] = {
     "cw_including_approved": "closed_won",
     # Post-lead X-Ray / Salesforce export (binary 0/1 column)
     "is_cw": "closed_won",
+    # Sheet / pivot header variants (often col AA on Post Lead)
+    "cw_inc_approved": "closed_won",
+    "cw_inc_app": "closed_won",
     "utm_source_gp": "utm_source",
     "utm_source": "utm_source",
     "utm_source_l": "utm_source_l",
@@ -1458,6 +1461,21 @@ def _to_number_series(s: pd.Series) -> pd.Series:
     if not used_eu:
         out.loc[neg_paren] = -out.loc[neg_paren]
     return out
+
+
+def _closed_won_to_numeric_series(s: pd.Series) -> pd.Series:
+    """Post-Lead ``Is_CW`` / boolean / TRUE-FALSE text → 0/1; leave integer counts >1 as-is (RAW CW tabs)."""
+    if s.dtype == bool:
+        return s.astype(float)
+    n = pd.to_numeric(s, errors="coerce")
+    nn = n.dropna()
+    if len(nn) and float(nn.max()) > 1.0 + 1e-9:
+        return _to_number_series(s)
+    t = s.astype(str).str.strip().str.lower()
+    out = n.fillna(0).astype(float)
+    out.loc[t.isin(("true", "t", "yes", "y", "x"))] = 1.0
+    out.loc[t.isin(("false", "f", "no", "n", "", "nan", "none", "nat"))] = 0.0
+    return (out > 0).astype(float)
 
 
 def _best_spend_column_raw(df: pd.DataFrame) -> Optional[str]:
@@ -1805,10 +1823,32 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
         if field:
             field_to_sources.setdefault(field, []).append(col)
 
+    if "country" in field_to_sources:
+        # Prefer **Market** over ``Kitchen Country`` / other geo keys so Post-Lead CW rolls up to sheet Market.
+        _srcs = field_to_sources["country"]
+        field_to_sources["country"] = sorted(
+            _srcs,
+            key=lambda c: (
+                0 if _norm_header_key(str(c)) == "market" else 1 if _norm_header_key(str(c)) == "kitchen_country" else 2,
+                str(c).lower(),
+            ),
+        )
+
     out = pd.DataFrame(index=df.index)
     # These often appear as two headers for the same measure (e.g. Actual TCV + TCV USD); summing doubles row TCV/LF.
     _DEDUPE_NUMERIC_MAX_FIELDS = frozenset({"tcv", "first_month_lf"})
     for field, srcs in field_to_sources.items():
+        if field == "closed_won":
+            is_cw_cols = [c for c in srcs if _norm_header_key(str(c)) == "is_cw"]
+            if is_cw_cols:
+                if len(is_cw_cols) == 1:
+                    out[field] = df[is_cw_cols[0]]
+                else:
+                    acc = _closed_won_to_numeric_series(df[is_cw_cols[0]])
+                    for c in is_cw_cols[1:]:
+                        acc = acc.combine(_closed_won_to_numeric_series(df[c]), max)
+                    out[field] = acc
+                continue
         if len(srcs) == 1:
             out[field] = df[srcs[0]]
         elif field in _NUM_FIELDS:
@@ -1883,7 +1923,10 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
 
     for c in _NUM_FIELDS:
         if c in out.columns:
-            out[c] = _to_number_series(out[c])
+            if c == "closed_won":
+                out[c] = _closed_won_to_numeric_series(out[c])
+            else:
+                out[c] = _to_number_series(out[c])
         else:
             out[c] = 0
 
