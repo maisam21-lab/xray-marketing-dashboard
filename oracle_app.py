@@ -3303,7 +3303,10 @@ def _kpi_block(
         "Spend ÷ sum of 1st Month LF for closed-won rows on RAW CW (same filters as Actual TCV). "
         "Lower means more LF per dollar of marketing."
     )
-    _leads_total_help = "Data rows on the canonical Raw Leads tab (or configured leads worksheet), scoped to your filters."
+    _leads_total_help = (
+        "Inbound **leads**: one row per lead on the **Leads** / Raw Leads tab (or the worksheet "
+        "gid from secrets / `XRAY_LEAD_WORKSHEET_GIDS`), after your date and MPO filters."
+    )
     _qualified_help = "Leads whose status is Qualified on the leads tab."
     _new_work_help = "Count of leads in New or Working status on the leads tab."
     _sql_pct_help = "SQL % = Qualified ÷ Total Leads × 100 (same lead slice as the cards above)."
