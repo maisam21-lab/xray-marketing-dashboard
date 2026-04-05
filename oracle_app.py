@@ -1413,6 +1413,11 @@ def _preprocess_excel_sheet(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
         df = df[~m.str.contains("TOTAL", case=False, na=False)]
     if "spend" in t:
         df = _try_melt_wide_month_spend_df(df)
+        # Long-format spend often repeats one Month label per block (merged cells). Per-tab ffill only — not in
+        # ``normalize()`` — avoids stamping CRM/other sheets while fixing month×country pivots.
+        for _c in df.columns:
+            if _norm_header_key(str(_c)) in {"month", "report_month"}:
+                df[_c] = df[_c].ffill()
     if ("raw" in t and "lead" in t and "post" not in t):
         # Convert lead rows into additive metrics so they can be combined with spend.
         if "Leads" not in df.columns:
