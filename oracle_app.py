@@ -848,6 +848,52 @@ def _spend_sheet_month_is_blank(s: pd.Series) -> pd.Series:
     return ~(t.str.len() > 0) | t.isin(["nan", "nat", "none"])
 
 
+def _best_norm_month_series_from_normalized_frame(df: pd.DataFrame) -> Optional[pd.Series]:
+    """Pick the column whose values most often normalize to ``YYYY-MM`` (unmapped / odd ME X-Ray headers)."""
+    if df.empty or len(df.columns) < 2:
+        return None
+    skip_nk = frozenset(
+        {
+            "country",
+            "market",
+            "geo",
+            "kitchen_country",
+            "country_code",
+            "channel",
+            "platform",
+            "media_type",
+            "lead_source",
+            "cost",
+            "clicks",
+            "impressions",
+            "cost_tcv_pct",
+        }
+    ) | _NUM_FIELDS
+    best: Optional[pd.Series] = None
+    best_ct = 0
+    n = len(df)
+    for c in df.columns:
+        sc = str(c)
+        nk = _norm_header_key(sc)
+        if nk in skip_nk:
+            continue
+        if any(p in nk for p in ("opportunity", "deal", "record", "case", "utm_", "lead_status", "opp_")):
+            continue
+        if nk.endswith("_id") or nk.endswith("_name"):
+            continue
+        if sc.startswith("_") or sc in ("source_tab", "worksheet_gid"):
+            continue
+        s = df[c].map(_month_norm_key)
+        ct = int(s.ne("").sum())
+        if ct > best_ct:
+            best_ct = ct
+            best = s
+    need = max(5, int(0.03 * n))
+    if best is None or best_ct < need:
+        return None
+    return best
+
+
 def _canonicalize_spend_month_column(df: pd.DataFrame) -> pd.DataFrame:
     """Set ``month`` (YYYY-MM) from row ``date`` when valid; else forward-filled ``report_month`` (merged Month cells).
 
@@ -869,6 +915,11 @@ def _canonicalize_spend_month_column(df: pd.DataFrame) -> pd.DataFrame:
     blank = m_new.isna() | m_new.astype(str).str.strip().str.lower().isin(["", "nan", "nat", "none"])
     if "report_month" in out.columns and bool(blank.any()):
         rm_ff = out["report_month"].ffill()
+        direct_rm = rm_ff.map(_month_norm_key)
+        hit_direct = blank & direct_rm.ne("")
+        if bool(hit_direct.any()):
+            m_new.loc[hit_direct] = direct_rm.loc[hit_direct]
+        blank = m_new.isna() | m_new.astype(str).str.strip().str.lower().isin(["", "nan", "nat", "none"])
         rser = _parse_report_month_series(rm_ff)
         rser = rser.fillna(_coerce_sheet_serial_dates(rm_ff))
         rser = _scrub_pre_2000_dates(rser)
@@ -881,6 +932,12 @@ def _canonicalize_spend_month_column(df: pd.DataFrame) -> pd.DataFrame:
         use = blank2 & ex.ne("")
         if bool(use.any()):
             m_new.loc[use] = ex.loc[use]
+    tmp_k = m_new.map(lambda v: _month_norm_key(v) if pd.notna(v) and str(v).strip() else "")
+    if bool(tmp_k.eq("").all()) and "cost" in out.columns:
+        if float(pd.to_numeric(out["cost"], errors="coerce").fillna(0).sum()) > 1e-6:
+            guess = _best_norm_month_series_from_normalized_frame(out)
+            if guess is not None:
+                m_new = guess
     out["month"] = m_new.map(lambda v: _month_norm_key(v) if pd.notna(v) and str(v).strip() else "")
     return out
 
@@ -1248,6 +1305,9 @@ _NORM_TO_FIELD: dict[str, str] = {
     "calendar_month": "report_month",
     "month_year": "report_month",
     "year_month": "report_month",
+    "reporting_month": "report_month",
+    "billing_month": "report_month",
+    "posting_month": "report_month",
     "tcv": "tcv",
     "tcv_usd": "tcv",
     "tcv_converted": "tcv",
@@ -1508,6 +1568,20 @@ def _preprocess_excel_sheet(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
         # ``date.fillna(report_month)`` on spend — Sheets sometimes repeats one Month on every row; that would
         # stamp the same calendar month onto all undated rows before we can prefer real per-row dates.
         df.attrs["spend_skip_date_fill_from_month"] = True
+        # ``period`` maps to ``date`` only; if those values do not parse as datetimes, ``report_month`` stays
+        # empty. Duplicate Period → Month so the same cells also feed ``report_month``.
+        period_cols = [c for c in df.columns if _norm_header_key(str(c)) == "period"]
+        month_cols = [c for c in df.columns if _norm_header_key(str(c)) == "month"]
+        if period_cols:
+            pcol = period_cols[0]
+            if not month_cols:
+                df["Month"] = df[pcol].values
+            else:
+                mcol = month_cols[0]
+                mser = df[mcol].astype(str).str.strip()
+                empty_m = mser.eq("") | mser.str.lower().isin(["nan", "none", "nat"])
+                if bool(empty_m.all()):
+                    df[mcol] = df[pcol].values
     if ("raw" in t and "lead" in t and "post" not in t):
         # Convert lead rows into additive metrics so they can be combined with spend.
         if "Leads" not in df.columns:
