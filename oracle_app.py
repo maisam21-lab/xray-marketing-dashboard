@@ -711,6 +711,22 @@ def _normalize_master_merge_frame(df: pd.DataFrame) -> pd.DataFrame:
 _MIN_DASHBOARD_PERIOD = pd.Period("2000-01", freq="M")
 
 
+def _yyyymm_calendar_to_key(ni: int) -> str:
+    """Map integer ``YYYYMM`` (e.g. ``202509``) to canonical ``YYYY-MM`` (ME exports / pivot downloads)."""
+    if ni < 199001 or ni > 210012:
+        return ""
+    y, mo = ni // 100, ni % 100
+    if mo < 1 or mo > 12 or y < 1990 or y > 2100:
+        return ""
+    try:
+        p = pd.Period(year=int(y), month=int(mo), freq="M")
+        if p >= _MIN_DASHBOARD_PERIOD:
+            return str(p)
+    except (ValueError, TypeError):
+        pass
+    return ""
+
+
 def _dashboard_month_plausible(m: Any) -> bool:
     """False for empty month and for pre-2000 periods (epoch junk); True if unparseable (keep row)."""
     if m is None or (isinstance(m, float) and pd.isna(m)):
@@ -759,21 +775,31 @@ def _month_norm_key(m: Any) -> str:
     try:
         if not isinstance(m, bool):
             n = float(m)
-            # Allow fractional sheet serials (e.g. 46054.0); ignore values outside plausible date range.
-            if pd.notna(n) and 20000 < n < 100000:
+            if pd.notna(n):
                 ni = int(round(n))
                 if abs(n - ni) < 0.02 or abs(n - round(n)) < 1e-6:
-                    base = pd.Timestamp("1899-12-30")
-                    ts = base + pd.to_timedelta(ni, unit="D")
-                    if ts.year >= 2000:
-                        p = ts.to_period("M")
-                        if p >= _MIN_DASHBOARD_PERIOD:
-                            return str(p)
+                    yk = _yyyymm_calendar_to_key(ni)
+                    if yk:
+                        return yk
+                # Excel / Sheets day-count serial (not YYYYMM — those are > 100k).
+                if 20000 < n < 100000:
+                    if abs(n - ni) < 0.02 or abs(n - round(n)) < 1e-6:
+                        base = pd.Timestamp("1899-12-30")
+                        ts = base + pd.to_timedelta(ni, unit="D")
+                        if ts.year >= 2000:
+                            p = ts.to_period("M")
+                            if p >= _MIN_DASHBOARD_PERIOD:
+                                return str(p)
     except (TypeError, ValueError, OverflowError):
         pass
     ms = str(m).strip()
     if not ms or ms.lower() in ("nat", "none", "nan"):
         return ""
+    ms6 = ms.replace(",", "").replace(" ", "")
+    if ms6.isdigit() and len(ms6) == 6:
+        yk6 = _yyyymm_calendar_to_key(int(ms6))
+        if yk6:
+            return yk6
     try:
         p = pd.Period(str(m), freq="M")
         if p < _MIN_DASHBOARD_PERIOD:
@@ -835,11 +861,11 @@ def _canonicalize_spend_month_column(df: pd.DataFrame) -> pd.DataFrame:
     idx = out.index
     m_new = pd.Series(pd.NA, index=idx, dtype=object)
     if "date" in out.columns:
-        dser = _coerce_sheet_serial_dates(out["date"])
-        d = pd.to_datetime(_scrub_pre_2000_dates(dser), errors="coerce")
-        okd = d.notna() & (d >= pd.Timestamp("2000-01-01"))
+        # One map covers YYYYMM ints, sheet serials, ISO strings, etc. (avoids ``to_datetime(202509)`` junk).
+        from_date = out["date"].map(_month_norm_key)
+        okd = from_date.ne("")
         if bool(okd.any()):
-            m_new.loc[okd] = d.loc[okd].dt.to_period("M").astype(str)
+            m_new.loc[okd] = from_date.loc[okd]
     blank = m_new.isna() | m_new.astype(str).str.strip().str.lower().isin(["", "nan", "nat", "none"])
     if "report_month" in out.columns and bool(blank.any()):
         rm_ff = out["report_month"].ffill()
@@ -891,6 +917,7 @@ def _spend_sheet_pivot_by_month_country(spend_df: pd.DataFrame) -> pd.DataFrame:
                 if c not in g.columns:
                     g[c] = 0 if c in {"clicks", "impressions"} else 0.0
             if _normalized_spend_cost_sum(g) > 1e-9:
+                g["month"] = g["month"].map(_month_norm_key)
                 return g[["month", "country"] + metrics]
 
     if x.empty:
@@ -900,6 +927,7 @@ def _spend_sheet_pivot_by_month_country(spend_df: pd.DataFrame) -> pd.DataFrame:
     for c in metrics:
         if c not in g.columns:
             g[c] = 0 if c in {"clicks", "impressions"} else 0.0
+    g["month"] = g["month"].map(_month_norm_key)
     return g[["month", "country"] + metrics]
 
 
@@ -1377,13 +1405,17 @@ def _parse_report_month_series(s: pd.Series) -> pd.Series:
         try:
             if not isinstance(v, bool):
                 n = float(v)
-                if pd.notna(n) and 20000 < n < 100000:
+                if pd.notna(n):
                     ni = int(round(n))
                     if abs(n - ni) < 0.02 or abs(n - round(n)) < 1e-6:
-                        base = pd.Timestamp("1899-12-30")
-                        ts = base + pd.to_timedelta(ni, unit="D")
-                        if ts.year >= 2000:
-                            parsed = ts
+                        yk = _yyyymm_calendar_to_key(ni)
+                        if yk:
+                            parsed = pd.Timestamp(yk + "-01")
+                        elif 20000 < n < 100000:
+                            base = pd.Timestamp("1899-12-30")
+                            ts = base + pd.to_timedelta(ni, unit="D")
+                            if ts.year >= 2000:
+                                parsed = ts
         except (TypeError, ValueError, OverflowError):
             pass
         if parsed is None:
@@ -1636,7 +1668,15 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
             out["cost"] = _to_number_series(df[bc])
 
     if "date" in out.columns:
-        out["date"] = _scrub_pre_2000_dates(_coerce_sheet_serial_dates(out["date"]))
+        s_dt = out["date"].copy()
+        dn = pd.to_numeric(s_dt, errors="coerce")
+        int_ok = dn.notna() & (dn - dn.round()).abs() < 0.02
+        if bool(int_ok.any()):
+            ni = dn.loc[int_ok].round().astype("int64")
+            yk = ni.map(_yyyymm_calendar_to_key)
+            for ix in yk.index[yk.ne("")]:
+                s_dt.loc[ix] = pd.Timestamp(str(yk.loc[ix]) + "-01")
+        out["date"] = _scrub_pre_2000_dates(_coerce_sheet_serial_dates(s_dt))
     else:
         out["date"] = pd.NaT
 
