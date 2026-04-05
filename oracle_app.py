@@ -21,7 +21,6 @@ from typing import Any, Optional, Union
 import pandas as pd
 import plotly.express as px
 import streamlit as st
-import streamlit.components.v1 as st_components
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 DEFAULT_SOURCE_TRUTH_GID = 8109573
@@ -2809,41 +2808,6 @@ def _format_spend_k(v: float) -> str:
     return f"${k:.2f}K"
 
 
-def _format_spend_hover_full(v: float) -> str:
-    """Full spend string for HTML ``title=`` hover (native browser tooltip)."""
-    return f"${v:,.2f}"
-
-
-def _styler_html_inject_spend_titles(table_html: str, spend_col_idx: int, titles_seq: list[str]) -> str:
-    """Add ``title=`` on Spend ``<td>`` cells for hover.
-
-    ``Styler.set_tooltips`` injects extra spans + CSS (absolute positioning, black fill) that breaks
-    column alignment and shows stray black boxes inside Streamlit ``components.html`` iframes.
-    """
-    if spend_col_idx < 0 or not titles_seq:
-        return table_html
-    out = table_html
-    for i, raw in enumerate(titles_seq):
-        tip = (raw or "").strip()
-        if not tip:
-            continue
-        esc = html.escape(tip, quote=True)
-        pat = rf'(<td[^>]*\bid="T_[0-9a-fA-F]+_row{i}_col{spend_col_idx}"[^>]*)>'
-        out, n = re.subn(pat, rf'\1 title="{esc}">', out, count=1)
-        if not n:
-            break
-    return out
-
-
-_MASTER_PERF_HTML_WRAP_CSS = """
-<style type="text/css">
-.mp-master-wrap table { border-collapse: collapse; width: 100%; table-layout: auto; }
-.mp-master-wrap table thead th,
-.mp-master-wrap table tbody td { box-sizing: border-box; vertical-align: middle; }
-</style>
-"""
-
-
 def _lead_rows_count(frame: pd.DataFrame) -> int:
     """Lead count = data-row count of the resolved leads slice (sheet rows, header excluded)."""
     return int(len(frame)) if isinstance(frame, pd.DataFrame) else 0
@@ -3611,11 +3575,6 @@ def _master_performance_table(
     pvt = pvt.drop(columns=["month", "_month_sort_lbl"], errors="ignore")
     out_cols = ["Month", "Market"] + [m for m in metrics if m in pvt.columns]
     pvt = pvt[out_cols]
-    spend_hover = pd.DataFrame("", index=pvt.index, columns=pvt.columns)
-    if "Spend" in pvt.columns:
-        spend_hover["Spend"] = pvt["Spend"].map(
-            lambda v: _format_spend_hover_full(float(v)) if v is not None and not pd.isna(v) else ""
-        )
     # Streamlit's Arrow table path often ignores ``Styler.format`` for numeric cells — use strings for Spend.
     if "Spend" in pvt.columns:
         pvt["Spend"] = pvt["Spend"].apply(
@@ -3652,19 +3611,7 @@ def _master_performance_table(
             axis=0,
             subset=[col],
         )
-    styler = styler.hide(axis="index")
-    _mp_html = styler.to_html()
-    if "Spend" in pvt.columns:
-        _si = list(pvt.columns).index("Spend")
-        _tips = spend_hover["Spend"].tolist() if "Spend" in spend_hover.columns else []
-        _mp_html = _styler_html_inject_spend_titles(_mp_html, _si, _tips)
-    _mp_h = min(920, max(260, 44 * (len(pvt) + 6)))
-    st_components.html(
-        f'<div class="mp-master-wrap" style="width:100%;overflow-x:auto;">{_MASTER_PERF_HTML_WRAP_CSS}{_mp_html}</div>',
-        height=_mp_h,
-        width=None,
-        scrolling=True,
-    )
+    st.dataframe(styler, use_container_width=True, hide_index=True, key=f"{key_suffix}_df_master_pivot")
 
 
 def render_page_marketing_performance(
