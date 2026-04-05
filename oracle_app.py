@@ -3047,6 +3047,43 @@ def _overlay_spend_from_spend_grid_on_gm(gm: pd.DataFrame, spend_grid: Optional[
     return out
 
 
+def _master_union_gm_with_spend_pivot(gm: pd.DataFrame, spend_grid: Optional[pd.DataFrame]) -> pd.DataFrame:
+    """Outer-join the CRM grid to the **spend worksheet pivot** (month × Market), like an Excel pivot.
+
+    ``gm`` from ``master_df`` only includes (month, country) keys that survived the CRM merge, so real spend
+    months/countries were missing from the table even when the sheet had values.
+    """
+    if spend_grid is None or spend_grid.empty:
+        return gm
+    auth = _master_view_spend_authoritative_from_grid(spend_grid)
+    if auth.empty:
+        return gm
+    a = auth.copy()
+    a["month"] = a["month"].map(_month_norm_key)
+    a["Market"] = a["Market"].astype(str).str.strip()
+    _bad_mo = a["month"].astype(str).str.strip().str.lower().isin(["", "nan", "nat", "none"])
+    a = a.loc[~_bad_mo].copy()
+    a = a.rename(columns={"spend": "_sp_sheet"})
+    a = a.groupby(["month", "Market"], as_index=False)["_sp_sheet"].sum()
+
+    b = gm.copy()
+    b["month"] = b["month"].map(_month_norm_key)
+    b["Market"] = b["Market"].astype(str).str.strip()
+    b["_sp_crm"] = pd.to_numeric(b["spend"], errors="coerce").fillna(0)
+    b = b.drop(columns=["spend"], errors="ignore")
+
+    out = a.merge(b, on=["month", "Market"], how="outer")
+    ss = pd.to_numeric(out["_sp_sheet"], errors="coerce").fillna(0)
+    sc = pd.to_numeric(out["_sp_crm"], errors="coerce").fillna(0)
+    out["spend"] = ss.where(ss > 1e-6, sc)
+    out = out.drop(columns=["_sp_sheet", "_sp_crm"], errors="ignore")
+    for col in out.columns:
+        if col in ("month", "Market", "spend"):
+            continue
+        out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0)
+    return out
+
+
 def _master_view_refresh_middle_east_spend_row(gm: pd.DataFrame) -> pd.DataFrame:
     """If ME countries have spend, **Middle East** = their sum; if not, keep the row as the monthly regional total (do not zero it)."""
     if gm.empty or "month" not in gm.columns or "Market" not in gm.columns or "spend" not in gm.columns:
@@ -3169,7 +3206,7 @@ def _master_performance_table(
         if c in g.columns:
             sum_map[c] = "sum"
     gm = g.groupby(["month", "Market"], as_index=False, dropna=False).agg(sum_map)
-    gm = _overlay_spend_from_spend_grid_on_gm(gm, spend_grid)
+    gm = _master_union_gm_with_spend_pivot(gm, spend_grid)
     gm = _master_view_drop_empty_months(gm)
     gm = _master_view_append_middle_east_first(gm)
     gm = _overlay_spend_from_spend_grid_on_gm(gm, spend_grid)
