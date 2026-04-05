@@ -727,6 +727,27 @@ def _yyyymm_calendar_to_key(ni: int) -> str:
     return ""
 
 
+def _month_only_calendar_month_to_key(month_1_12: int) -> str:
+    """Map bare month index 1..12 (no year in cell) to ``YYYY-MM``.
+
+    Picks the latest calendar month **not after** the current month (same year first, then prior years).
+    """
+    if month_1_12 < 1 or month_1_12 > 12:
+        return ""
+    nowp = pd.Period(date.today(), freq="M")
+    y0 = date.today().year
+    for y in range(y0, y0 - 8, -1):
+        try:
+            p = pd.Period(year=y, month=month_1_12, freq="M")
+            if p < _MIN_DASHBOARD_PERIOD:
+                continue
+            if p <= nowp:
+                return str(p)
+        except (ValueError, TypeError):
+            continue
+    return ""
+
+
 def _dashboard_month_plausible(m: Any) -> bool:
     """False for empty month and for pre-2000 periods (epoch junk); True if unparseable (keep row)."""
     if m is None or (isinstance(m, float) and pd.isna(m)):
@@ -781,6 +802,11 @@ def _month_norm_key(m: Any) -> str:
                     yk = _yyyymm_calendar_to_key(ni)
                     if yk:
                         return yk
+                    # Calendar month 1-12 only (often paired with a separate Year column — see spend preprocess).
+                    if 1 <= ni <= 12 and not (20000 < n < 100000):
+                        mk = _month_only_calendar_month_to_key(ni)
+                        if mk:
+                            return mk
                 # Excel / Sheets day-count serial (not YYYYMM — those are > 100k).
                 if 20000 < n < 100000:
                     if abs(n - ni) < 0.02 or abs(n - round(n)) < 1e-6:
@@ -800,6 +826,12 @@ def _month_norm_key(m: Any) -> str:
         yk6 = _yyyymm_calendar_to_key(int(ms6))
         if yk6:
             return yk6
+    if ms6.isdigit() and 1 <= len(ms6) <= 2:
+        mi = int(ms6)
+        if 1 <= mi <= 12:
+            mk = _month_only_calendar_month_to_key(mi)
+            if mk:
+                return mk
     try:
         p = pd.Period(str(m), freq="M")
         if p < _MIN_DASHBOARD_PERIOD:
@@ -965,6 +997,12 @@ def _attach_spend_pool_debug_attrs(frame: pd.DataFrame) -> None:
         frame.attrs["spend_debug_month_key_rows"] = (
             int(frame["month"].map(_month_norm_key).ne("").sum()) if "month" in frame.columns else 0
         )
+        if "report_month" in frame.columns:
+            u = frame["report_month"].dropna().astype(str).str.strip()
+            u = u[~u.str.lower().isin(["nan", "none", "nat"])]
+            frame.attrs["spend_debug_report_month_sample"] = sorted(set(u.tolist()))[:24]
+        else:
+            frame.attrs["spend_debug_report_month_sample"] = []
     except Exception:
         pass
 
@@ -1501,6 +1539,10 @@ def _parse_report_month_series(s: pd.Series) -> pd.Series:
                         yk = _yyyymm_calendar_to_key(ni)
                         if yk:
                             parsed = pd.Timestamp(yk + "-01")
+                        elif 1 <= ni <= 12 and not (20000 < n < 100000):
+                            mkey = _month_only_calendar_month_to_key(ni)
+                            if mkey:
+                                parsed = pd.Timestamp(mkey + "-01")
                         elif 20000 < n < 100000:
                             base = pd.Timestamp("1899-12-30")
                             ts = base + pd.to_timedelta(ni, unit="D")
@@ -1513,12 +1555,20 @@ def _parse_report_month_series(s: pd.Series) -> pd.Series:
             if not val or val.lower() in ("nan", "none", "nat"):
                 out.loc[idx] = pd.NaT
                 continue
-            _cy = date.today().year
-            for y in (_cy, _cy - 1, _cy - 2, _cy + 1):
-                t = pd.to_datetime(f"{val} 1, {y}", errors="coerce")
-                if pd.notna(t):
-                    parsed = t
-                    break
+            vd = val.replace(",", "").replace(" ", "")
+            if vd.isdigit() and 1 <= len(vd) <= 2:
+                mi = int(vd)
+                if 1 <= mi <= 12:
+                    mkey = _month_only_calendar_month_to_key(mi)
+                    if mkey:
+                        parsed = pd.Timestamp(mkey + "-01")
+            if parsed is None:
+                _cy = date.today().year
+                for y in (_cy, _cy - 1, _cy - 2, _cy + 1):
+                    t = pd.to_datetime(f"{val} 1, {y}", errors="coerce")
+                    if pd.notna(t):
+                        parsed = t
+                        break
         out.loc[idx] = parsed if parsed is not None else pd.NaT
     return out
 
@@ -1583,6 +1633,37 @@ def _try_melt_wide_month_spend_df(df: pd.DataFrame) -> pd.DataFrame:
     return long
 
 
+def _spend_combine_year_month_columns(df: pd.DataFrame) -> pd.DataFrame:
+    """When the Spend tab has ``Year`` + numeric ``Month`` (1-12), write ``YYYY-MM-01`` into the Month column.
+
+    ``Year`` is not part of ``normalize()`` output — it is only used here on the raw grid so ``report_month`` parses.
+    """
+    ycols = [
+        c
+        for c in df.columns
+        if _norm_header_key(str(c)) in ("year", "calendar_year", "report_year")
+    ]
+    mcols = [c for c in df.columns if _norm_header_key(str(c)) == "month"]
+    if len(ycols) != 1 or len(mcols) != 1:
+        return df
+    yc, mc = ycols[0], mcols[0]
+    if yc == mc:
+        return df
+    yv = pd.to_numeric(df[yc], errors="coerce")
+    mv = pd.to_numeric(df[mc], errors="coerce")
+    ok = yv.notna() & mv.notna() & mv.between(1, 12) & yv.between(1990, 2100)
+    if not bool(ok.any()):
+        return df
+    combined = df[mc].astype(object).copy()
+    for ix in df.index[ok]:
+        try:
+            combined.loc[ix] = f"{int(yv.loc[ix])}-{int(mv.loc[ix]):02d}-01"
+        except (ValueError, TypeError, OverflowError):
+            pass
+    df[mc] = combined
+    return df
+
+
 def _preprocess_excel_sheet(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
     """ME X-Ray template: forward-fill month blocks on CW Summary; drop regional subtotals."""
     df = df.copy()
@@ -1594,6 +1675,7 @@ def _preprocess_excel_sheet(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
         df = df[~m.str.contains("TOTAL", case=False, na=False)]
     if "spend" in t:
         df = _try_melt_wide_month_spend_df(df)
+        df = _spend_combine_year_month_columns(df)
         # Do **not** ffill Month here (merged-cell collapse). Also tell ``normalize()`` not to
         # ``date.fillna(report_month)`` on spend — Sheets sometimes repeats one Month on every row; that would
         # stamp the same calendar month onto all undated rows before we can prefer real per-row dates.
@@ -3645,6 +3727,7 @@ def render_page_marketing_performance(
     _mpo_dbg["spend_debug_report_month_filled"] = _pattrs.get("spend_debug_report_month_filled", 0)
     _mpo_dbg["spend_debug_date_filled"] = _pattrs.get("spend_debug_date_filled", 0)
     _mpo_dbg["spend_debug_month_key_rows"] = _pattrs.get("spend_debug_month_key_rows", 0)
+    _mpo_dbg["spend_debug_report_month_sample"] = _pattrs.get("spend_debug_report_month_sample", [])
 
     def _tab_subset(frame: pd.DataFrame, tab_keywords: list[str]) -> pd.DataFrame:
         if "source_tab" not in frame.columns:
@@ -3989,6 +4072,7 @@ def render_page_marketing_performance(
             f"pool_full normalized columns: {_mpo_dbg.get('spend_debug_norm_columns', [])!r}",
             f"pool_full fields_mapped (normalize): {_mpo_dbg.get('spend_debug_fields_mapped', [])!r}",
             f"pool_full has report_month={_mpo_dbg.get('spend_debug_has_report_month')}, report_month non-empty rows={_mpo_dbg.get('spend_debug_report_month_filled', 0)}, date non-null rows={_mpo_dbg.get('spend_debug_date_filled', 0)}, month key rows={_mpo_dbg.get('spend_debug_month_key_rows', 0)}",
+            f"pool_full report_month sample (unique, up to 24): {_mpo_dbg.get('spend_debug_report_month_sample', [])!r}",
             f"canonical spend load — rows={_mpo_dbg['gid0_rows']}, cost_sum={_mpo_dbg['gid0_cost']:,.2f}, has cost col={_mpo_dbg['has_cost_col_gid0']}",
             f"pool_full — rows={_mpo_dbg['pool_full_rows']}, cost_sum={_mpo_dbg['pool_full_cost']:,.2f}",
             f"sheet_master (date filter) — rows={_mpo_dbg['sheet_master_rows']}, cost_sum={_mpo_dbg['sheet_master_cost']:,.2f}",
