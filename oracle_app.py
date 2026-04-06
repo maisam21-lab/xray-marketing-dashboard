@@ -3226,19 +3226,55 @@ def _apply_sheet_filters(
     return df, df_for_tabs
 
 
-def _mpo_toolbar_summary_html(
+def _mpo_market_scope_note(key_suffix: str) -> str:
+    """Short label for which markets apply (scorecard + table)."""
+    sm = st.session_state.get(f"{key_suffix}_market", ["All Markets"])
+    if not sm or "All Markets" in sm:
+        return "All markets"
+    picks = [str(x) for x in sm if x and str(x) != "All Markets"]
+    if not picks:
+        return "All markets"
+    if len(picks) <= 2:
+        return ", ".join(html.escape(p) for p in picks)
+    return f"{html.escape(picks[0])}, {html.escape(picks[1])} +{len(picks) - 2} more"
+
+
+def _mpo_comparison_strip_html(
     *,
+    key_suffix: str,
     basis_ytd: bool,
     cur_k: Optional[str],
     ref_k: Optional[str],
     kind: str,
 ) -> str:
-    """Single-line summary under filters (plain language for readers)."""
+    """Scorecard-style dual cards: current vs reference windows (updates every rerun)."""
+    _mscope = _mpo_market_scope_note(key_suffix)
+    _ref_note = html.escape("Comparison months use your Market filter only — not the Month filter.")
+
+    def _foot(_mode_lbl: str, _mode_cls: str) -> str:
+        return (
+            f'<div class="mpo-cmp-foot">'
+            f'<span class="mpo-cmp-mode {_mode_cls}">{html.escape(_mode_lbl)}</span>'
+            f'<span class="mpo-cmp-scope">Markets: <strong>{_mscope}</strong> · {_ref_note}</span>'
+            f"</div>"
+        )
+
+    def _card(side_cls: str, title: str, big_range: str, meta: str) -> str:
+        return (
+            f'<div class="mpo-cmp-card {side_cls}">'
+            f'<div class="mpo-cmp-card-title">{html.escape(title)}</div>'
+            f'<div class="mpo-cmp-card-range">{big_range}</div>'
+            f'<div class="mpo-cmp-card-meta">{meta}</div>'
+            f"</div>"
+        )
+
     if basis_ytd:
         if not cur_k:
             return (
-                '<div class="mpo-toolbar-summary mpo-toolbar-summary--muted">'
-                "Add data in range or pick a month — we need a last month for year-to-date."
+                '<div class="mpo-cmp-wrap">'
+                '<div class="mpo-cmp-empty">Pick a month in the table filter (or load data) '
+                "to anchor year-to-date.</div>"
+                f"{_foot('Year to date', 'mpo-cmp-mode--ytd')}"
                 "</div>"
             )
         _cy0 = _mpo_month_keys_calendar_ytd_through(cur_k)
@@ -3246,34 +3282,77 @@ def _mpo_toolbar_summary_html(
         _py0 = [x for x in _py0 if x]
         if not _cy0 or not _py0 or len(_py0) != len(_cy0):
             return (
-                '<div class="mpo-toolbar-summary mpo-toolbar-summary--muted">'
-                "Year-to-date could not be lined up with last year — check your date range."
+                '<div class="mpo-cmp-wrap">'
+                '<div class="mpo-cmp-empty">Could not align this year with last year for YTD — check the date range.</div>'
+                f"{_foot('Year to date', 'mpo-cmp-mode--ytd')}"
                 "</div>"
             )
-        _a = html.escape(_month_label_short(_cy0[-1]))
+        _c0 = html.escape(_month_label_short(_cy0[0]))
+        _c1 = html.escape(_month_label_short(_cy0[-1]))
         _p0 = html.escape(_month_label_short(_py0[0]))
         _p1 = html.escape(_month_label_short(_py0[-1]))
-        _txt = (
-            f"Scorecard totals run from <strong>January through {_a}</strong>. "
-            f"The green/red % lines compare to <strong>{_p0} through {_p1}</strong>."
+        _n = len(_cy0)
+        left = _card(
+            "mpo-cmp-card--current",
+            "Scorecard · this year",
+            f"{_c0}<span class=\"mpo-cmp-ndash\">\u2013</span>{_c1}",
+            f"{_n} month{'s' if _n != 1 else ''} rolled into top KPIs",
         )
-        return f'<div class="mpo-toolbar-summary mpo-toolbar-summary--oneline">{_txt}</div>'
+        right = _card(
+            "mpo-cmp-card--ref",
+            "Baseline · last year",
+            f"{_p0}<span class=\"mpo-cmp-ndash\">\u2013</span>{_p1}",
+            "Same calendar months · used for % vs",
+        )
+        return (
+            '<div class="mpo-cmp-wrap">'
+            '<div class="mpo-cmp-row">'
+            f"{left}"
+            '<div class="mpo-cmp-vs-col"><span class="mpo-cmp-vs">vs</span></div>'
+            f"{right}"
+            "</div>"
+            f"{_foot('Year to date', 'mpo-cmp-mode--ytd')}"
+            "</div>"
+        )
 
     if cur_k and ref_k:
-        _mk = f"{html.escape(_month_label_short(cur_k))} vs {html.escape(_month_label_short(ref_k))}"
+        _ck = html.escape(_month_label_short(cur_k))
+        _rk = html.escape(_month_label_short(ref_k))
+        left = _card(
+            "mpo-cmp-card--current",
+            "Current period",
+            _ck,
+            "Anchor month for filtered scorecard",
+        )
+        right = _card(
+            "mpo-cmp-card--ref",
+            "Reference period",
+            _rk,
+            "Used for green/red % lines",
+        )
         if kind == "custom":
-            _txt = f"The % lines compare <strong>{_mk}</strong> (from the two dates you picked)."
+            _ml, _mc = "Custom", "mpo-cmp-mode--custom"
         elif kind == "yoy":
-            _txt = f"Comparing <strong>{_mk}</strong> (vs last year, same month)."
+            _ml, _mc = "Year over year", "mpo-cmp-mode--yoy"
         elif kind == "mom":
-            _txt = f"Comparing <strong>{_mk}</strong> (vs the month before)."
+            _ml, _mc = "Month over month", "mpo-cmp-mode--mom"
         else:
-            _txt = f"Comparing <strong>{_mk}</strong>."
-        return f'<div class="mpo-toolbar-summary mpo-toolbar-summary--oneline">{_txt}</div>'
+            _ml, _mc = "Comparison", "mpo-cmp-mode--auto"
+        return (
+            '<div class="mpo-cmp-wrap">'
+            '<div class="mpo-cmp-row">'
+            f"{left}"
+            '<div class="mpo-cmp-vs-col"><span class="mpo-cmp-vs">vs</span></div>'
+            f"{right}"
+            "</div>"
+            f"{_foot(_ml, _mc)}"
+            "</div>"
+        )
 
     return (
-        '<div class="mpo-toolbar-summary mpo-toolbar-summary--muted">'
-        "Choose months in the table filter or widen the date range to see comparisons."
+        '<div class="mpo-cmp-wrap">'
+        '<div class="mpo-cmp-empty">Choose months for the table or widen the date range to see comparison windows.</div>'
+        f"{_foot('—', 'mpo-cmp-mode--na')}"
         "</div>"
     )
 
@@ -3321,9 +3400,7 @@ def _apply_marketing_performance_filters(
         )
     _basis_now = str(st.session_state.get(f"{key_suffix}_scorecard_basis", "ytd") or "ytd")
     with row1b:
-        if _basis_now == "ytd":
-            st.caption("Percent changes compare this year to the same calendar months last year.")
-        else:
+        if _basis_now != "ytd":
             st.selectbox(
                 "% change vs",
                 options=["auto", "mom", "yoy", "custom"],
@@ -3407,7 +3484,8 @@ def _apply_marketing_performance_filters(
 
     cur_k, ref_k, kind = _mpo_compare_month_keys(df_date, key_suffix=key_suffix)
     st.markdown(
-        _mpo_toolbar_summary_html(
+        _mpo_comparison_strip_html(
+            key_suffix=key_suffix,
             basis_ytd=(_basis_now == "ytd"),
             cur_k=cur_k,
             ref_k=ref_k,
@@ -5729,6 +5807,115 @@ def main() -> None:
         letter-spacing: -0.03em;
         line-height: 1.2;
         font-variant-numeric: tabular-nums;
+    }
+    /* MPO comparison strip — dual “mini scorecards”, dynamic with filters */
+    .mpo-cmp-wrap {
+        margin: 8px 0 16px 0;
+    }
+    .mpo-cmp-row {
+        display: grid;
+        grid-template-columns: 1fr auto 1fr;
+        gap: 10px 14px;
+        align-items: stretch;
+    }
+    @media (max-width: 720px) {
+        .mpo-cmp-row {
+            grid-template-columns: 1fr;
+        }
+        .mpo-cmp-vs-col { display: none; }
+    }
+    .mpo-cmp-card {
+        background: linear-gradient(165deg, #ffffff 0%, #f8fafc 100%);
+        border: 1px solid #e2e8f0;
+        border-radius: 14px;
+        padding: 12px 14px 14px;
+        box-shadow: 0 2px 12px rgba(15, 23, 42, 0.05);
+        transition: box-shadow 0.25s ease, transform 0.25s ease, border-color 0.25s ease;
+        min-height: 92px;
+    }
+    .mpo-cmp-card:hover {
+        box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
+        border-color: #cbd5e1;
+        transform: translateY(-1px);
+    }
+    .mpo-cmp-card--current { border-top: 3px solid #4f8483; }
+    .mpo-cmp-card--ref { border-top: 3px solid #64748b; }
+    .mpo-cmp-card-title {
+        font-size: 10px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: #64748b;
+        margin-bottom: 6px;
+    }
+    .mpo-cmp-card-range {
+        font-size: clamp(1.05rem, 2.4vw, 1.35rem);
+        font-weight: 700;
+        color: #0f172a;
+        letter-spacing: -0.02em;
+        line-height: 1.2;
+        font-variant-numeric: tabular-nums;
+    }
+    .mpo-cmp-ndash { color: #94a3b8; font-weight: 600; padding: 0 2px; }
+    .mpo-cmp-card-meta {
+        margin-top: 8px;
+        font-size: 11px;
+        font-weight: 500;
+        color: #64748b;
+        line-height: 1.35;
+    }
+    .mpo-cmp-vs-col {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 36px;
+    }
+    .mpo-cmp-vs {
+        font-size: 12px;
+        font-weight: 800;
+        color: #94a3b8;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+    }
+    .mpo-cmp-foot {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px 16px;
+        margin-top: 10px;
+        padding: 8px 12px;
+        background: #f8fafc;
+        border-radius: 10px;
+        border: 1px solid #e2e8f0;
+        font-size: 11px;
+        color: #475569;
+        line-height: 1.45;
+    }
+    .mpo-cmp-mode {
+        display: inline-block;
+        padding: 3px 10px;
+        border-radius: 999px;
+        font-weight: 700;
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+    .mpo-cmp-mode--ytd { background: #ecfdf5; color: #047857; border: 1px solid #a7f3d0; }
+    .mpo-cmp-mode--yoy { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
+    .mpo-cmp-mode--mom { background: #fff7ed; color: #c2410c; border: 1px solid #fed7aa; }
+    .mpo-cmp-mode--custom { background: #f5f3ff; color: #5b21b6; border: 1px solid #ddd6fe; }
+    .mpo-cmp-mode--auto { background: #f1f5f9; color: #475569; border: 1px solid #e2e8f0; }
+    .mpo-cmp-mode--na { background: #f1f5f9; color: #94a3b8; border: 1px solid #e2e8f0; }
+    .mpo-cmp-scope strong { color: #0f172a; font-weight: 600; }
+    .mpo-cmp-empty {
+        padding: 12px 14px;
+        color: #64748b;
+        font-size: 13px;
+        line-height: 1.5;
+        background: #f8fafc;
+        border-radius: 12px;
+        border: 1px dashed #cbd5e1;
+        margin-bottom: 8px;
     }
     /* MPO filter toolbar — compact bar, same glass feel as funnel scorecards */
     .mpo-toolbar-summary {
