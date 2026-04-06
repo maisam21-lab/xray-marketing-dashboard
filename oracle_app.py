@@ -24,9 +24,6 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
 
-# Bump when you ship UI/logic changes — shown on Marketing Performance so you know which file Streamlit loaded.
-DASHBOARD_BUILD = "2026-04-07-mpo2"
-
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 DEFAULT_SOURCE_TRUTH_GID = 8109573
 DEFAULT_LEADS_WORKSHEET_GID = 743065354
@@ -4479,11 +4476,6 @@ def render_page_marketing_performance(
         return
 
     st.markdown('<h1 class="looker-page-h1">Marketing Performance Overview</h1>', unsafe_allow_html=True)
-    _app_fp = Path(__file__).resolve()
-    st.caption(
-        f"Build **{DASHBOARD_BUILD}** · script `{_app_fp}`. "
-        "If **Scorecard comparison (Δ)** is missing, you are on an old copy — restart Streamlit from this path."
-    )
     df, _ = _apply_marketing_performance_filters(df_date, key_suffix=key_suffix)
 
     st.caption("Filters apply to scorecards, master table, and charts below.")
@@ -5135,11 +5127,6 @@ def render_main_dashboard(
         st.warning("No data rows were returned. Check tabs and column headers against the ME X-Ray template.")
         return
 
-    st.info(
-        f"**{DASHBOARD_BUILD}** — On **Marketing Performance**, use **KPI comparison** at the top (set **Custom** for "
-        "calendars). If this message is missing, Streamlit Cloud is still on an old deploy — push `oracle_app.py` to GitHub "
-        "and reboot the app from **Manage app**."
-    )
     tab_mpo, tab_mom, tab_pmc, tab_inbound = st.tabs(list(LOOKER_PAGES))
     with tab_mpo:
         render_page_marketing_performance(df_loaded, start_date, end_date)
