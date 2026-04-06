@@ -3231,7 +3231,15 @@ def _apply_marketing_performance_filters(
     *,
     key_suffix: str,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Performance-tab filters: compact toolbar (compare + market + month) like scorecard density."""
+    """Performance-tab filters: compact toolbar (scorecard basis + compare + market + month)."""
+    _basis_labels = {
+        "ytd": "YTD (calendar · default)",
+        "filtered": "Filtered months (grid slice)",
+    }
+    _basis_help = (
+        "**YTD** rolls scorecard totals from January through the anchor month (from your Month slicer / latest in range) "
+        "and compares to the **same calendar span last year**. The grid still follows Market + Month below."
+    )
     _cmp_labels = {
         "auto": "Auto (YoY if All months · else MoM)",
         "mom": "MoM vs prior month",
@@ -3239,9 +3247,10 @@ def _apply_marketing_performance_filters(
         "custom": "Custom calendars",
     }
     _cmp_help = (
-        "Drives red/green **% vs …** on scorecards. **Auto** follows the Month slicer. "
-        "**Custom** uses two calendars (any day → full month). Reference slice uses **Markets** only."
+        "Drives red/green **% vs …** when scorecard is **Filtered months**. **Auto** follows the Month slicer. "
+        "**Custom** uses two calendars (any day → full month). Reference uses **Markets** only."
     )
+    _cmp_help_ytd = _cmp_help + " (Disabled while **YTD** is selected — deltas are **prior-year YTD**.)"
 
     mk_raw = [x for x in df_date["country"].dropna().unique().tolist() if x and x != "Unknown"]
     if "cost" in df_date.columns and mk_raw:
@@ -3256,22 +3265,41 @@ def _apply_marketing_performance_filters(
         market_opts = sorted(mk_raw)
     month_opts = sorted([x for x in df_date["month"].dropna().unique().tolist() if x and x != "NaT"])
 
-    tb1, tb2, tb3 = st.columns([1.05, 1, 1], gap="small")
-    with tb1:
+    tb0, tb1, tb2, tb3 = st.columns([1.0, 1.05, 1, 1], gap="small")
+    with tb0:
         st.selectbox(
-            "Compare (Δ)",
-            options=["auto", "mom", "yoy", "custom"],
+            "Scorecard",
+            options=["ytd", "filtered"],
+            format_func=lambda k: _basis_labels.get(str(k), str(k)),
+            key=f"{key_suffix}_scorecard_basis",
+            help=_basis_help,
+        )
+    _basis_now = str(st.session_state.get(f"{key_suffix}_scorecard_basis", "ytd") or "ytd")
+    with tb1:
+        _cmp_kw = dict(
             format_func=lambda k: _cmp_labels.get(str(k), str(k)),
             key=f"{key_suffix}_compare_mode",
-            help=_cmp_help,
+            help=_cmp_help_ytd if _basis_now == "ytd" else _cmp_help,
         )
+        if _basis_now == "ytd":
+            try:
+                st.selectbox(
+                    "Compare (Δ)",
+                    options=["auto", "mom", "yoy", "custom"],
+                    disabled=True,
+                    **_cmp_kw,
+                )
+            except TypeError:
+                st.selectbox("Compare (Δ)", options=["auto", "mom", "yoy", "custom"], **_cmp_kw)
+        else:
+            st.selectbox("Compare (Δ)", options=["auto", "mom", "yoy", "custom"], **_cmp_kw)
     with tb2:
         st.multiselect(
             "Market",
             ["All Markets"] + market_opts,
             default=["All Markets"],
             key=f"{key_suffix}_market",
-            help="Table, charts, and scorecard totals. Comparison reference month still respects this slice.",
+            help="Grid and scorecard **Markets** slice. YTD and filtered deltas still respect this slice.",
         )
     with tb3:
         st.multiselect(
@@ -3279,7 +3307,7 @@ def _apply_marketing_performance_filters(
             ["All Months"] + month_opts,
             default=["All Months"],
             key=f"{key_suffix}_month",
-            help="Which months appear in the grid; **All months** uses the latest month as “current” for Auto Δ.",
+            help="Grid months. Also sets the **through** month for YTD and the anchor for filtered Δ.",
         )
 
     _mode_now = str(st.session_state.get(f"{key_suffix}_compare_mode", "auto") or "auto")
@@ -3287,7 +3315,7 @@ def _apply_marketing_performance_filters(
         [x for x in df_date["month"].dropna().unique().tolist() if x and str(x) != "NaT"],
         key=_mpo_month_ts_for_sort,
     )
-    if _mode_now == "custom" and _cust:
+    if _mode_now == "custom" and _cust and _basis_now != "ytd":
         _date_bounds = [_mpo_month_value_to_date(x) for x in _cust]
         _date_bounds = [d for d in _date_bounds if d is not None]
         if _date_bounds:
@@ -3338,35 +3366,129 @@ def _apply_marketing_performance_filters(
                 )
 
     cur_k, ref_k, kind = _mpo_compare_month_keys(df_date, key_suffix=key_suffix)
-    if kind == "custom":
+    if _basis_now == "ytd":
+        _rule = "Prior-year YTD (same calendar span)"
+        if cur_k:
+            _cy0 = _mpo_month_keys_calendar_ytd_through(cur_k)
+            _py0 = [_mpo_shift_month_key(m, -12) for m in _cy0] if _cy0 else []
+            _py0 = [x for x in _py0 if x]
+            if _cy0 and _py0 and len(_py0) == len(_cy0):
+                _lbl_c = f"YTD {_month_label_short(_cy0[0])}\u2013{_month_label_short(_cy0[-1])}"
+                _lbl_p = f"YTD {_month_label_short(_py0[0])}\u2013{_month_label_short(_py0[-1])}"
+                _pair = (
+                    f"{html.escape(_lbl_c)} "
+                    f'<span class="mpo-toolbar-vs">vs</span> '
+                    f"{html.escape(_lbl_p)}"
+                )
+                _line = (
+                    f'<div class="mpo-toolbar-summary">'
+                    f'<span class="mpo-toolbar-chip">Scorecard</span>'
+                    f'<span class="mpo-toolbar-pair">{_pair}</span>'
+                    f'<span class="mpo-toolbar-rule">{html.escape(_rule)}</span>'
+                    f"</div>"
+                )
+            else:
+                _line = (
+                    '<div class="mpo-toolbar-summary mpo-toolbar-summary--muted">'
+                    "<span class=\"mpo-toolbar-chip\">Scorecard</span>"
+                    "<span>Could not build YTD windows — check date range and month data.</span>"
+                    "</div>"
+                )
+        else:
+            _line = (
+                '<div class="mpo-toolbar-summary mpo-toolbar-summary--muted">'
+                "<span class=\"mpo-toolbar-chip\">Scorecard</span>"
+                "<span>No anchor month for YTD — widen the date range or pick months in data.</span>"
+                "</div>"
+            )
+    elif kind == "custom":
         _rule = _mpo_infer_compare_label(cur_k, ref_k)[1]
+        if cur_k and ref_k:
+            _pair = (
+                f"{html.escape(_month_label_short(cur_k))} "
+                f'<span class="mpo-toolbar-vs">vs</span> '
+                f"{html.escape(_month_label_short(ref_k))}"
+            )
+            _line = (
+                f'<div class="mpo-toolbar-summary">'
+                f'<span class="mpo-toolbar-chip">Scorecard Δ</span>'
+                f'<span class="mpo-toolbar-pair">{_pair}</span>'
+                f'<span class="mpo-toolbar-rule">{html.escape(_rule)}</span>'
+                f"</div>"
+            )
+        else:
+            _line = (
+                '<div class="mpo-toolbar-summary mpo-toolbar-summary--muted">'
+                "<span class=\"mpo-toolbar-chip\">Scorecard Δ</span>"
+                "<span>No comparison window — widen the date range or pick months in data.</span>"
+                "</div>"
+            )
     elif kind == "yoy":
         _rule = "Year-over-year (YoY)"
+        if cur_k and ref_k:
+            _pair = (
+                f"{html.escape(_month_label_short(cur_k))} "
+                f'<span class="mpo-toolbar-vs">vs</span> '
+                f"{html.escape(_month_label_short(ref_k))}"
+            )
+            _line = (
+                f'<div class="mpo-toolbar-summary">'
+                f'<span class="mpo-toolbar-chip">Scorecard Δ</span>'
+                f'<span class="mpo-toolbar-pair">{_pair}</span>'
+                f'<span class="mpo-toolbar-rule">{html.escape(_rule)}</span>'
+                f"</div>"
+            )
+        else:
+            _line = (
+                '<div class="mpo-toolbar-summary mpo-toolbar-summary--muted">'
+                "<span class=\"mpo-toolbar-chip\">Scorecard Δ</span>"
+                "<span>No comparison window — widen the date range or pick months in data.</span>"
+                "</div>"
+            )
     elif kind == "mom":
         _rule = "Month-over-month (MoM)"
+        if cur_k and ref_k:
+            _pair = (
+                f"{html.escape(_month_label_short(cur_k))} "
+                f'<span class="mpo-toolbar-vs">vs</span> '
+                f"{html.escape(_month_label_short(ref_k))}"
+            )
+            _line = (
+                f'<div class="mpo-toolbar-summary">'
+                f'<span class="mpo-toolbar-chip">Scorecard Δ</span>'
+                f'<span class="mpo-toolbar-pair">{_pair}</span>'
+                f'<span class="mpo-toolbar-rule">{html.escape(_rule)}</span>'
+                f"</div>"
+            )
+        else:
+            _line = (
+                '<div class="mpo-toolbar-summary mpo-toolbar-summary--muted">'
+                "<span class=\"mpo-toolbar-chip\">Scorecard Δ</span>"
+                "<span>No comparison window — widen the date range or pick months in data.</span>"
+                "</div>"
+            )
     else:
         _rule = "Comparison"
-
-    if cur_k and ref_k:
-        _pair = (
-            f"{html.escape(_month_label_short(cur_k))} "
-            f'<span class="mpo-toolbar-vs">vs</span> '
-            f"{html.escape(_month_label_short(ref_k))}"
-        )
-        _line = (
-            f'<div class="mpo-toolbar-summary">'
-            f'<span class="mpo-toolbar-chip">Scorecard Δ</span>'
-            f'<span class="mpo-toolbar-pair">{_pair}</span>'
-            f'<span class="mpo-toolbar-rule">{html.escape(_rule)}</span>'
-            f"</div>"
-        )
-    else:
-        _line = (
-            '<div class="mpo-toolbar-summary mpo-toolbar-summary--muted">'
-            "<span class=\"mpo-toolbar-chip\">Scorecard Δ</span>"
-            "<span>No comparison window — widen the date range or pick months in data.</span>"
-            "</div>"
-        )
+        if cur_k and ref_k:
+            _pair = (
+                f"{html.escape(_month_label_short(cur_k))} "
+                f'<span class="mpo-toolbar-vs">vs</span> '
+                f"{html.escape(_month_label_short(ref_k))}"
+            )
+            _line = (
+                f'<div class="mpo-toolbar-summary">'
+                f'<span class="mpo-toolbar-chip">Scorecard Δ</span>'
+                f'<span class="mpo-toolbar-pair">{_pair}</span>'
+                f'<span class="mpo-toolbar-rule">{html.escape(_rule)}</span>'
+                f"</div>"
+            )
+        else:
+            _line = (
+                '<div class="mpo-toolbar-summary mpo-toolbar-summary--muted">'
+                "<span class=\"mpo-toolbar-chip\">Scorecard Δ</span>"
+                "<span>No comparison window — widen the date range or pick months in data.</span>"
+                "</div>"
+            )
     st.markdown(_line, unsafe_allow_html=True)
 
     selected_markets = st.session_state.get(f"{key_suffix}_market", ["All Markets"])
@@ -3684,6 +3806,284 @@ def _kpi_two_month_compare_dict(
     out["mom_qwin_c"], out["mom_qwin_p"] = qw_c, qw_p
 
     return out
+
+
+def _mpo_month_keys_calendar_ytd_through(end_key: Optional[str]) -> list[str]:
+    """Calendar YTD month keys from January through ``end_key`` (inclusive)."""
+    if not end_key:
+        return []
+    k = _month_norm_key(end_key)
+    if not k or str(k).strip().lower() in ("", "nan", "nat"):
+        return []
+    try:
+        end = pd.Period(str(k), freq="M")
+    except Exception:
+        return []
+    out: list[str] = []
+    p = pd.Period(year=end.year, month=1, freq="M")
+    while p <= end:
+        out.append(str(p))
+        p += 1
+    return out
+
+
+def _mpo_rows_in_month_keys(df: pd.DataFrame, keys: set[str]) -> pd.DataFrame:
+    if df.empty or "month" not in df.columns or not keys:
+        return df.iloc[0:0]
+    km = df["month"].map(_month_norm_key).astype(str).str.strip()
+    return df.loc[km.isin(keys)].copy()
+
+
+def _mpo_leads_for_month_keys(leads_df: pd.DataFrame, keys: set[str]) -> pd.DataFrame:
+    if leads_df.empty or not keys:
+        return leads_df.iloc[0:0]
+    if "month" in leads_df.columns:
+        return _mpo_rows_in_month_keys(leads_df, keys)
+    if "date" not in leads_df.columns:
+        return leads_df.iloc[0:0]
+    masks: list[pd.Series] = []
+    for k in keys:
+        try:
+            per = pd.Period(str(_month_norm_key(k)), freq="M")
+            start = per.start_time.normalize()
+            end = per.end_time.normalize()
+            s = pd.to_datetime(leads_df["date"], errors="coerce")
+            try:
+                if getattr(s.dtype, "tz", None) is not None:
+                    s = s.dt.tz_convert("UTC").dt.tz_localize(None)
+            except Exception:
+                pass
+            masks.append((s >= start) & (s <= end))
+        except Exception:
+            continue
+    if not masks:
+        return leads_df.iloc[0:0]
+    m = masks[0]
+    for x in masks[1:]:
+        m = m | x
+    return leads_df.loc[m].copy()
+
+
+def _mpo_post_slice_for_markets(post_df: pd.DataFrame, df_mkt: pd.DataFrame) -> pd.DataFrame:
+    if post_df.empty or df_mkt.empty or "country" not in post_df.columns or "country" not in df_mkt.columns:
+        return post_df
+    allow_c = {
+        x
+        for x in df_mkt["country"].map(_country_join_key).unique().tolist()
+        if x and str(x).strip().lower() not in ("unknown", "nan", "")
+    }
+    if not allow_c:
+        return post_df
+    return post_df.loc[post_df["country"].map(_country_join_key).isin(allow_c)].copy()
+
+
+def _mpo_ytd_aggregate_for_compare(
+    month_keys: set[str],
+    *,
+    spend_df: pd.DataFrame,
+    leads_df: pd.DataFrame,
+    post_df_kpi: pd.DataFrame,
+    cw_kpi: pd.DataFrame,
+    post_for_cw: pd.DataFrame,
+) -> tuple[dict[str, float], pd.DataFrame, pd.DataFrame]:
+    """One YTD window: spend/leads/pipeline/CW aggregates + frames for Q-win (post_kpi slice, leads slice)."""
+    z: dict[str, float] = {}
+    sub_sp = _mpo_rows_in_month_keys(spend_df, month_keys)
+    z["spend"] = (
+        float(pd.to_numeric(sub_sp["cost"], errors="coerce").fillna(0).sum()) if not sub_sp.empty and "cost" in sub_sp.columns else 0.0
+    )
+    z["impr"] = (
+        float(pd.to_numeric(sub_sp["impressions"], errors="coerce").fillna(0).sum())
+        if not sub_sp.empty and "impressions" in sub_sp.columns
+        else 0.0
+    )
+    z["clicks"] = (
+        float(pd.to_numeric(sub_sp["clicks"], errors="coerce").fillna(0).sum()) if not sub_sp.empty and "clicks" in sub_sp.columns else 0.0
+    )
+
+    ld_win = _mpo_leads_for_month_keys(leads_df, month_keys)
+    lr = float(len(ld_win))
+    qc = float(_qualified_count_from_leads(ld_win))
+    z["leads_rows"] = lr
+    z["qualified"] = qc
+    z["nw"] = float(_new_working_count_from_leads(ld_win))
+
+    post_k = _dedupe_post_lead_rows(_mpo_rows_in_month_keys(post_df_kpi, month_keys))
+    pipe = _mpo_pipeline_month_totals(post_k)
+    z["cw_pipe"] = float(pipe["cw"])
+    z["total_live"] = float(pipe["total_live"])
+    z["negotiation"] = float(pipe["negotiation"])
+    z["commitment"] = float(pipe["commitment"])
+    z["closed_lost"] = float(pipe["closed_lost"])
+    z["qualifying"] = float(pipe["qualifying"])
+    z["pitching"] = float(pipe["pitching"])
+
+    post_cw = _dedupe_post_lead_rows(_mpo_rows_in_month_keys(post_for_cw, month_keys))
+    z["cw_unique"] = float(_sum_closed_won_unique_opportunities(post_cw))
+
+    cw_sub = _mpo_rows_in_month_keys(cw_kpi, month_keys)
+    z["tcv"] = float(pd.to_numeric(cw_sub["tcv"], errors="coerce").fillna(0).sum()) if not cw_sub.empty and "tcv" in cw_sub.columns else 0.0
+    z["lf"] = (
+        float(pd.to_numeric(cw_sub["first_month_lf"], errors="coerce").fillna(0).sum())
+        if not cw_sub.empty and "first_month_lf" in cw_sub.columns
+        else 0.0
+    )
+    return z, post_k, ld_win
+
+
+def _mpo_compare_dict_from_ytd_aggregates(
+    cur: dict[str, float],
+    prev: dict[str, float],
+    *,
+    post_cur: pd.DataFrame,
+    post_prev: pd.DataFrame,
+    ld_cur: pd.DataFrame,
+    ld_prev: pd.DataFrame,
+) -> dict[str, Optional[float]]:
+    """Build the same keys as ``_kpi_two_month_compare_dict`` from two YTD windows."""
+    out: dict[str, Optional[float]] = {}
+    sc, sp = cur["spend"], prev["spend"]
+    ic, ip = cur["impr"], prev["impr"]
+    cc, cp = cur["clicks"], prev["clicks"]
+    out["mom_spend_c"], out["mom_spend_p"] = sc, sp
+    out["mom_impr_c"], out["mom_impr_p"] = ic, ip
+    out["mom_clicks_c"], out["mom_clicks_p"] = cc, cp
+    ctr_c = (cc / ic * 100.0) if ic else None
+    ctr_p = (cp / ip * 100.0) if ip else None
+    out["mom_ctr_c"], out["mom_ctr_p"] = ctr_c, ctr_p
+
+    lr_c, lr_p = cur["leads_rows"], prev["leads_rows"]
+    qc, qp = cur["qualified"], prev["qualified"]
+    out["mom_leads_rows_c"], out["mom_leads_rows_p"] = lr_c, lr_p
+    out["mom_qual_status_c"], out["mom_qual_status_p"] = qc, qp
+    out["mom_leads_c"], out["mom_leads_p"] = lr_c, lr_p
+    out["mom_qualified_c"], out["mom_qualified_p"] = qc, qp
+    out["mom_nw_c"], out["mom_nw_p"] = cur["nw"], prev["nw"]
+
+    sql_c = (qc / lr_c * 100.0) if lr_c > 0 else None
+    sql_p = (qp / lr_p * 100.0) if lr_p > 0 else None
+    out["mom_sql_pct_c"], out["mom_sql_pct_p"] = sql_c, sql_p
+    cpl_c = (sc / lr_c) if lr_c > 0 else None
+    cpl_p = (sp / lr_p) if lr_p > 0 else None
+    out["mom_cpl_c"], out["mom_cpl_p"] = cpl_c, cpl_p
+    cps_c = (sc / qc) if qc > 0 else None
+    cps_p = (sp / qp) if qp > 0 else None
+    out["mom_cpsql_c"], out["mom_cpsql_p"] = cps_c, cps_p
+
+    out["mom_cw_c"], out["mom_cw_p"] = cur["cw_unique"], prev["cw_unique"]
+    out["mom_live_c"], out["mom_live_p"] = cur["total_live"], prev["total_live"]
+    out["mom_nego_c"], out["mom_nego_p"] = cur["negotiation"], prev["negotiation"]
+    out["mom_commit_c"], out["mom_commit_p"] = cur["commitment"], prev["commitment"]
+    out["mom_clost_c"], out["mom_clost_p"] = cur["closed_lost"], prev["closed_lost"]
+
+    tcv_c, tcv_p = cur["tcv"], prev["tcv"]
+    lf_c, lf_p = cur["lf"], prev["lf"]
+    out["mom_tcv_c"], out["mom_tcv_p"] = tcv_c, tcv_p
+    out["mom_lf_c"], out["mom_lf_p"] = lf_c, lf_p
+
+    cw_denom_c, cw_denom_p = cur["cw_unique"], prev["cw_unique"]
+    cpcw_c = (sc / cw_denom_c) if cw_denom_c > 0 else None
+    cpcw_p = (sp / cw_denom_p) if cw_denom_p > 0 else None
+    out["mom_cpcw_c"], out["mom_cpcw_p"] = cpcw_c, cpcw_p
+    cpcwlf_c = (sc / lf_c) if lf_c > 0 else None
+    cpcwlf_p = (sp / lf_p) if lf_p > 0 else None
+    out["mom_cpcwlf_c"], out["mom_cpcwlf_p"] = cpcwlf_c, cpcwlf_p
+    pct_c = (sc / tcv_c * 100.0) if tcv_c > 0 else None
+    pct_p = (sp / tcv_p * 100.0) if tcv_p > 0 else None
+    out["mom_spend_tcv_pct_c"], out["mom_spend_tcv_pct_p"] = pct_c, pct_p
+
+    _cwq_c, _qq_c = _q_win_rate_inputs(post_cur, ld_cur)
+    _cwq_p, _qq_p = _q_win_rate_inputs(post_prev, ld_prev)
+    qw_c = (float(_cwq_c) / float(_qq_c) * 100.0) if _qq_c else None
+    qw_p = (float(_cwq_p) / float(_qq_p) * 100.0) if _qq_p else None
+    out["mom_qwin_c"], out["mom_qwin_p"] = qw_c, qw_p
+
+    return out
+
+
+def _mpo_ytd_scorecard_bundle(
+    end_key: Optional[str],
+    *,
+    spend_df: pd.DataFrame,
+    leads_df: pd.DataFrame,
+    post_df_kpi: pd.DataFrame,
+    cw_kpi: pd.DataFrame,
+    post_for_cw: pd.DataFrame,
+) -> tuple[Optional[dict[str, Any]], dict[str, Optional[float]]]:
+    """YTD through ``end_key`` vs same calendar span prior year — scorecard totals + delta dict."""
+    empty_prior: dict[str, Optional[float]] = {}
+    if not end_key:
+        return None, empty_prior
+    cy_list = _mpo_month_keys_calendar_ytd_through(end_key)
+    if not cy_list:
+        return None, empty_prior
+    cy_set = set(cy_list)
+    py_list = [_mpo_shift_month_key(m, -12) for m in cy_list]
+    if not py_list or any(x is None for x in py_list):
+        return None, empty_prior
+    py_set = set(str(x) for x in py_list if x)
+
+    cur, post_c, ld_c = _mpo_ytd_aggregate_for_compare(
+        cy_set,
+        spend_df=spend_df,
+        leads_df=leads_df,
+        post_df_kpi=post_df_kpi,
+        cw_kpi=cw_kpi,
+        post_for_cw=post_for_cw,
+    )
+    prev, post_p, ld_p = _mpo_ytd_aggregate_for_compare(
+        py_set,
+        spend_df=spend_df,
+        leads_df=leads_df,
+        post_df_kpi=post_df_kpi,
+        cw_kpi=cw_kpi,
+        post_for_cw=post_for_cw,
+    )
+    prior = _mpo_compare_dict_from_ytd_aggregates(
+        cur,
+        prev,
+        post_cur=post_c,
+        post_prev=post_p,
+        ld_cur=ld_c,
+        ld_prev=ld_p,
+    )
+
+    total_spend = cur["spend"]
+    total_impr = int(cur["impr"])
+    total_clicks = int(cur["clicks"])
+    total_leads = int(cur["leads_rows"])
+    total_qualified = int(cur["qualified"])
+    ctr = (total_clicks / total_impr * 100.0) if total_impr else 0.0
+    cpc = (total_spend / total_clicks) if total_clicks else 0.0
+    cpl = (total_spend / total_leads) if total_leads else 0.0
+    cpsql = (total_spend / total_qualified) if total_qualified else 0.0
+
+    cw_q, qual_q = _q_win_rate_inputs(post_c, ld_c)
+
+    totals: dict[str, Any] = {
+        "total_spend": total_spend,
+        "total_impr": total_impr,
+        "total_clicks": total_clicks,
+        "ctr": ctr,
+        "total_leads": total_leads,
+        "total_qualified": total_qualified,
+        "total_cw": int(cur["cw_unique"]),
+        "total_tcv": cur["tcv"],
+        "total_first_month_lf": cur["lf"],
+        "cpc": cpc,
+        "cpl": cpl,
+        "cpsql": cpsql,
+        "total_new_working": int(cur["nw"]),
+        "total_pitching": int(cur["pitching"]),
+        "total_negotiation": int(cur["negotiation"]),
+        "total_commitment": int(cur["commitment"]),
+        "total_qualifying": int(cur["qualifying"]),
+        "total_total_live": int(cur["total_live"]),
+        "total_closed_lost": int(cur["closed_lost"]),
+        "cw_for_qwin": int(cw_q) if cw_q else None,
+        "qual_for_qwin": int(qual_q) if qual_q else None,
+    }
+    return totals, prior
 
 
 def _kpi_funnel_delta_html(cur: Optional[float], prev: Optional[float], *, vs_label: str = "prior month") -> str:
@@ -4847,23 +5247,80 @@ def render_page_marketing_performance(
     spend_cmp = _spend_slice_for_dashboard_filters(spend_sheet_master, df_mkt)
     cw_cmp = _cw_dataframe_for_kpis(_resolve_cw_tcv_dataframe(df_loaded, df_mkt), df_mkt)
     ck, rk, cmp_kind = _mpo_compare_month_keys(master_df, key_suffix=key_suffix)
-    _kpi_prior = _kpi_two_month_compare_dict(
-        ck,
-        rk,
-        spend_df=spend_cmp,
-        leads_df=leads_df,
-        post_df_kpi=post_df_kpi,
-        cw_kpi=cw_cmp,
-    )
-    if cmp_kind == "yoy":
-        _kpi_prior["_delta_label"] = "same month last year"
-    elif cmp_kind == "mom":
-        _kpi_prior["_delta_label"] = "prior month"
-    elif cmp_kind == "custom":
-        _dl, _ = _mpo_infer_compare_label(ck, rk)
-        _kpi_prior["_delta_label"] = _dl
+    _basis_sc = str(st.session_state.get(f"{key_suffix}_scorecard_basis", "ytd") or "ytd")
+    post_for_ytd_cw = _dedupe_post_lead_rows(_tab_subset(df_mkt, list(_POST_LEAD_SOURCE_TAB_PATTERNS)))
+    post_kpi_mkt = _mpo_post_slice_for_markets(post_df_kpi, df_mkt)
+
+    if _basis_sc == "ytd" and ck:
+        spend_ytd = _spend_slice_for_dashboard_filters(spend_sheet_master, df_mkt)
+        ytd_totals, ytd_prior = _mpo_ytd_scorecard_bundle(
+            ck,
+            spend_df=spend_ytd,
+            leads_df=leads_df,
+            post_df_kpi=post_kpi_mkt,
+            cw_kpi=cw_cmp,
+            post_for_cw=post_for_ytd_cw,
+        )
+        if ytd_totals:
+            total_spend = float(ytd_totals["total_spend"])
+            total_impr = int(ytd_totals["total_impr"])
+            total_clicks = int(ytd_totals["total_clicks"])
+            ctr = float(ytd_totals["ctr"])
+            total_leads = int(ytd_totals["total_leads"])
+            total_qualified = int(ytd_totals["total_qualified"])
+            total_cw = int(ytd_totals["total_cw"])
+            total_tcv = float(ytd_totals["total_tcv"])
+            total_first_month_lf = float(ytd_totals["total_first_month_lf"])
+            cpc = float(ytd_totals["cpc"])
+            cpl = float(ytd_totals["cpl"])
+            cpsql = float(ytd_totals["cpsql"])
+            total_new_working = int(ytd_totals["total_new_working"])
+            total_pitching = int(ytd_totals["total_pitching"])
+            total_negotiation = int(ytd_totals["total_negotiation"])
+            total_commitment = int(ytd_totals["total_commitment"])
+            total_qualifying = int(ytd_totals["total_qualifying"])
+            total_total_live = int(ytd_totals["total_total_live"])
+            total_closed_lost = int(ytd_totals["total_closed_lost"])
+            cw_for_qwin = ytd_totals.get("cw_for_qwin")
+            qual_for_qwin = ytd_totals.get("qual_for_qwin")
+            _kpi_prior = ytd_prior
+            _kpi_prior["_delta_label"] = "prior-year YTD"
+        else:
+            _kpi_prior = _kpi_two_month_compare_dict(
+                ck,
+                rk,
+                spend_df=spend_cmp,
+                leads_df=leads_df,
+                post_df_kpi=post_df_kpi,
+                cw_kpi=cw_cmp,
+            )
+            if cmp_kind == "yoy":
+                _kpi_prior["_delta_label"] = "same month last year"
+            elif cmp_kind == "mom":
+                _kpi_prior["_delta_label"] = "prior month"
+            elif cmp_kind == "custom":
+                _dl, _ = _mpo_infer_compare_label(ck, rk)
+                _kpi_prior["_delta_label"] = _dl
+            else:
+                _kpi_prior["_delta_label"] = "prior month"
     else:
-        _kpi_prior["_delta_label"] = "prior month"
+        _kpi_prior = _kpi_two_month_compare_dict(
+            ck,
+            rk,
+            spend_df=spend_cmp,
+            leads_df=leads_df,
+            post_df_kpi=post_df_kpi,
+            cw_kpi=cw_cmp,
+        )
+        if cmp_kind == "yoy":
+            _kpi_prior["_delta_label"] = "same month last year"
+        elif cmp_kind == "mom":
+            _kpi_prior["_delta_label"] = "prior month"
+        elif cmp_kind == "custom":
+            _dl, _ = _mpo_infer_compare_label(ck, rk)
+            _kpi_prior["_delta_label"] = _dl
+        else:
+            _kpi_prior["_delta_label"] = "prior month"
 
     st.markdown("#### Marketing performance scorecard")
     _kpi_block(
