@@ -3972,23 +3972,6 @@ def _kpi_block(
         f'<div class="kpi-funnel-wrap">{sec_cw}{sec_leads}{sec_pipe}</div>',
         unsafe_allow_html=True,
     )
-    _cap = (prior or {}).get("_mom_cap")
-    _kind_line = str((prior or {}).get("_delta_kind_caption") or "")
-    if _cap and _kind_line:
-        st.caption(
-            f"{_kind_line}: **{_cap}**. Reference month uses your **Markets** slice only (Month filter does not limit it). "
-            "Spend/clicks/impressions from the spend tab; pipeline from post-qual by **calendar month**."
-        )
-    elif _cap:
-        st.caption(
-            f"Comparison: **{_cap}**. Reference month uses your **Markets** slice only. "
-            "Use **Scorecard comparison (Δ)** above: **Auto**, **MoM**, **YoY**, or **Custom** (pick both months)."
-        )
-    else:
-        st.caption(
-            "Δ shows when both current and reference months resolve (otherwise “—”). "
-            "Set **Scorecard comparison (Δ)** — default **Auto**; **Custom** picks numerator and denominator months."
-        )
 
 
 def _collapse_duplicate_named_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -4874,19 +4857,13 @@ def render_page_marketing_performance(
     )
     if cmp_kind == "yoy":
         _kpi_prior["_delta_label"] = "same month last year"
-        _kpi_prior["_delta_kind_caption"] = "Year-over-year (YoY)"
     elif cmp_kind == "mom":
         _kpi_prior["_delta_label"] = "prior month"
-        _kpi_prior["_delta_kind_caption"] = "Month-over-month (MoM)"
     elif cmp_kind == "custom":
-        _dl, _dc = _mpo_infer_compare_label(ck, rk)
+        _dl, _ = _mpo_infer_compare_label(ck, rk)
         _kpi_prior["_delta_label"] = _dl
-        _kpi_prior["_delta_kind_caption"] = _dc
     else:
         _kpi_prior["_delta_label"] = "prior month"
-        _kpi_prior["_delta_kind_caption"] = "Month-over-month (MoM)"
-    if ck and rk:
-        _kpi_prior["_mom_cap"] = f"{_month_label_short(ck)} vs {_month_label_short(rk)}"
 
     st.markdown("#### Marketing performance scorecard")
     _kpi_block(
@@ -4914,8 +4891,6 @@ def render_page_marketing_performance(
         prior=_kpi_prior,
     )
 
-    st.markdown("#### Market × month (operational grid)")
-    st.caption("Primary operational view — spend, leads, pipeline, and outcomes by market and month.")
     _master_performance_table(master_df, key_suffix=key_suffix, spend_grid=_spend_for_master_ui)
 
     _render_mpo_trend_charts(
