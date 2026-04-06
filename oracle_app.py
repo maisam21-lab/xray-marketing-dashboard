@@ -3231,29 +3231,56 @@ def _apply_marketing_performance_filters(
     *,
     key_suffix: str,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Performance-tab filters: KPI comparison first, then Market + Month for the grid."""
-    st.markdown("##### KPI comparison (scorecard % changes)")
-    st.caption(
-        "Sets the **reference month** for the red/green **% vs …** lines on the scorecard. "
-        "Pick **Custom** to open **calendar** date pickers for current vs reference month."
-    )
+    """Performance-tab filters: compact toolbar (compare + market + month) like scorecard density."""
     _cmp_labels = {
-        "auto": "Auto — All months: YoY · Specific months: MoM",
-        "mom": "Month-over-month (vs prior calendar month)",
-        "yoy": "Year-over-year (vs same month last year)",
-        "custom": "Custom — calendars for current & reference month",
+        "auto": "Auto (YoY if All months · else MoM)",
+        "mom": "MoM vs prior month",
+        "yoy": "YoY vs same month last year",
+        "custom": "Custom calendars",
     }
-    st.selectbox(
-        "Scorecard comparison (Δ)",
-        options=["auto", "mom", "yoy", "custom"],
-        format_func=lambda k: _cmp_labels.get(str(k), str(k)),
-        key=f"{key_suffix}_compare_mode",
-        help=(
-            "How scorecard % changes compare the **current** month to a **reference** month. "
-            "**Auto** uses Month slicers for the current month; reference still uses **Markets only**. "
-            "**Custom** uses calendar pickers for both months."
-        ),
+    _cmp_help = (
+        "Drives red/green **% vs …** on scorecards. **Auto** follows the Month slicer. "
+        "**Custom** uses two calendars (any day → full month). Reference slice uses **Markets** only."
     )
+
+    mk_raw = [x for x in df_date["country"].dropna().unique().tolist() if x and x != "Unknown"]
+    if "cost" in df_date.columns and mk_raw:
+        _tot = (
+            df_date.loc[df_date["country"].isin(mk_raw)]
+            .assign(_co=lambda d: pd.to_numeric(d["cost"], errors="coerce").fillna(0))
+            .groupby("country")["_co"]
+            .sum()
+        )
+        market_opts = sorted(mk_raw, key=lambda c: (-float(_tot.get(c, 0)), str(c).lower()))
+    else:
+        market_opts = sorted(mk_raw)
+    month_opts = sorted([x for x in df_date["month"].dropna().unique().tolist() if x and x != "NaT"])
+
+    tb1, tb2, tb3 = st.columns([1.05, 1, 1], gap="small")
+    with tb1:
+        st.selectbox(
+            "Compare (Δ)",
+            options=["auto", "mom", "yoy", "custom"],
+            format_func=lambda k: _cmp_labels.get(str(k), str(k)),
+            key=f"{key_suffix}_compare_mode",
+            help=_cmp_help,
+        )
+    with tb2:
+        st.multiselect(
+            "Market",
+            ["All Markets"] + market_opts,
+            default=["All Markets"],
+            key=f"{key_suffix}_market",
+            help="Table, charts, and scorecard totals. Comparison reference month still respects this slice.",
+        )
+    with tb3:
+        st.multiselect(
+            "Month",
+            ["All Months"] + month_opts,
+            default=["All Months"],
+            key=f"{key_suffix}_month",
+            help="Which months appear in the grid; **All months** uses the latest month as “current” for Auto Δ.",
+        )
 
     _mode_now = str(st.session_state.get(f"{key_suffix}_compare_mode", "auto") or "auto")
     _cust = sorted(
@@ -3263,9 +3290,7 @@ def _apply_marketing_performance_filters(
     if _mode_now == "custom" and _cust:
         _date_bounds = [_mpo_month_value_to_date(x) for x in _cust]
         _date_bounds = [d for d in _date_bounds if d is not None]
-        if not _date_bounds:
-            st.caption("No valid month dates in range for custom comparison.")
-        else:
+        if _date_bounds:
             min_d = min(_date_bounds)
             max_d = max(_date_bounds)
             _cur_dt = f"{key_suffix}_compare_custom_cur_dt"
@@ -3294,64 +3319,58 @@ def _apply_marketing_performance_filters(
                     st.session_state[_wk] = _date_bounds[-1] if _wk == _cur_dt else (
                         _date_bounds[-2] if len(_date_bounds) >= 2 else _date_bounds[-1]
                     )
-            st.caption("Use the calendars below — any day in the month counts; the **full month** is used for Δ.")
-            cca, ccb = st.columns(2)
-            with cca:
+            dca, dcb = st.columns(2, gap="small")
+            with dca:
                 st.date_input(
-                    "Δ current month",
+                    "Δ Current",
                     min_value=min_d,
                     max_value=max_d,
                     key=_cur_dt,
-                    help="Calendar picker; your **Markets** slice applies to scorecard metrics.",
+                    help="Any day in the month — the **full calendar month** is used for scorecard Δ.",
                 )
-            with ccb:
+            with dcb:
                 st.date_input(
-                    "Δ reference month",
+                    "Δ Reference",
                     min_value=min_d,
                     max_value=max_d,
                     key=_ref_dt,
-                    help="Compared **to** this month (**Markets** only for the comparison slice).",
+                    help="Compared **to** this month (Markets slice applies).",
                 )
-            _c_show = _mpo_date_to_month_key(st.session_state.get(_cur_dt))
-            _r_show = _mpo_date_to_month_key(st.session_state.get(_ref_dt))
-            if _c_show and _r_show:
-                st.caption(
-                    f"Using **{_month_label_short(_c_show)}** vs **{_month_label_short(_r_show)}** for scorecard % changes."
-                )
-    elif _mode_now == "custom" and not _cust:
-        st.caption("No months in the selected date range for custom comparison.")
 
-    st.divider()
-    st.markdown("##### Filter table & charts (Market · Month)")
-    c1, c2 = st.columns(2)
+    cur_k, ref_k, kind = _mpo_compare_month_keys(df_date, key_suffix=key_suffix)
+    if kind == "custom":
+        _rule = _mpo_infer_compare_label(cur_k, ref_k)[1]
+    elif kind == "yoy":
+        _rule = "Year-over-year (YoY)"
+    elif kind == "mom":
+        _rule = "Month-over-month (MoM)"
+    else:
+        _rule = "Comparison"
 
-    with c1:
-        mk_raw = [x for x in df_date["country"].dropna().unique().tolist() if x and x != "Unknown"]
-        if "cost" in df_date.columns and mk_raw:
-            _tot = (
-                df_date.loc[df_date["country"].isin(mk_raw)]
-                .assign(_co=lambda d: pd.to_numeric(d["cost"], errors="coerce").fillna(0))
-                .groupby("country")["_co"]
-                .sum()
-            )
-            market_opts = sorted(mk_raw, key=lambda c: (-float(_tot.get(c, 0)), str(c).lower()))
-        else:
-            market_opts = sorted(mk_raw)
-        selected_markets = st.multiselect(
-            "Market",
-            ["All Markets"] + market_opts,
-            default=["All Markets"],
-            key=f"{key_suffix}_market",
+    if cur_k and ref_k:
+        _pair = (
+            f"{html.escape(_month_label_short(cur_k))} "
+            f'<span class="mpo-toolbar-vs">vs</span> '
+            f"{html.escape(_month_label_short(ref_k))}"
         )
-
-    with c2:
-        month_opts = sorted([x for x in df_date["month"].dropna().unique().tolist() if x and x != "NaT"])
-        selected_months = st.multiselect(
-            "Month",
-            ["All Months"] + month_opts,
-            default=["All Months"],
-            key=f"{key_suffix}_month",
+        _line = (
+            f'<div class="mpo-toolbar-summary">'
+            f'<span class="mpo-toolbar-chip">Scorecard Δ</span>'
+            f'<span class="mpo-toolbar-pair">{_pair}</span>'
+            f'<span class="mpo-toolbar-rule">{html.escape(_rule)}</span>'
+            f"</div>"
         )
+    else:
+        _line = (
+            '<div class="mpo-toolbar-summary mpo-toolbar-summary--muted">'
+            "<span class=\"mpo-toolbar-chip\">Scorecard Δ</span>"
+            "<span>No comparison window — widen the date range or pick months in data.</span>"
+            "</div>"
+        )
+    st.markdown(_line, unsafe_allow_html=True)
+
+    selected_markets = st.session_state.get(f"{key_suffix}_market", ["All Markets"])
+    selected_months = st.session_state.get(f"{key_suffix}_month", ["All Months"])
 
     df = df_date.copy()
     if "All Markets" not in selected_markets and selected_markets:
@@ -4478,8 +4497,6 @@ def render_page_marketing_performance(
     st.markdown('<h1 class="looker-page-h1">Marketing Performance Overview</h1>', unsafe_allow_html=True)
     df, _ = _apply_marketing_performance_filters(df_date, key_suffix=key_suffix)
 
-    st.caption("Filters apply to scorecards, master table, and charts below.")
-
     sheet_id, _ = _workbook_id_resolution()
     _fp_mpo = _secret_fingerprint(_service_account_from_streamlit_secrets())
     # Spend only from the canonical Spend worksheet (gid=0) on the ME X-Ray workbook:
@@ -5355,6 +5372,56 @@ def main() -> None:
         letter-spacing: -0.03em;
         line-height: 1.2;
         font-variant-numeric: tabular-nums;
+    }
+    /* MPO filter toolbar — compact bar, same glass feel as funnel scorecards */
+    .mpo-toolbar-summary {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 6px 12px;
+        margin: 6px 0 14px 0;
+        padding: 10px 14px 11px;
+        background: linear-gradient(160deg, #ffffff 0%, #f8fafc 100%);
+        border: 1px solid #e2e8f0;
+        border-radius: 14px;
+        box-shadow: 0 2px 12px rgba(15, 23, 42, 0.045);
+        line-height: 1.45;
+    }
+    .mpo-toolbar-summary--muted {
+        color: #64748b;
+        font-size: 12px;
+        font-weight: 500;
+    }
+    .mpo-toolbar-chip {
+        flex: 0 0 auto;
+        font-size: 9px;
+        font-weight: 700;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: #64748b;
+    }
+    .mpo-toolbar-pair {
+        font-size: 13px;
+        font-weight: 700;
+        color: #0f172a;
+        font-variant-numeric: tabular-nums;
+        letter-spacing: -0.02em;
+    }
+    .mpo-toolbar-vs {
+        font-weight: 600;
+        color: #94a3b8;
+        padding: 0 4px;
+    }
+    .mpo-toolbar-rule {
+        flex: 1 1 auto;
+        font-size: 11px;
+        font-weight: 600;
+        color: #4f8483;
+        text-align: right;
+        min-width: 100px;
+    }
+    @media (max-width: 640px) {
+        .mpo-toolbar-rule { text-align: left; width: 100%; }
     }
     /* Marketing funnel scorecards (Looker-style deltas + sub-metrics) */
     .kpi-funnel-wrap { display: flex; flex-direction: column; gap: 4px; }
