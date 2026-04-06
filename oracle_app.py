@@ -3369,11 +3369,11 @@ _MPO_TIMEFRAME_OPTIONS: tuple[str, ...] = (
 def _mpo_timeframe_option_label(tf: str) -> str:
     """Single-dropdown labels (calendar-style picker)."""
     return {
-        "ytd": "Year to date · vs same calendar months last year",
-        "filt_auto": "Table months · Auto (YoY if All months, else MoM)",
-        "filt_mom": "Table months · vs previous month",
-        "filt_yoy": "Table months · vs same month last year",
-        "filt_custom": "Table months · Custom (two dates)",
+        "ytd": "YTD vs last year",
+        "filt_auto": "Auto compare",
+        "filt_mom": "vs prior month",
+        "filt_yoy": "vs year ago",
+        "filt_custom": "Custom range",
     }.get(str(tf), str(tf))
 
 
@@ -3414,10 +3414,8 @@ def _apply_marketing_performance_filters(
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Performance-tab filters: one time-frame control, then Market + Month."""
     _tf_help = (
-        "Chooses how **KPI scorecard** totals and **% vs** are built. "
-        "**Year to date** = January through the month you pick below (or latest). "
-        "**Table months** = only rows in the grid; comparison follows the option you pick. "
-        "Custom shows two calendars. Comparison periods still follow **Market** only, not Month."
+        "**YTD** = Jan through the month you pick. **Auto** = all table months → vs last year; "
+        "otherwise vs prior month. **Custom** = two months. **Market** drives comparisons, not Month."
     )
 
     mk_raw = [x for x in df_date["country"].dropna().unique().tolist() if x and x != "Unknown"]
