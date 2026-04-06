@@ -3271,34 +3271,195 @@ def _apply_marketing_performance_filters(
     return df, df.copy()
 
 
-def _mpo_prior_equal_calendar_window(start_date: date, end_date: date) -> tuple[date, date]:
-    """Inclusive-length prior window immediately before ``start_date`` (same span as current range)."""
-    span_days = (end_date - start_date).days + 1
-    prior_end = start_date - timedelta(days=1)
-    prior_start = prior_end - timedelta(days=span_days - 1)
-    return prior_start, prior_end
+def _mpo_month_keys_last_two(master_df: pd.DataFrame) -> tuple[Optional[str], Optional[str]]:
+    """Latest month in the master grid vs the chronologically previous month (for MoM deltas)."""
+    if master_df.empty or "month" not in master_df.columns:
+        return None, None
+    raw = master_df["month"].map(_month_norm_key).dropna().astype(str).str.strip()
+    raw = raw[~raw.str.lower().isin(("", "nan", "nat", "none"))]
+    if raw.empty:
+        return None, None
+    keys = sorted({str(x) for x in raw.unique()}, key=_mpo_month_ts_for_sort)
+    if len(keys) >= 2:
+        return keys[-1], keys[-2]
+    return None, None
 
 
-def _mpo_session_market_month_slice(df_in: pd.DataFrame, key_suffix: str) -> pd.DataFrame:
-    """Apply the same Market / Month widget selection as ``_apply_marketing_performance_filters``."""
-    sm = st.session_state.get(f"{key_suffix}_market", ["All Markets"])
-    sy = st.session_state.get(f"{key_suffix}_month", ["All Months"])
-    out = df_in.copy()
-    if "All Markets" not in sm and sm:
-        out = out[out["country"].isin(sm)]
-    if "All Months" not in sy and sy:
-        out = out[out["month"].isin(sy)]
+def _mpo_rows_for_norm_month(df: pd.DataFrame, month_key: Optional[str]) -> pd.DataFrame:
+    if df.empty or not month_key or "month" not in df.columns:
+        return df.iloc[0:0]
+    nk = str(_month_norm_key(month_key)).strip()
+    return df.loc[df["month"].map(_month_norm_key).astype(str).str.strip() == nk].copy()
+
+
+def _mpo_leads_for_norm_month(leads_df: pd.DataFrame, month_key: Optional[str]) -> pd.DataFrame:
+    if leads_df.empty or not month_key:
+        return leads_df.iloc[0:0]
+    if "month" in leads_df.columns:
+        return _mpo_rows_for_norm_month(leads_df, month_key)
+    if "date" not in leads_df.columns:
+        return leads_df.iloc[0:0]
+    try:
+        per = pd.Period(str(month_key), freq="M")
+        start = per.start_time.normalize()
+        end = per.end_time.normalize()
+        s = pd.to_datetime(leads_df["date"], errors="coerce")
+        try:
+            if getattr(s.dtype, "tz", None) is not None:
+                s = s.dt.tz_convert("UTC").dt.tz_localize(None)
+        except Exception:
+            pass
+        return leads_df.loc[(s >= start) & (s <= end)].copy()
+    except Exception:
+        return leads_df.iloc[0:0]
+
+
+def _mpo_spend_activity_for_month(spend_df: pd.DataFrame, month_key: Optional[str]) -> tuple[float, int, int]:
+    if spend_df.empty or not month_key:
+        return 0.0, 0, 0
+    sub = _mpo_rows_for_norm_month(spend_df, month_key)
+    cost = float(pd.to_numeric(sub["cost"], errors="coerce").fillna(0).sum()) if "cost" in sub.columns else 0.0
+    impr = int(pd.to_numeric(sub["impressions"], errors="coerce").fillna(0).sum()) if "impressions" in sub.columns else 0
+    clicks = int(pd.to_numeric(sub["clicks"], errors="coerce").fillna(0).sum()) if "clicks" in sub.columns else 0
+    return cost, impr, clicks
+
+
+def _mpo_master_month_sums(master_df: pd.DataFrame, month_key: Optional[str]) -> dict[str, float]:
+    out = {"cost": 0.0, "leads": 0.0, "qualified": 0.0, "closed_won": 0.0, "tcv": 0.0, "first_month_lf": 0.0}
+    if master_df.empty or not month_key:
+        return out
+    sub = _mpo_rows_for_norm_month(master_df, month_key)
+    if sub.empty:
+        return out
+    for c in list(out.keys()):
+        if c in sub.columns:
+            out[c] = float(pd.to_numeric(sub[c], errors="coerce").fillna(0).sum())
+    return out
+
+
+def _mpo_pipeline_month_totals(post_sub: pd.DataFrame) -> dict[str, int]:
+    def _si(col: str) -> int:
+        if post_sub.empty or col not in post_sub.columns:
+            return 0
+        return int(pd.to_numeric(post_sub[col], errors="coerce").fillna(0).sum())
+
+    qual = _si("qualifying")
+    pitch = _si("pitching")
+    nego = _si("negotiation")
+    commit = _si("commitment")
+    return {
+        "total_live": qual + pitch + nego + commit,
+        "qualifying": qual,
+        "pitching": pitch,
+        "negotiation": nego,
+        "commitment": commit,
+        "closed_lost": _si("closed_lost"),
+        "cw": _sum_closed_won_unique_opportunities(_dedupe_post_lead_rows(post_sub)),
+    }
+
+
+def _kpi_mom_comparison_dict(
+    *,
+    master_df: pd.DataFrame,
+    spend_df: pd.DataFrame,
+    leads_df: pd.DataFrame,
+    post_df_kpi: pd.DataFrame,
+    cw_kpi: pd.DataFrame,
+) -> dict[str, Optional[float]]:
+    """Month-over-month pairs (current, previous) keyed for scorecard deltas; None if fewer than two months in grid."""
+    mk_c, mk_p = _mpo_month_keys_last_two(master_df)
+    out: dict[str, Optional[float]] = {}
+    if not mk_c or not mk_p:
+        return out
+
+    sc, ic, cc = _mpo_spend_activity_for_month(spend_df, mk_c)
+    sp, ip, cp = _mpo_spend_activity_for_month(spend_df, mk_p)
+    out["mom_spend_c"], out["mom_spend_p"] = sc, sp
+    out["mom_impr_c"], out["mom_impr_p"] = float(ic), float(ip)
+    out["mom_clicks_c"], out["mom_clicks_p"] = float(cc), float(cp)
+    ctr_c = (cc / ic * 100.0) if ic else None
+    ctr_p = (cp / ip * 100.0) if ip else None
+    out["mom_ctr_c"], out["mom_ctr_p"] = ctr_c, ctr_p
+
+    mm_c = _mpo_master_month_sums(master_df, mk_c)
+    mm_p = _mpo_master_month_sums(master_df, mk_p)
+    out["mom_leads_c"], out["mom_leads_p"] = mm_c["leads"], mm_p["leads"]
+    out["mom_qualified_c"], out["mom_qualified_p"] = mm_c["qualified"], mm_p["qualified"]
+
+    ld_c = _mpo_leads_for_norm_month(leads_df, mk_c)
+    ld_p = _mpo_leads_for_norm_month(leads_df, mk_p)
+    out["mom_leads_rows_c"] = float(len(ld_c))
+    out["mom_leads_rows_p"] = float(len(ld_p))
+    out["mom_qual_status_c"] = float(_qualified_count_from_leads(ld_c))
+    out["mom_qual_status_p"] = float(_qualified_count_from_leads(ld_p))
+    out["mom_nw_c"] = float(_new_working_count_from_leads(ld_c))
+    out["mom_nw_p"] = float(_new_working_count_from_leads(ld_p))
+
+    sql_c = (mm_c["qualified"] / mm_c["leads"] * 100.0) if mm_c["leads"] > 0 else None
+    sql_p = (mm_p["qualified"] / mm_p["leads"] * 100.0) if mm_p["leads"] > 0 else None
+    out["mom_sql_pct_c"], out["mom_sql_pct_p"] = sql_c, sql_p
+
+    cpl_c = (sc / mm_c["leads"]) if mm_c["leads"] > 0 else None
+    cpl_p = (sp / mm_p["leads"]) if mm_p["leads"] > 0 else None
+    out["mom_cpl_c"], out["mom_cpl_p"] = cpl_c, cpl_p
+    cps_c = (sc / mm_c["qualified"]) if mm_c["qualified"] > 0 else None
+    cps_p = (sp / mm_p["qualified"]) if mm_p["qualified"] > 0 else None
+    out["mom_cpsql_c"], out["mom_cpsql_p"] = cps_c, cps_p
+
+    post_c = _dedupe_post_lead_rows(_mpo_rows_for_norm_month(post_df_kpi, mk_c))
+    post_p = _dedupe_post_lead_rows(_mpo_rows_for_norm_month(post_df_kpi, mk_p))
+    pipe_c = _mpo_pipeline_month_totals(post_c)
+    pipe_p = _mpo_pipeline_month_totals(post_p)
+    out["mom_cw_c"], out["mom_cw_p"] = float(pipe_c["cw"]), float(pipe_p["cw"])
+    out["mom_live_c"], out["mom_live_p"] = float(pipe_c["total_live"]), float(pipe_p["total_live"])
+    out["mom_nego_c"], out["mom_nego_p"] = float(pipe_c["negotiation"]), float(pipe_p["negotiation"])
+    out["mom_commit_c"], out["mom_commit_p"] = float(pipe_c["commitment"]), float(pipe_p["commitment"])
+    out["mom_clost_c"], out["mom_clost_p"] = float(pipe_c["closed_lost"]), float(pipe_p["closed_lost"])
+
+    cw_sub_c = _mpo_rows_for_norm_month(cw_kpi, mk_c)
+    cw_sub_p = _mpo_rows_for_norm_month(cw_kpi, mk_p)
+    tcv_c = float(pd.to_numeric(cw_sub_c["tcv"], errors="coerce").fillna(0).sum()) if "tcv" in cw_sub_c.columns else 0.0
+    tcv_p = float(pd.to_numeric(cw_sub_p["tcv"], errors="coerce").fillna(0).sum()) if "tcv" in cw_sub_p.columns else 0.0
+    lf_c = (
+        float(pd.to_numeric(cw_sub_c["first_month_lf"], errors="coerce").fillna(0).sum())
+        if "first_month_lf" in cw_sub_c.columns
+        else 0.0
+    )
+    lf_p = (
+        float(pd.to_numeric(cw_sub_p["first_month_lf"], errors="coerce").fillna(0).sum())
+        if "first_month_lf" in cw_sub_p.columns
+        else 0.0
+    )
+    out["mom_tcv_c"], out["mom_tcv_p"] = tcv_c, tcv_p
+    out["mom_lf_c"], out["mom_lf_p"] = lf_c, lf_p
+
+    cpcw_c = (sc / pipe_c["cw"]) if pipe_c["cw"] > 0 else None
+    cpcw_p = (sp / pipe_p["cw"]) if pipe_p["cw"] > 0 else None
+    out["mom_cpcw_c"], out["mom_cpcw_p"] = cpcw_c, cpcw_p
+    cpcwlf_c = (sc / lf_c) if lf_c > 0 else None
+    cpcwlf_p = (sp / lf_p) if lf_p > 0 else None
+    out["mom_cpcwlf_c"], out["mom_cpcwlf_p"] = cpcwlf_c, cpcwlf_p
+    pct_c = (sc / tcv_c * 100.0) if tcv_c > 0 else None
+    pct_p = (sp / tcv_p * 100.0) if tcv_p > 0 else None
+    out["mom_spend_tcv_pct_c"], out["mom_spend_tcv_pct_p"] = pct_c, pct_p
+
+    _cwq_c, _qq_c = _q_win_rate_inputs(post_c, leads_df)
+    _cwq_p, _qq_p = _q_win_rate_inputs(post_p, leads_df)
+    qw_c = (float(_cwq_c) / float(_qq_c) * 100.0) if _qq_c else None
+    qw_p = (float(_cwq_p) / float(_qq_p) * 100.0) if _qq_p else None
+    out["mom_qwin_c"], out["mom_qwin_p"] = qw_c, qw_p
+
     return out
 
 
 def _kpi_funnel_delta_html(cur: Optional[float], prev: Optional[float]) -> str:
-    """Green/red % change line vs prior period (Looker-style); ``None`` hides the comparison."""
+    """Green/red % change vs **prior calendar month** (Looker-style); ``None`` hides the comparison."""
     if cur is None or prev is None:
-        return '<div class="kpi-funnel-delta kpi-funnel-delta--na">— vs previous period</div>'
+        return '<div class="kpi-funnel-delta kpi-funnel-delta--na">— vs prior month</div>'
     if prev == 0.0:
         if cur == 0.0:
-            return '<div class="kpi-funnel-delta kpi-funnel-delta--flat">→ 0% vs previous period</div>'
-        return '<div class="kpi-funnel-delta kpi-funnel-delta--up">↑ new vs previous period</div>'
+            return '<div class="kpi-funnel-delta kpi-funnel-delta--flat">→ 0% vs prior month</div>'
+        return '<div class="kpi-funnel-delta kpi-funnel-delta--up">↑ new vs prior month</div>'
     pct = (cur - prev) / prev * 100.0
     if pct > 0.05:
         cls, arr = "kpi-funnel-delta--up", "↑"
@@ -3306,7 +3467,7 @@ def _kpi_funnel_delta_html(cur: Optional[float], prev: Optional[float]) -> str:
         cls, arr = "kpi-funnel-delta--down", "↓"
     else:
         cls, arr = "kpi-funnel-delta--flat", "→"
-    return f'<div class="kpi-funnel-delta {cls}">{arr} {pct:+.1f}% vs previous period</div>'
+    return f'<div class="kpi-funnel-delta {cls}">{arr} {pct:+.1f}% vs prior month</div>'
 
 
 def _kpi_funnel_sub_row(label: str, value: str) -> str:
@@ -3340,9 +3501,9 @@ def _kpi_block(
     total_qualifying: int = 0,
     q_win_cw: Optional[int] = None,
     q_win_qualified: Optional[int] = None,
-    prior: Optional[dict[str, Optional[float]]] = None,
+    prior: Optional[dict[str, Any]] = None,
 ) -> None:
-    """Original MPO metric groups (Closed won / Leads / Qualified leads) in Looker-style funnel cards + PoP deltas."""
+    """Original MPO metric groups (Closed won / Leads / Qualified leads) in funnel cards + month-over-month deltas."""
     _cw_q = int(q_win_cw) if q_win_cw is not None else int(total_cw)
     _q_d = int(q_win_qualified) if q_win_qualified is not None else int(total_qualified)
     q_rate = (_cw_q / _q_d * 100) if _q_d else 0.0
@@ -3352,30 +3513,6 @@ def _kpi_block(
     spend_tcv_pct = (total_spend / total_tcv * 100) if total_tcv else 0.0
 
     pv = prior or {}
-    p_spend = pv.get("spend")
-    p_impr = pv.get("impressions")
-    p_clicks = pv.get("clicks")
-    p_ctr = pv.get("ctr")
-    p_leads = pv.get("leads")
-    p_qualified = pv.get("qualified")
-    p_cw = pv.get("cw")
-    cur_leads_d = pv.get("leads_cur")
-    cur_qualified_d = pv.get("qualified_cur")
-    p_tcv = pv.get("tcv")
-    p_lf = pv.get("lf")
-    p_cpcw = pv.get("cpcw")
-    p_cpcw_lf = pv.get("cpcw_lf")
-    p_spend_tcv_pct = pv.get("spend_tcv_pct")
-    p_cpl = pv.get("cpl")
-    p_cpsql = pv.get("cpsql")
-    p_sql_rate = pv.get("sql_rate")
-    p_q_win = pv.get("q_win_rate")
-    p_total_live = pv.get("total_live")
-    p_nego = pv.get("negotiation")
-    p_commit = pv.get("commitment")
-    p_clost = pv.get("closed_lost")
-    cur_nw_d = pv.get("new_working_cur")
-    p_nw = pv.get("new_working")
 
     def _card(icon: str, title: str, value_s: str, delta_html: str, sub_html: str, delay: float) -> str:
         return (
@@ -3421,7 +3558,7 @@ def _kpi_block(
         "◎",
         "CW (inc. approved)",
         f"{total_cw:,}",
-        _kpi_funnel_delta_html(float(total_cw), p_cw),
+        _kpi_funnel_delta_html(pv.get("mom_cw_c"), pv.get("mom_cw_p")),
         cw_sub,
         _d(),
     )
@@ -3429,7 +3566,7 @@ def _kpi_block(
         "💲",
         "Spend",
         _format_spend_k(total_spend) if total_spend else "$0",
-        _kpi_funnel_delta_html(float(total_spend), p_spend),
+        _kpi_funnel_delta_html(pv.get("mom_spend_c"), pv.get("mom_spend_p")),
         spend_sub,
         _d(),
     )
@@ -3437,7 +3574,7 @@ def _kpi_block(
         "$",
         "CPCW",
         cpcw_s,
-        _kpi_funnel_delta_html(float(cpcw) if total_cw and cpcw == cpcw else None, p_cpcw),
+        _kpi_funnel_delta_html(pv.get("mom_cpcw_c"), pv.get("mom_cpcw_p")),
         cpcw_sub,
         _d(),
     )
@@ -3445,7 +3582,7 @@ def _kpi_block(
         "◆",
         "Actual TCV",
         tcv_s,
-        _kpi_funnel_delta_html(float(total_tcv) if total_tcv else None, p_tcv),
+        _kpi_funnel_delta_html(pv.get("mom_tcv_c"), pv.get("mom_tcv_p")),
         tcv_sub,
         _d(),
     )
@@ -3453,7 +3590,7 @@ def _kpi_block(
         "≈",
         "CpCW:LF",
         cpcwlf_s,
-        _kpi_funnel_delta_html(float(cpcw_lf) if total_first_month_lf else None, p_cpcw_lf),
+        _kpi_funnel_delta_html(pv.get("mom_cpcwlf_c"), pv.get("mom_cpcwlf_p")),
         cpcwlf_sub,
         _d(),
     )
@@ -3461,7 +3598,7 @@ def _kpi_block(
         "%",
         "Cost / TCV %",
         f"{spend_tcv_pct:.2f}%" if total_tcv else "—",
-        _kpi_funnel_delta_html(float(spend_tcv_pct) if total_tcv else None, p_spend_tcv_pct),
+        _kpi_funnel_delta_html(pv.get("mom_spend_tcv_pct_c"), pv.get("mom_spend_tcv_pct_p")),
         pct_tcv_sub,
         _d(),
     )
@@ -3479,7 +3616,7 @@ def _kpi_block(
         "👥",
         "Total leads",
         f"{total_leads:,}",
-        _kpi_funnel_delta_html(cur_leads_d, p_leads),
+        _kpi_funnel_delta_html(pv.get("mom_leads_rows_c"), pv.get("mom_leads_rows_p")),
         sub_tl,
         _d(),
     )
@@ -3487,7 +3624,7 @@ def _kpi_block(
         "✓",
         "Qualified",
         f"{total_qualified:,}",
-        _kpi_funnel_delta_html(cur_qualified_d, p_qualified),
+        _kpi_funnel_delta_html(pv.get("mom_qual_status_c"), pv.get("mom_qual_status_p")),
         sub_qual,
         _d(),
     )
@@ -3495,7 +3632,7 @@ def _kpi_block(
         "◇",
         "New + working",
         f"{total_new_working:,}",
-        _kpi_funnel_delta_html(cur_nw_d, p_nw),
+        _kpi_funnel_delta_html(pv.get("mom_nw_c"), pv.get("mom_nw_p")),
         sub_nw,
         _d(),
     )
@@ -3503,7 +3640,7 @@ def _kpi_block(
         "‰",
         "SQL %",
         f"{sql_rate:.2f}%",
-        _kpi_funnel_delta_html(float(sql_rate) if total_leads else None, p_sql_rate),
+        _kpi_funnel_delta_html(pv.get("mom_sql_pct_c"), pv.get("mom_sql_pct_p")),
         sub_sql,
         _d(),
     )
@@ -3511,7 +3648,7 @@ def _kpi_block(
         "⬧",
         "CPL",
         cpl_s,
-        _kpi_funnel_delta_html(float(cpl) if total_leads and cpl == cpl else None, p_cpl),
+        _kpi_funnel_delta_html(pv.get("mom_cpl_c"), pv.get("mom_cpl_p")),
         sub_cpl_c,
         _d(),
     )
@@ -3519,7 +3656,7 @@ def _kpi_block(
         "⬧",
         "CPSQL",
         cpsql_s,
-        _kpi_funnel_delta_html(float(cpsql) if total_qualified and cpsql == cpsql else None, p_cpsql),
+        _kpi_funnel_delta_html(pv.get("mom_cpsql_c"), pv.get("mom_cpsql_p")),
         sub_cpsql_c,
         _d(),
     )
@@ -3542,7 +3679,7 @@ def _kpi_block(
         "▤",
         "Total live",
         f"{total_total_live:,}",
-        _kpi_funnel_delta_html(float(total_total_live), p_total_live),
+        _kpi_funnel_delta_html(pv.get("mom_live_c"), pv.get("mom_live_p")),
         sub_live,
         _d(),
     )
@@ -3550,7 +3687,7 @@ def _kpi_block(
         "◆",
         "Negotiation",
         f"{total_negotiation:,}",
-        _kpi_funnel_delta_html(float(total_negotiation), p_nego),
+        _kpi_funnel_delta_html(pv.get("mom_nego_c"), pv.get("mom_nego_p")),
         sub_nego,
         _d(),
     )
@@ -3558,7 +3695,7 @@ def _kpi_block(
         "◆",
         "Commitment",
         f"{total_commitment:,}",
-        _kpi_funnel_delta_html(float(total_commitment), p_commit),
+        _kpi_funnel_delta_html(pv.get("mom_commit_c"), pv.get("mom_commit_p")),
         sub_commit,
         _d(),
     )
@@ -3566,7 +3703,7 @@ def _kpi_block(
         "✕",
         "Closed lost",
         f"{total_closed_lost:,}",
-        _kpi_funnel_delta_html(float(total_closed_lost), p_clost),
+        _kpi_funnel_delta_html(pv.get("mom_clost_c"), pv.get("mom_clost_p")),
         sub_clost,
         _d(),
     )
@@ -3574,7 +3711,7 @@ def _kpi_block(
         "%",
         "Q win rate %",
         f"{q_rate:.2f}%",
-        _kpi_funnel_delta_html(float(q_rate) if _q_d else None, p_q_win),
+        _kpi_funnel_delta_html(pv.get("mom_qwin_c"), pv.get("mom_qwin_p")),
         sub_qwin,
         _d(),
     )
@@ -3599,10 +3736,14 @@ def _kpi_block(
         f'<div class="kpi-funnel-wrap">{sec_cw}{sec_leads}{sec_pipe}</div>',
         unsafe_allow_html=True,
     )
+    _cap = (prior or {}).get("_mom_cap")
     st.caption(
-        "Previous period = the same-length calendar window ending the day before your range, with the same "
-        "Market / Month slicers. Pipeline / CW / spend use that slice; **lead / SQL / new+working** comparisons "
-        "use row **Date** when present (otherwise “—”)."
+        (
+            f"Δ = month-over-month ({_cap}) using the **latest two months** in the market × month grid after your "
+            "slicers, with spend/impressions/clicks from the spend tab and pipeline from the post-qual tab by **month**."
+        )
+        if _cap
+        else "Δ = month-over-month when at least **two months** of data appear in the grid after your slicers (otherwise “—”)."
     )
 
 
@@ -4477,114 +4618,16 @@ def render_page_marketing_performance(
     if _normalized_spend_cost_sum(_spend_for_master_ui) < 1e-6 and _normalized_spend_cost_sum(spend_pool_full) > 1e-6:
         _spend_for_master_ui = _spend_sheet_pivot_by_month_country(spend_pool_full)
 
-    _p0, _p1 = _mpo_prior_equal_calendar_window(start_date, end_date)
-    _df_pv = _mpo_session_market_month_slice(_filter_by_date_range(df_loaded, _p0, _p1), key_suffix)
-    _sp_m_pv = _filter_spend_for_dashboard(spend_pool_full, _p0, _p1)
-    _sp_pv = _spend_slice_for_dashboard_filters(_sp_m_pv, _df_pv)
-    _pv_spend = (
-        float(pd.to_numeric(_sp_pv["cost"], errors="coerce").fillna(0).sum())
-        if not _sp_pv.empty and "cost" in _sp_pv.columns
-        else 0.0
+    _kpi_prior = _kpi_mom_comparison_dict(
+        master_df=master_df,
+        spend_df=spend_df,
+        leads_df=leads_df,
+        post_df_kpi=post_df_kpi,
+        cw_kpi=cw_kpi,
     )
-    _pv_impr = (
-        int(pd.to_numeric(_sp_pv["impressions"], errors="coerce").fillna(0).sum())
-        if not _sp_pv.empty and "impressions" in _sp_pv.columns
-        else 0
-    )
-    _pv_clicks = (
-        int(pd.to_numeric(_sp_pv["clicks"], errors="coerce").fillna(0).sum())
-        if not _sp_pv.empty and "clicks" in _sp_pv.columns
-        else 0
-    )
-    _pv_ctr = (_pv_clicks / _pv_impr * 100) if _pv_impr else 0.0
-    _post_pv = _dedupe_post_lead_rows(_tab_subset(_df_pv, list(_POST_LEAD_SOURCE_TAB_PATTERNS)))
-    _pv_pitch = int(_post_pv["pitching"].sum()) if not _post_pv.empty and "pitching" in _post_pv.columns else 0
-    _pv_cw = _sum_closed_won_unique_opportunities(_post_pv)
-    _kpi_prior: dict[str, Optional[float]] = {
-        "spend": _pv_spend,
-        "impressions": float(_pv_impr),
-        "clicks": float(_pv_clicks),
-        "ctr": _pv_ctr,
-        "pitching": float(_pv_pitch),
-        "cw": float(_pv_cw),
-    }
-    if not leads_df.empty and "date" in leads_df.columns:
-        _ld_cur = _filter_by_date_range(leads_df, start_date, end_date)
-        _ld_pv = _filter_by_date_range(leads_df, _p0, _p1)
-        _kpi_prior["leads"] = float(len(_ld_pv))
-        _kpi_prior["leads_cur"] = float(len(_ld_cur))
-        _kpi_prior["qualified"] = float(_qualified_count_from_leads(_ld_pv))
-        _kpi_prior["qualified_cur"] = float(_qualified_count_from_leads(_ld_cur))
-        _kpi_prior["new_working"] = float(_new_working_count_from_leads(_ld_pv))
-        _kpi_prior["new_working_cur"] = float(_new_working_count_from_leads(_ld_cur))
-    else:
-        _kpi_prior["leads"] = None
-        _kpi_prior["leads_cur"] = None
-        _kpi_prior["qualified"] = None
-        _kpi_prior["qualified_cur"] = None
-        _kpi_prior["new_working"] = None
-        _kpi_prior["new_working_cur"] = None
-
-    _ld_loaded_pv = _filter_by_date_range(df_loaded, _p0, _p1)
-    _post_kpi_pv = _tab_subset(_ld_loaded_pv, list(_POST_LEAD_SOURCE_TAB_PATTERNS))
-    _pq_gid_pv = _optional_post_qual_gid_from_secrets()
-    if _pq_gid_pv is not None and "worksheet_gid" in _ld_loaded_pv.columns:
-        _wg_pv = pd.to_numeric(_ld_loaded_pv["worksheet_gid"], errors="coerce")
-        _by_pq_pv = _ld_loaded_pv.loc[_wg_pv == int(_pq_gid_pv)].copy()
-        if not _by_pq_pv.empty:
-            _post_kpi_pv = _by_pq_pv
-    elif _pq_gid_pv is not None:
-        try:
-            _sid_pv = _extract_sheet_id(_default_sheet_id_from_secrets())
-            _fppv = _secret_fingerprint(_service_account_from_streamlit_secrets())
-            _dir_pv = load_worksheet_by_gid_preprocessed(_sid_pv, int(_pq_gid_pv), _fppv)
-            if not _dir_pv.empty:
-                _post_kpi_pv = _filter_by_date_range(_dir_pv, _p0, _p1)
-        except Exception:
-            pass
-    if _post_kpi_pv.empty:
-        _post_kpi_pv = _post_pv
-
-    _cw_k_pv = _cw_dataframe_for_kpis(_resolve_cw_tcv_dataframe(df_loaded, _df_pv), _df_pv)
-    _pv_tcv = (
-        float(pd.to_numeric(_cw_k_pv["tcv"], errors="coerce").fillna(0).sum())
-        if not _cw_k_pv.empty and "tcv" in _cw_k_pv.columns
-        else 0.0
-    )
-    _pv_lf = (
-        float(pd.to_numeric(_cw_k_pv["first_month_lf"], errors="coerce").fillna(0).sum())
-        if not _cw_k_pv.empty and "first_month_lf" in _cw_k_pv.columns
-        else 0.0
-    )
-    _pv_nego = int(_post_kpi_pv["negotiation"].sum()) if "negotiation" in _post_kpi_pv.columns else 0
-    _pv_commit = int(_post_kpi_pv["commitment"].sum()) if "commitment" in _post_kpi_pv.columns else 0
-    _pv_cl = int(_post_kpi_pv["closed_lost"].sum()) if "closed_lost" in _post_kpi_pv.columns else 0
-    _pv_qual_tab = int(_post_kpi_pv["qualifying"].sum()) if "qualifying" in _post_kpi_pv.columns else 0
-    _kpi_prior["tcv"] = _pv_tcv
-    _kpi_prior["lf"] = _pv_lf
-    _kpi_prior["negotiation"] = float(_pv_nego)
-    _kpi_prior["commitment"] = float(_pv_commit)
-    _kpi_prior["closed_lost"] = float(_pv_cl)
-    _kpi_prior["total_live"] = float(_pv_qual_tab + _pv_pitch + _pv_nego + _pv_commit)
-    _kpi_prior["cpcw"] = (_pv_spend / float(_pv_cw)) if _pv_cw > 0 else None
-    _kpi_prior["cpcw_lf"] = (_pv_spend / _pv_lf) if _pv_lf > 0 else None
-    _kpi_prior["spend_tcv_pct"] = (_pv_spend / _pv_tcv * 100) if _pv_tcv > 0 else None
-    _cwq_p, _qq_p = _q_win_rate_inputs(_post_kpi_pv, leads_df)
-    _kpi_prior["q_win_rate"] = (float(_cwq_p) / float(_qq_p) * 100.0) if _qq_p else None
-    _pl0 = _kpi_prior.get("leads")
-    _pq0 = _kpi_prior.get("qualified")
-    if _pl0 is not None and float(_pl0) > 0:
-        _kpi_prior["cpl"] = _pv_spend / float(_pl0)
-    else:
-        _kpi_prior["cpl"] = None
-    if _pq0 is not None and float(_pq0) > 0:
-        _kpi_prior["cpsql"] = _pv_spend / float(_pq0)
-    else:
-        _kpi_prior["cpsql"] = None
-    if _pl0 is not None and float(_pl0) > 0 and _pq0 is not None:
-        _kpi_prior["sql_rate"] = float(_pq0) / float(_pl0) * 100.0
-    else:
-        _kpi_prior["sql_rate"] = None
+    _mkc_mom, _mkp_mom = _mpo_month_keys_last_two(master_df)
+    if _mkc_mom and _mkp_mom:
+        _kpi_prior["_mom_cap"] = f"{_month_label_short(_mkc_mom)} vs {_month_label_short(_mkp_mom)}"
 
     st.markdown("#### Marketing performance scorecard")
     _kpi_block(
