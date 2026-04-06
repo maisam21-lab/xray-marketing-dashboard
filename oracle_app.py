@@ -3845,6 +3845,65 @@ def _kpi_two_month_compare_dict(
     return out
 
 
+def _mpo_scorecard_headline_totals_for_month(
+    cur_k: Optional[str],
+    *,
+    spend_df: pd.DataFrame,
+    leads_df: pd.DataFrame,
+    post_df_kpi: pd.DataFrame,
+    cw_kpi: pd.DataFrame,
+) -> Optional[dict[str, Any]]:
+    """Big KPI numbers for **one** month — same slices as ``_kpi_two_month_compare_dict`` current side."""
+    if not cur_k:
+        return None
+    sc, ic, cc = _mpo_spend_activity_for_month(spend_df, cur_k)
+    total_impr = int(ic)
+    total_clicks = int(cc)
+    ctr = (total_clicks / total_impr * 100.0) if total_impr else 0.0
+    ld_c = _mpo_leads_for_norm_month(leads_df, cur_k)
+    total_leads = int(len(ld_c))
+    total_qualified = int(_qualified_count_from_leads(ld_c))
+    cpc = (sc / total_clicks) if total_clicks else 0.0
+    cpl = (sc / total_leads) if total_leads else 0.0
+    cpsql = (sc / total_qualified) if total_qualified else 0.0
+    post_c = _dedupe_post_lead_rows(_mpo_rows_for_norm_month(post_df_kpi, cur_k))
+    pipe_c = _mpo_pipeline_month_totals(post_c)
+    total_cw = int(pipe_c["cw"])
+    cw_sub = _mpo_rows_for_norm_month(cw_kpi, cur_k)
+    total_tcv = (
+        float(pd.to_numeric(cw_sub["tcv"], errors="coerce").fillna(0).sum()) if not cw_sub.empty and "tcv" in cw_sub.columns else 0.0
+    )
+    total_first_month_lf = (
+        float(pd.to_numeric(cw_sub["first_month_lf"], errors="coerce").fillna(0).sum())
+        if not cw_sub.empty and "first_month_lf" in cw_sub.columns
+        else 0.0
+    )
+    cw_q, qual_q = _q_win_rate_inputs(post_c, leads_df)
+    return {
+        "total_spend": float(sc),
+        "total_impr": total_impr,
+        "total_clicks": total_clicks,
+        "ctr": float(ctr),
+        "total_leads": total_leads,
+        "total_qualified": total_qualified,
+        "total_cw": total_cw,
+        "total_tcv": total_tcv,
+        "total_first_month_lf": total_first_month_lf,
+        "cpc": float(cpc),
+        "cpl": float(cpl),
+        "cpsql": float(cpsql),
+        "total_new_working": int(_new_working_count_from_leads(ld_c)),
+        "total_pitching": int(pipe_c["pitching"]),
+        "total_negotiation": int(pipe_c["negotiation"]),
+        "total_commitment": int(pipe_c["commitment"]),
+        "total_qualifying": int(pipe_c["qualifying"]),
+        "total_total_live": int(pipe_c["total_live"]),
+        "total_closed_lost": int(pipe_c["closed_lost"]),
+        "cw_for_qwin": int(cw_q) if cw_q else None,
+        "qual_for_qwin": int(qual_q) if qual_q else None,
+    }
+
+
 def _mpo_month_keys_calendar_ytd_through(end_key: Optional[str]) -> list[str]:
     """Calendar YTD month keys from January through ``end_key`` (inclusive)."""
     if not end_key:
@@ -5288,6 +5347,7 @@ def render_page_marketing_performance(
     post_for_ytd_cw = _dedupe_post_lead_rows(_tab_subset(df_mkt, list(_POST_LEAD_SOURCE_TAB_PATTERNS)))
     post_kpi_mkt = _mpo_post_slice_for_markets(post_df_kpi, df_mkt)
 
+    _applied_ytd_headline = False
     if _basis_sc == "ytd" and ck:
         spend_ytd = _spend_slice_for_dashboard_filters(spend_sheet_master, df_mkt)
         ytd_totals, ytd_prior = _mpo_ytd_scorecard_bundle(
@@ -5322,6 +5382,7 @@ def render_page_marketing_performance(
             qual_for_qwin = ytd_totals.get("qual_for_qwin")
             _kpi_prior = ytd_prior
             _kpi_prior["_delta_label"] = "same period last year"
+            _applied_ytd_headline = True
         else:
             _kpi_prior = _kpi_two_month_compare_dict(
                 ck,
@@ -5358,6 +5419,39 @@ def render_page_marketing_performance(
             _kpi_prior["_delta_label"] = _dl
         else:
             _kpi_prior["_delta_label"] = "prior month"
+
+    # Headline KPIs were summed over **all** table months; override to YTD or **current compare month** so
+    # time frame / compare mode changes the big numbers, not only the % deltas.
+    if not _applied_ytd_headline:
+        _hm = _mpo_scorecard_headline_totals_for_month(
+            ck,
+            spend_df=spend_cmp,
+            leads_df=leads_df,
+            post_df_kpi=post_df_kpi,
+            cw_kpi=cw_cmp,
+        )
+        if _hm:
+            total_spend = float(_hm["total_spend"])
+            total_impr = int(_hm["total_impr"])
+            total_clicks = int(_hm["total_clicks"])
+            ctr = float(_hm["ctr"])
+            total_leads = int(_hm["total_leads"])
+            total_qualified = int(_hm["total_qualified"])
+            total_cw = int(_hm["total_cw"])
+            total_tcv = float(_hm["total_tcv"])
+            total_first_month_lf = float(_hm["total_first_month_lf"])
+            cpc = float(_hm["cpc"])
+            cpl = float(_hm["cpl"])
+            cpsql = float(_hm["cpsql"])
+            total_new_working = int(_hm["total_new_working"])
+            total_pitching = int(_hm["total_pitching"])
+            total_negotiation = int(_hm["total_negotiation"])
+            total_commitment = int(_hm["total_commitment"])
+            total_qualifying = int(_hm["total_qualifying"])
+            total_total_live = int(_hm["total_total_live"])
+            total_closed_lost = int(_hm["total_closed_lost"])
+            cw_for_qwin = _hm.get("cw_for_qwin")
+            qual_for_qwin = _hm.get("qual_for_qwin")
 
     st.markdown("#### KPI scorecard")
     _kpi_block(
