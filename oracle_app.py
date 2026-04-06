@@ -24,6 +24,9 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
 
+# Bump when you ship UI/logic changes — shown on Marketing Performance so you know which file Streamlit loaded.
+DASHBOARD_BUILD = "2026-04-07-mpo2"
+
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 DEFAULT_SOURCE_TRUTH_GID = 8109573
 DEFAULT_LEADS_WORKSHEET_GID = 743065354
@@ -3231,7 +3234,98 @@ def _apply_marketing_performance_filters(
     *,
     key_suffix: str,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Performance-tab filters with Market + Month side-by-side first."""
+    """Performance-tab filters: KPI comparison first, then Market + Month for the grid."""
+    st.markdown("##### KPI comparison (scorecard % changes)")
+    st.caption(
+        "Sets the **reference month** for the red/green **% vs …** lines on the scorecard. "
+        "Pick **Custom** to open **calendar** date pickers for current vs reference month."
+    )
+    _cmp_labels = {
+        "auto": "Auto — All months: YoY · Specific months: MoM",
+        "mom": "Month-over-month (vs prior calendar month)",
+        "yoy": "Year-over-year (vs same month last year)",
+        "custom": "Custom — calendars for current & reference month",
+    }
+    st.selectbox(
+        "Scorecard comparison (Δ)",
+        options=["auto", "mom", "yoy", "custom"],
+        format_func=lambda k: _cmp_labels.get(str(k), str(k)),
+        key=f"{key_suffix}_compare_mode",
+        help=(
+            "How scorecard % changes compare the **current** month to a **reference** month. "
+            "**Auto** uses Month slicers for the current month; reference still uses **Markets only**. "
+            "**Custom** uses calendar pickers for both months."
+        ),
+    )
+
+    _mode_now = str(st.session_state.get(f"{key_suffix}_compare_mode", "auto") or "auto")
+    _cust = sorted(
+        [x for x in df_date["month"].dropna().unique().tolist() if x and str(x) != "NaT"],
+        key=_mpo_month_ts_for_sort,
+    )
+    if _mode_now == "custom" and _cust:
+        _date_bounds = [_mpo_month_value_to_date(x) for x in _cust]
+        _date_bounds = [d for d in _date_bounds if d is not None]
+        if not _date_bounds:
+            st.caption("No valid month dates in range for custom comparison.")
+        else:
+            min_d = min(_date_bounds)
+            max_d = max(_date_bounds)
+            _cur_dt = f"{key_suffix}_compare_custom_cur_dt"
+            _ref_dt = f"{key_suffix}_compare_custom_ref_dt"
+            _leg_cur = f"{key_suffix}_compare_custom_cur"
+            _leg_ref = f"{key_suffix}_compare_custom_ref"
+            if _cur_dt not in st.session_state and _leg_cur in st.session_state:
+                _d0 = _mpo_month_value_to_date(st.session_state[_leg_cur])
+                if _d0 is not None:
+                    st.session_state[_cur_dt] = _d0
+            if _ref_dt not in st.session_state and _leg_ref in st.session_state:
+                _d1 = _mpo_month_value_to_date(st.session_state[_leg_ref])
+                if _d1 is not None:
+                    st.session_state[_ref_dt] = _d1
+            if _cur_dt not in st.session_state:
+                st.session_state[_cur_dt] = _date_bounds[-1]
+            if _ref_dt not in st.session_state:
+                st.session_state[_ref_dt] = _date_bounds[-2] if len(_date_bounds) >= 2 else _date_bounds[-1]
+            for _wk in (_cur_dt, _ref_dt):
+                if _wk not in st.session_state:
+                    continue
+                v = st.session_state[_wk]
+                if isinstance(v, datetime):
+                    v = v.date()
+                if not isinstance(v, date) or v < min_d or v > max_d:
+                    st.session_state[_wk] = _date_bounds[-1] if _wk == _cur_dt else (
+                        _date_bounds[-2] if len(_date_bounds) >= 2 else _date_bounds[-1]
+                    )
+            st.caption("Use the calendars below — any day in the month counts; the **full month** is used for Δ.")
+            cca, ccb = st.columns(2)
+            with cca:
+                st.date_input(
+                    "Δ current month",
+                    min_value=min_d,
+                    max_value=max_d,
+                    key=_cur_dt,
+                    help="Calendar picker; your **Markets** slice applies to scorecard metrics.",
+                )
+            with ccb:
+                st.date_input(
+                    "Δ reference month",
+                    min_value=min_d,
+                    max_value=max_d,
+                    key=_ref_dt,
+                    help="Compared **to** this month (**Markets** only for the comparison slice).",
+                )
+            _c_show = _mpo_date_to_month_key(st.session_state.get(_cur_dt))
+            _r_show = _mpo_date_to_month_key(st.session_state.get(_ref_dt))
+            if _c_show and _r_show:
+                st.caption(
+                    f"Using **{_month_label_short(_c_show)}** vs **{_month_label_short(_r_show)}** for scorecard % changes."
+                )
+    elif _mode_now == "custom" and not _cust:
+        st.caption("No months in the selected date range for custom comparison.")
+
+    st.divider()
+    st.markdown("##### Filter table & charts (Market · Month)")
     c1, c2 = st.columns(2)
 
     with c1:
@@ -3271,18 +3365,144 @@ def _apply_marketing_performance_filters(
     return df, df.copy()
 
 
-def _mpo_month_keys_last_two(master_df: pd.DataFrame) -> tuple[Optional[str], Optional[str]]:
-    """Latest month in the master grid vs the chronologically previous month (for MoM deltas)."""
+def _mpo_apply_market_only(df_date: pd.DataFrame, key_suffix: str) -> pd.DataFrame:
+    """Same date range as ``df_date``, Market slicer only (no Month filter) — for YoY/MoM comparison months."""
+    sm = st.session_state.get(f"{key_suffix}_market", ["All Markets"])
+    out = df_date.copy()
+    if "All Markets" not in sm and sm:
+        out = out[out["country"].isin(sm)]
+    return out
+
+
+def _mpo_shift_month_key(month_key: Optional[str], delta_months: int) -> Optional[str]:
+    if not month_key:
+        return None
+    try:
+        return str(pd.Period(str(_month_norm_key(month_key)), freq="M") + int(delta_months))
+    except Exception:
+        return None
+
+
+def _mpo_month_value_to_date(m: Any) -> Optional[date]:
+    """First day of the calendar month for a sheet ``month`` cell (for ``st.date_input`` bounds)."""
+    k = _month_norm_key(m)
+    if not k or str(k).strip().lower() in ("", "nan", "nat"):
+        return None
+    try:
+        return pd.Period(str(k), freq="M").to_timestamp().date()
+    except Exception:
+        return None
+
+
+def _mpo_date_to_month_key(d: Any) -> Optional[str]:
+    """Normalize a ``date`` (or datetime) from ``st.date_input`` to a month key string."""
+    if d is None:
+        return None
+    try:
+        if isinstance(d, datetime):
+            d = d.date()
+        if not isinstance(d, date):
+            return None
+        return str(pd.Period(d, freq="M"))
+    except Exception:
+        return None
+
+
+def _mpo_month_keys_sorted_master(master_df: pd.DataFrame) -> list[str]:
     if master_df.empty or "month" not in master_df.columns:
-        return None, None
+        return []
     raw = master_df["month"].map(_month_norm_key).dropna().astype(str).str.strip()
     raw = raw[~raw.str.lower().isin(("", "nan", "nat", "none"))]
     if raw.empty:
-        return None, None
-    keys = sorted({str(x) for x in raw.unique()}, key=_mpo_month_ts_for_sort)
-    if len(keys) >= 2:
-        return keys[-1], keys[-2]
-    return None, None
+        return []
+    return sorted({str(x) for x in raw.unique()}, key=_mpo_month_ts_for_sort)
+
+
+def _mpo_infer_compare_label(cur_k: Optional[str], ref_k: Optional[str]) -> tuple[str, str]:
+    """Delta copy for **custom** pairs: match MoM/YoY wording when the reference aligns, else generic."""
+    if not cur_k or not ref_k:
+        return "reference month", "Custom comparison"
+    cn = str(_month_norm_key(cur_k)).strip()
+    rn = str(_month_norm_key(ref_k)).strip()
+    if not cn or not rn or cn.lower() in ("nan", "nat") or rn.lower() in ("nan", "nat"):
+        return "reference month", "Custom comparison"
+    mom = _mpo_shift_month_key(cn, -1)
+    yoy = _mpo_shift_month_key(cn, -12)
+    if mom and str(_month_norm_key(mom)).strip() == rn:
+        return "prior month", "Month-over-month (MoM)"
+    if yoy and str(_month_norm_key(yoy)).strip() == rn:
+        return "same month last year", "Year-over-year (YoY)"
+    return "reference month", "Custom comparison"
+
+
+def _mpo_compare_month_keys(
+    master_df: pd.DataFrame,
+    *,
+    key_suffix: str,
+) -> tuple[Optional[str], Optional[str], str]:
+    """(current_month_key, reference_month_key, "yoy"|"mom"|"custom").
+
+    **Auto / mom / yoy:** **current** follows Market + Month slicers (latest in grid when All Months, else latest selected).
+
+    **Reference** (except custom): from ``{key_suffix}_compare_mode`` — Auto rules, or fixed MoM (−1) / YoY (−12).
+
+    **Custom:** both months from calendar ``date_input`` keys ``…_compare_custom_cur_dt`` / ``…_ref_dt``.
+    """
+    keys_sorted = _mpo_month_keys_sorted_master(master_df)
+    months_sel = st.session_state.get(f"{key_suffix}_month", ["All Months"])
+    all_months = "All Months" in months_sel
+    mode_raw = st.session_state.get(f"{key_suffix}_compare_mode", "auto")
+    mode = str(mode_raw) if mode_raw is not None else "auto"
+    if mode not in ("auto", "mom", "yoy", "custom"):
+        mode = "auto"
+
+    if mode == "custom":
+        cur_dt = st.session_state.get(f"{key_suffix}_compare_custom_cur_dt")
+        ref_dt = st.session_state.get(f"{key_suffix}_compare_custom_ref_dt")
+        cur = _mpo_date_to_month_key(cur_dt)
+        ref = _mpo_date_to_month_key(ref_dt)
+        if not cur:
+            cur_raw = st.session_state.get(f"{key_suffix}_compare_custom_cur")
+            ref_raw = st.session_state.get(f"{key_suffix}_compare_custom_ref")
+            cur_n = _month_norm_key(cur_raw) if cur_raw is not None else ""
+            ref_n = _month_norm_key(ref_raw) if ref_raw is not None else ""
+            cur = str(cur_n).strip() if cur_n and str(cur_n).strip().lower() not in ("", "nan", "nat") else None
+            ref = str(ref_n).strip() if ref_n and str(ref_n).strip().lower() not in ("", "nan", "nat") else None
+        if not cur:
+            return None, None, "custom"
+        return cur, ref, "custom"
+
+    if not keys_sorted:
+        return None, None, "mom"
+
+    picked = [m for m in months_sel if m != "All Months"]
+    norm_pick: list[str] = []
+    for m in picked:
+        k = _month_norm_key(m)
+        if k and str(k).strip().lower() not in ("", "nan", "nat"):
+            norm_pick.append(str(k).strip())
+
+    if all_months:
+        cur = keys_sorted[-1]
+    elif not picked:
+        cur = keys_sorted[-1]
+    elif not norm_pick:
+        cur = keys_sorted[-1]
+    else:
+        cur = max(norm_pick, key=_mpo_month_ts_for_sort)
+
+    if mode == "mom":
+        ref = _mpo_shift_month_key(cur, -1)
+        return cur, ref, "mom"
+    if mode == "yoy":
+        ref = _mpo_shift_month_key(cur, -12)
+        return cur, ref, "yoy"
+    # auto
+    if all_months or not picked:
+        ref = _mpo_shift_month_key(cur, -12)
+        return cur, ref, "yoy"
+    ref = _mpo_shift_month_key(cur, -1)
+    return cur, ref, "mom"
 
 
 def _mpo_rows_for_norm_month(df: pd.DataFrame, month_key: Optional[str]) -> pd.DataFrame:
@@ -3358,22 +3578,22 @@ def _mpo_pipeline_month_totals(post_sub: pd.DataFrame) -> dict[str, int]:
     }
 
 
-def _kpi_mom_comparison_dict(
+def _kpi_two_month_compare_dict(
+    cur_k: Optional[str],
+    ref_k: Optional[str],
     *,
-    master_df: pd.DataFrame,
     spend_df: pd.DataFrame,
     leads_df: pd.DataFrame,
     post_df_kpi: pd.DataFrame,
     cw_kpi: pd.DataFrame,
 ) -> dict[str, Optional[float]]:
-    """Month-over-month pairs (current, previous) keyed for scorecard deltas; None if fewer than two months in grid."""
-    mk_c, mk_p = _mpo_month_keys_last_two(master_df)
+    """Scorecard delta pairs: **current** month vs **reference** month (MoM or YoY), using market-wide slices."""
     out: dict[str, Optional[float]] = {}
-    if not mk_c or not mk_p:
+    if not cur_k or not ref_k:
         return out
 
-    sc, ic, cc = _mpo_spend_activity_for_month(spend_df, mk_c)
-    sp, ip, cp = _mpo_spend_activity_for_month(spend_df, mk_p)
+    sc, ic, cc = _mpo_spend_activity_for_month(spend_df, cur_k)
+    sp, ip, cp = _mpo_spend_activity_for_month(spend_df, ref_k)
     out["mom_spend_c"], out["mom_spend_p"] = sc, sp
     out["mom_impr_c"], out["mom_impr_p"] = float(ic), float(ip)
     out["mom_clicks_c"], out["mom_clicks_p"] = float(cc), float(cp)
@@ -3381,33 +3601,31 @@ def _kpi_mom_comparison_dict(
     ctr_p = (cp / ip * 100.0) if ip else None
     out["mom_ctr_c"], out["mom_ctr_p"] = ctr_c, ctr_p
 
-    mm_c = _mpo_master_month_sums(master_df, mk_c)
-    mm_p = _mpo_master_month_sums(master_df, mk_p)
-    out["mom_leads_c"], out["mom_leads_p"] = mm_c["leads"], mm_p["leads"]
-    out["mom_qualified_c"], out["mom_qualified_p"] = mm_c["qualified"], mm_p["qualified"]
-
-    ld_c = _mpo_leads_for_norm_month(leads_df, mk_c)
-    ld_p = _mpo_leads_for_norm_month(leads_df, mk_p)
-    out["mom_leads_rows_c"] = float(len(ld_c))
-    out["mom_leads_rows_p"] = float(len(ld_p))
-    out["mom_qual_status_c"] = float(_qualified_count_from_leads(ld_c))
-    out["mom_qual_status_p"] = float(_qualified_count_from_leads(ld_p))
+    ld_c = _mpo_leads_for_norm_month(leads_df, cur_k)
+    ld_p = _mpo_leads_for_norm_month(leads_df, ref_k)
+    lr_c, lr_p = float(len(ld_c)), float(len(ld_p))
+    qc = float(_qualified_count_from_leads(ld_c))
+    qp = float(_qualified_count_from_leads(ld_p))
+    out["mom_leads_rows_c"], out["mom_leads_rows_p"] = lr_c, lr_p
+    out["mom_qual_status_c"], out["mom_qual_status_p"] = qc, qp
+    out["mom_leads_c"], out["mom_leads_p"] = lr_c, lr_p
+    out["mom_qualified_c"], out["mom_qualified_p"] = qc, qp
     out["mom_nw_c"] = float(_new_working_count_from_leads(ld_c))
     out["mom_nw_p"] = float(_new_working_count_from_leads(ld_p))
 
-    sql_c = (mm_c["qualified"] / mm_c["leads"] * 100.0) if mm_c["leads"] > 0 else None
-    sql_p = (mm_p["qualified"] / mm_p["leads"] * 100.0) if mm_p["leads"] > 0 else None
+    sql_c = (qc / lr_c * 100.0) if lr_c > 0 else None
+    sql_p = (qp / lr_p * 100.0) if lr_p > 0 else None
     out["mom_sql_pct_c"], out["mom_sql_pct_p"] = sql_c, sql_p
 
-    cpl_c = (sc / mm_c["leads"]) if mm_c["leads"] > 0 else None
-    cpl_p = (sp / mm_p["leads"]) if mm_p["leads"] > 0 else None
+    cpl_c = (sc / lr_c) if lr_c > 0 else None
+    cpl_p = (sp / lr_p) if lr_p > 0 else None
     out["mom_cpl_c"], out["mom_cpl_p"] = cpl_c, cpl_p
-    cps_c = (sc / mm_c["qualified"]) if mm_c["qualified"] > 0 else None
-    cps_p = (sp / mm_p["qualified"]) if mm_p["qualified"] > 0 else None
+    cps_c = (sc / qc) if qc > 0 else None
+    cps_p = (sp / qp) if qp > 0 else None
     out["mom_cpsql_c"], out["mom_cpsql_p"] = cps_c, cps_p
 
-    post_c = _dedupe_post_lead_rows(_mpo_rows_for_norm_month(post_df_kpi, mk_c))
-    post_p = _dedupe_post_lead_rows(_mpo_rows_for_norm_month(post_df_kpi, mk_p))
+    post_c = _dedupe_post_lead_rows(_mpo_rows_for_norm_month(post_df_kpi, cur_k))
+    post_p = _dedupe_post_lead_rows(_mpo_rows_for_norm_month(post_df_kpi, ref_k))
     pipe_c = _mpo_pipeline_month_totals(post_c)
     pipe_p = _mpo_pipeline_month_totals(post_p)
     out["mom_cw_c"], out["mom_cw_p"] = float(pipe_c["cw"]), float(pipe_p["cw"])
@@ -3416,8 +3634,8 @@ def _kpi_mom_comparison_dict(
     out["mom_commit_c"], out["mom_commit_p"] = float(pipe_c["commitment"]), float(pipe_p["commitment"])
     out["mom_clost_c"], out["mom_clost_p"] = float(pipe_c["closed_lost"]), float(pipe_p["closed_lost"])
 
-    cw_sub_c = _mpo_rows_for_norm_month(cw_kpi, mk_c)
-    cw_sub_p = _mpo_rows_for_norm_month(cw_kpi, mk_p)
+    cw_sub_c = _mpo_rows_for_norm_month(cw_kpi, cur_k)
+    cw_sub_p = _mpo_rows_for_norm_month(cw_kpi, ref_k)
     tcv_c = float(pd.to_numeric(cw_sub_c["tcv"], errors="coerce").fillna(0).sum()) if "tcv" in cw_sub_c.columns else 0.0
     tcv_p = float(pd.to_numeric(cw_sub_p["tcv"], errors="coerce").fillna(0).sum()) if "tcv" in cw_sub_p.columns else 0.0
     lf_c = (
@@ -3452,14 +3670,15 @@ def _kpi_mom_comparison_dict(
     return out
 
 
-def _kpi_funnel_delta_html(cur: Optional[float], prev: Optional[float]) -> str:
-    """Green/red % change vs **prior calendar month** (Looker-style); ``None`` hides the comparison."""
+def _kpi_funnel_delta_html(cur: Optional[float], prev: Optional[float], *, vs_label: str = "prior month") -> str:
+    """Green/red % change vs reference period; ``vs_label`` e.g. ``prior month`` or ``same month last year``."""
+    esc = html.escape(vs_label, quote=True)
     if cur is None or prev is None:
-        return '<div class="kpi-funnel-delta kpi-funnel-delta--na">— vs prior month</div>'
+        return f'<div class="kpi-funnel-delta kpi-funnel-delta--na">— vs {esc}</div>'
     if prev == 0.0:
         if cur == 0.0:
-            return '<div class="kpi-funnel-delta kpi-funnel-delta--flat">→ 0% vs prior month</div>'
-        return '<div class="kpi-funnel-delta kpi-funnel-delta--up">↑ new vs prior month</div>'
+            return f'<div class="kpi-funnel-delta kpi-funnel-delta--flat">→ 0% vs {esc}</div>'
+        return f'<div class="kpi-funnel-delta kpi-funnel-delta--up">↑ new vs {esc}</div>'
     pct = (cur - prev) / prev * 100.0
     if pct > 0.05:
         cls, arr = "kpi-funnel-delta--up", "↑"
@@ -3467,7 +3686,7 @@ def _kpi_funnel_delta_html(cur: Optional[float], prev: Optional[float]) -> str:
         cls, arr = "kpi-funnel-delta--down", "↓"
     else:
         cls, arr = "kpi-funnel-delta--flat", "→"
-    return f'<div class="kpi-funnel-delta {cls}">{arr} {pct:+.1f}% vs prior month</div>'
+    return f'<div class="kpi-funnel-delta {cls}">{arr} {pct:+.1f}% vs {esc}</div>'
 
 
 def _kpi_funnel_sub_row(label: str, value: str) -> str:
@@ -3503,7 +3722,7 @@ def _kpi_block(
     q_win_qualified: Optional[int] = None,
     prior: Optional[dict[str, Any]] = None,
 ) -> None:
-    """Original MPO metric groups (Closed won / Leads / Qualified leads) in funnel cards + month-over-month deltas."""
+    """Original MPO metric groups (Closed won / Leads / Qualified leads) in funnel cards + period comparison deltas."""
     _cw_q = int(q_win_cw) if q_win_cw is not None else int(total_cw)
     _q_d = int(q_win_qualified) if q_win_qualified is not None else int(total_qualified)
     q_rate = (_cw_q / _q_d * 100) if _q_d else 0.0
@@ -3513,6 +3732,7 @@ def _kpi_block(
     spend_tcv_pct = (total_spend / total_tcv * 100) if total_tcv else 0.0
 
     pv = prior or {}
+    _vs = str(pv.get("_delta_label") or "prior month")
 
     def _card(icon: str, title: str, value_s: str, delta_html: str, sub_html: str, delay: float) -> str:
         return (
@@ -3558,7 +3778,7 @@ def _kpi_block(
         "◎",
         "CW (inc. approved)",
         f"{total_cw:,}",
-        _kpi_funnel_delta_html(pv.get("mom_cw_c"), pv.get("mom_cw_p")),
+        _kpi_funnel_delta_html(pv.get("mom_cw_c"), pv.get("mom_cw_p"), vs_label=_vs),
         cw_sub,
         _d(),
     )
@@ -3566,7 +3786,7 @@ def _kpi_block(
         "💲",
         "Spend",
         _format_spend_k(total_spend) if total_spend else "$0",
-        _kpi_funnel_delta_html(pv.get("mom_spend_c"), pv.get("mom_spend_p")),
+        _kpi_funnel_delta_html(pv.get("mom_spend_c"), pv.get("mom_spend_p"), vs_label=_vs),
         spend_sub,
         _d(),
     )
@@ -3574,7 +3794,7 @@ def _kpi_block(
         "$",
         "CPCW",
         cpcw_s,
-        _kpi_funnel_delta_html(pv.get("mom_cpcw_c"), pv.get("mom_cpcw_p")),
+        _kpi_funnel_delta_html(pv.get("mom_cpcw_c"), pv.get("mom_cpcw_p"), vs_label=_vs),
         cpcw_sub,
         _d(),
     )
@@ -3582,7 +3802,7 @@ def _kpi_block(
         "◆",
         "Actual TCV",
         tcv_s,
-        _kpi_funnel_delta_html(pv.get("mom_tcv_c"), pv.get("mom_tcv_p")),
+        _kpi_funnel_delta_html(pv.get("mom_tcv_c"), pv.get("mom_tcv_p"), vs_label=_vs),
         tcv_sub,
         _d(),
     )
@@ -3590,7 +3810,7 @@ def _kpi_block(
         "≈",
         "CpCW:LF",
         cpcwlf_s,
-        _kpi_funnel_delta_html(pv.get("mom_cpcwlf_c"), pv.get("mom_cpcwlf_p")),
+        _kpi_funnel_delta_html(pv.get("mom_cpcwlf_c"), pv.get("mom_cpcwlf_p"), vs_label=_vs),
         cpcwlf_sub,
         _d(),
     )
@@ -3598,7 +3818,7 @@ def _kpi_block(
         "%",
         "Cost / TCV %",
         f"{spend_tcv_pct:.2f}%" if total_tcv else "—",
-        _kpi_funnel_delta_html(pv.get("mom_spend_tcv_pct_c"), pv.get("mom_spend_tcv_pct_p")),
+        _kpi_funnel_delta_html(pv.get("mom_spend_tcv_pct_c"), pv.get("mom_spend_tcv_pct_p"), vs_label=_vs),
         pct_tcv_sub,
         _d(),
     )
@@ -3616,7 +3836,7 @@ def _kpi_block(
         "👥",
         "Total leads",
         f"{total_leads:,}",
-        _kpi_funnel_delta_html(pv.get("mom_leads_rows_c"), pv.get("mom_leads_rows_p")),
+        _kpi_funnel_delta_html(pv.get("mom_leads_rows_c"), pv.get("mom_leads_rows_p"), vs_label=_vs),
         sub_tl,
         _d(),
     )
@@ -3624,7 +3844,7 @@ def _kpi_block(
         "✓",
         "Qualified",
         f"{total_qualified:,}",
-        _kpi_funnel_delta_html(pv.get("mom_qual_status_c"), pv.get("mom_qual_status_p")),
+        _kpi_funnel_delta_html(pv.get("mom_qual_status_c"), pv.get("mom_qual_status_p"), vs_label=_vs),
         sub_qual,
         _d(),
     )
@@ -3632,7 +3852,7 @@ def _kpi_block(
         "◇",
         "New + working",
         f"{total_new_working:,}",
-        _kpi_funnel_delta_html(pv.get("mom_nw_c"), pv.get("mom_nw_p")),
+        _kpi_funnel_delta_html(pv.get("mom_nw_c"), pv.get("mom_nw_p"), vs_label=_vs),
         sub_nw,
         _d(),
     )
@@ -3640,7 +3860,7 @@ def _kpi_block(
         "‰",
         "SQL %",
         f"{sql_rate:.2f}%",
-        _kpi_funnel_delta_html(pv.get("mom_sql_pct_c"), pv.get("mom_sql_pct_p")),
+        _kpi_funnel_delta_html(pv.get("mom_sql_pct_c"), pv.get("mom_sql_pct_p"), vs_label=_vs),
         sub_sql,
         _d(),
     )
@@ -3648,7 +3868,7 @@ def _kpi_block(
         "⬧",
         "CPL",
         cpl_s,
-        _kpi_funnel_delta_html(pv.get("mom_cpl_c"), pv.get("mom_cpl_p")),
+        _kpi_funnel_delta_html(pv.get("mom_cpl_c"), pv.get("mom_cpl_p"), vs_label=_vs),
         sub_cpl_c,
         _d(),
     )
@@ -3656,7 +3876,7 @@ def _kpi_block(
         "⬧",
         "CPSQL",
         cpsql_s,
-        _kpi_funnel_delta_html(pv.get("mom_cpsql_c"), pv.get("mom_cpsql_p")),
+        _kpi_funnel_delta_html(pv.get("mom_cpsql_c"), pv.get("mom_cpsql_p"), vs_label=_vs),
         sub_cpsql_c,
         _d(),
     )
@@ -3679,7 +3899,7 @@ def _kpi_block(
         "▤",
         "Total live",
         f"{total_total_live:,}",
-        _kpi_funnel_delta_html(pv.get("mom_live_c"), pv.get("mom_live_p")),
+        _kpi_funnel_delta_html(pv.get("mom_live_c"), pv.get("mom_live_p"), vs_label=_vs),
         sub_live,
         _d(),
     )
@@ -3687,7 +3907,7 @@ def _kpi_block(
         "◆",
         "Negotiation",
         f"{total_negotiation:,}",
-        _kpi_funnel_delta_html(pv.get("mom_nego_c"), pv.get("mom_nego_p")),
+        _kpi_funnel_delta_html(pv.get("mom_nego_c"), pv.get("mom_nego_p"), vs_label=_vs),
         sub_nego,
         _d(),
     )
@@ -3695,7 +3915,7 @@ def _kpi_block(
         "◆",
         "Commitment",
         f"{total_commitment:,}",
-        _kpi_funnel_delta_html(pv.get("mom_commit_c"), pv.get("mom_commit_p")),
+        _kpi_funnel_delta_html(pv.get("mom_commit_c"), pv.get("mom_commit_p"), vs_label=_vs),
         sub_commit,
         _d(),
     )
@@ -3703,7 +3923,7 @@ def _kpi_block(
         "✕",
         "Closed lost",
         f"{total_closed_lost:,}",
-        _kpi_funnel_delta_html(pv.get("mom_clost_c"), pv.get("mom_clost_p")),
+        _kpi_funnel_delta_html(pv.get("mom_clost_c"), pv.get("mom_clost_p"), vs_label=_vs),
         sub_clost,
         _d(),
     )
@@ -3711,7 +3931,7 @@ def _kpi_block(
         "%",
         "Q win rate %",
         f"{q_rate:.2f}%",
-        _kpi_funnel_delta_html(pv.get("mom_qwin_c"), pv.get("mom_qwin_p")),
+        _kpi_funnel_delta_html(pv.get("mom_qwin_c"), pv.get("mom_qwin_p"), vs_label=_vs),
         sub_qwin,
         _d(),
     )
@@ -3737,14 +3957,22 @@ def _kpi_block(
         unsafe_allow_html=True,
     )
     _cap = (prior or {}).get("_mom_cap")
-    st.caption(
-        (
-            f"Δ = month-over-month ({_cap}) using the **latest two months** in the market × month grid after your "
-            "slicers, with spend/impressions/clicks from the spend tab and pipeline from the post-qual tab by **month**."
+    _kind_line = str((prior or {}).get("_delta_kind_caption") or "")
+    if _cap and _kind_line:
+        st.caption(
+            f"{_kind_line}: **{_cap}**. Reference month uses your **Markets** slice only (Month filter does not limit it). "
+            "Spend/clicks/impressions from the spend tab; pipeline from post-qual by **calendar month**."
         )
-        if _cap
-        else "Δ = month-over-month when at least **two months** of data appear in the grid after your slicers (otherwise “—”)."
-    )
+    elif _cap:
+        st.caption(
+            f"Comparison: **{_cap}**. Reference month uses your **Markets** slice only. "
+            "Use **Scorecard comparison (Δ)** above: **Auto**, **MoM**, **YoY**, or **Custom** (pick both months)."
+        )
+    else:
+        st.caption(
+            "Δ shows when both current and reference months resolve (otherwise “—”). "
+            "Set **Scorecard comparison (Δ)** — default **Auto**; **Custom** picks numerator and denominator months."
+        )
 
 
 def _collapse_duplicate_named_columns(df: pd.DataFrame) -> pd.DataFrame:
@@ -4251,6 +4479,11 @@ def render_page_marketing_performance(
         return
 
     st.markdown('<h1 class="looker-page-h1">Marketing Performance Overview</h1>', unsafe_allow_html=True)
+    _app_fp = Path(__file__).resolve()
+    st.caption(
+        f"Build **{DASHBOARD_BUILD}** · script `{_app_fp}`. "
+        "If **Scorecard comparison (Δ)** is missing, you are on an old copy — restart Streamlit from this path."
+    )
     df, _ = _apply_marketing_performance_filters(df_date, key_suffix=key_suffix)
 
     st.caption("Filters apply to scorecards, master table, and charts below.")
@@ -4618,16 +4851,33 @@ def render_page_marketing_performance(
     if _normalized_spend_cost_sum(_spend_for_master_ui) < 1e-6 and _normalized_spend_cost_sum(spend_pool_full) > 1e-6:
         _spend_for_master_ui = _spend_sheet_pivot_by_month_country(spend_pool_full)
 
-    _kpi_prior = _kpi_mom_comparison_dict(
-        master_df=master_df,
-        spend_df=spend_df,
+    df_mkt = _mpo_apply_market_only(df_date, key_suffix)
+    spend_cmp = _spend_slice_for_dashboard_filters(spend_sheet_master, df_mkt)
+    cw_cmp = _cw_dataframe_for_kpis(_resolve_cw_tcv_dataframe(df_loaded, df_mkt), df_mkt)
+    ck, rk, cmp_kind = _mpo_compare_month_keys(master_df, key_suffix=key_suffix)
+    _kpi_prior = _kpi_two_month_compare_dict(
+        ck,
+        rk,
+        spend_df=spend_cmp,
         leads_df=leads_df,
         post_df_kpi=post_df_kpi,
-        cw_kpi=cw_kpi,
+        cw_kpi=cw_cmp,
     )
-    _mkc_mom, _mkp_mom = _mpo_month_keys_last_two(master_df)
-    if _mkc_mom and _mkp_mom:
-        _kpi_prior["_mom_cap"] = f"{_month_label_short(_mkc_mom)} vs {_month_label_short(_mkp_mom)}"
+    if cmp_kind == "yoy":
+        _kpi_prior["_delta_label"] = "same month last year"
+        _kpi_prior["_delta_kind_caption"] = "Year-over-year (YoY)"
+    elif cmp_kind == "mom":
+        _kpi_prior["_delta_label"] = "prior month"
+        _kpi_prior["_delta_kind_caption"] = "Month-over-month (MoM)"
+    elif cmp_kind == "custom":
+        _dl, _dc = _mpo_infer_compare_label(ck, rk)
+        _kpi_prior["_delta_label"] = _dl
+        _kpi_prior["_delta_kind_caption"] = _dc
+    else:
+        _kpi_prior["_delta_label"] = "prior month"
+        _kpi_prior["_delta_kind_caption"] = "Month-over-month (MoM)"
+    if ck and rk:
+        _kpi_prior["_mom_cap"] = f"{_month_label_short(ck)} vs {_month_label_short(rk)}"
 
     st.markdown("#### Marketing performance scorecard")
     _kpi_block(
@@ -4885,6 +5135,11 @@ def render_main_dashboard(
         st.warning("No data rows were returned. Check tabs and column headers against the ME X-Ray template.")
         return
 
+    st.info(
+        f"**{DASHBOARD_BUILD}** — On **Marketing Performance**, use **KPI comparison** at the top (set **Custom** for "
+        "calendars). If this message is missing, Streamlit Cloud is still on an old deploy — push `oracle_app.py` to GitHub "
+        "and reboot the app from **Manage app**."
+    )
     tab_mpo, tab_mom, tab_pmc, tab_inbound = st.tabs(list(LOOKER_PAGES))
     with tab_mpo:
         render_page_marketing_performance(df_loaded, start_date, end_date)
@@ -4907,7 +5162,8 @@ def main() -> None:
     st.markdown(
         """
     <style>
-    .stApp { background: #f4f6f8; font-family: 'Segoe UI', system-ui, sans-serif; font-size: 0.50rem !important; }
+    /* Do not set a tiny font-size on .stApp — it made almost all UI unreadable (~8px). */
+    .stApp { background: #f4f6f8; font-family: 'Segoe UI', system-ui, sans-serif; }
     section[data-testid="stSidebar"] { display: none !important; }
     [data-testid="collapsedControl"] { display: none !important; }
     header[data-testid="stHeader"] { background: #FFFFFF !important; border-bottom: 1px solid #E2E8F0; }
@@ -4924,7 +5180,7 @@ def main() -> None:
         gap: 6px;
         color: #1f2937;
     }
-    .looker-header-title { font-size: 0.48rem; font-weight: 700; color: #111827; margin: 0; line-height: 1.05; }
+    .looker-header-title { font-size: 1.35rem; font-weight: 700; color: #111827; margin: 0; line-height: 1.15; }
     .looker-header-logo {
         width: auto; height: 40px; object-fit: contain;
         margin-right: 6px; vertical-align: middle; border: none;
@@ -4946,15 +5202,15 @@ def main() -> None:
         border-radius: 999px;
         background: #eef8f7;
         color: #19766f;
-        font-size: 7px;
-        width: 22px;
-        min-width: 22px;
-        height: 22px;
+        font-size: 12px;
+        width: 28px;
+        min-width: 28px;
+        height: 28px;
         padding: 0;
         line-height: 1;
     }
     .stButton > button:hover { border-color: #4f8483; color: #0f766e; }
-    .looker-page-h1 { font-size: 0.86rem; font-weight: 400; color: #202124; margin: 8px 0 16px 0; }
+    .looker-page-h1 { font-size: 1.65rem; font-weight: 600; color: #202124; margin: 8px 0 16px 0; }
     .looker-table-title { font-size: 1.0rem; font-weight: 700; color: #202124; margin: 20px 0 8px 0; }
     /* KPI scorecards: glass panels, staggered entrance, hover lift */
     .kpi-section {
@@ -5287,7 +5543,7 @@ def main() -> None:
         border-radius: 8px;
         padding: 6px 10px;
     }
-    [data-testid="stMetricLabel"] { font-size: 8px !important; color: #4b5563 !important; }
+    [data-testid="stMetricLabel"] { font-size: 11px !important; color: #4b5563 !important; }
     [data-testid="stMetricValue"] { font-size: 1.2rem !important; color: #1f2937 !important; }
     .stRadio [role="radiogroup"] { gap: 14px; }
     .stSelectbox > label, .stRadio > label, .stTextInput > label { font-size: 11px !important; color: #6b7280 !important; }
@@ -5298,6 +5554,8 @@ def main() -> None:
         background: #F8FAFC !important;
         border: 1px solid #E2E8F0 !important;
     }
+    .stDateInput { max-width: 240px; }
+    .stDateInput label { font-size: 11px !important; color: #6b7280 !important; }
     /* Multiselect selected chips: force app green instead of default red */
     .stMultiSelect [data-baseweb="select"] [data-baseweb="tag"],
     .stMultiSelect [data-baseweb="tag"] {
