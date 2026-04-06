@@ -3226,14 +3226,45 @@ def _apply_sheet_filters(
     return df, df_for_tabs
 
 
+# Marketing Performance: one multiselect token = “no geo filter” (replaces legacy ``All Markets`` / ``All Countries``).
+_MPO_ALL_GEO_SENTINEL = "All markets & countries"
+_MPO_ALL_GEO_LEGACY: frozenset[str] = frozenset({"All Markets", "All Countries", _MPO_ALL_GEO_SENTINEL})
+
+
+def _mpo_normalize_market_multiselect_state(key_suffix: str) -> None:
+    """Migrate older session values so options always match the multiselect (Streamlit requires values ⊆ options)."""
+    k = f"{key_suffix}_market"
+    if k not in st.session_state:
+        return
+    v = st.session_state[k]
+    if not isinstance(v, list):
+        return
+    if any(str(x) in _MPO_ALL_GEO_LEGACY for x in v):
+        st.session_state[k] = [_MPO_ALL_GEO_SENTINEL]
+
+
+def _mpo_market_scope_is_all(sel: Any) -> bool:
+    if not sel:
+        return True
+    if not isinstance(sel, list):
+        return str(sel) in _MPO_ALL_GEO_LEGACY
+    return any(str(x) in _MPO_ALL_GEO_LEGACY for x in sel)
+
+
+def _mpo_market_scope_countries_only(sel: Any) -> list[str]:
+    if not isinstance(sel, list):
+        return []
+    return [str(x) for x in sel if x and str(x) not in _MPO_ALL_GEO_LEGACY]
+
+
 def _mpo_market_scope_note(key_suffix: str) -> str:
     """Short label for which markets apply (scorecard + table)."""
-    sm = st.session_state.get(f"{key_suffix}_market", ["All Markets"])
-    if not sm or "All Markets" in sm:
-        return "All markets"
-    picks = [str(x) for x in sm if x and str(x) != "All Markets"]
+    sm = st.session_state.get(f"{key_suffix}_market", [_MPO_ALL_GEO_SENTINEL])
+    if _mpo_market_scope_is_all(sm):
+        return "All markets & countries"
+    picks = _mpo_market_scope_countries_only(sm)
     if not picks:
-        return "All markets"
+        return "All markets & countries"
     if len(picks) <= 2:
         return ", ".join(html.escape(p) for p in picks)
     return f"{html.escape(picks[0])}, {html.escape(picks[1])} +{len(picks) - 2} more"
@@ -3251,8 +3282,25 @@ def _mpo_comparison_strip_html(
 
     if cur_k:
         _ck = html.escape(_month_label_short(cur_k))
-        _rk = html.escape(_month_label_short(ref_k)) if ref_k else "—"
-        if str(kind) == "custom":
+        _sk = str(kind)
+        if _sk == "off" or not ref_k:
+            _pill = '<span class="mpo-cmp-pill mpo-cmp-pill--snapshot">Snapshot</span>'
+            return (
+                '<div class="mpo-cmp-wrap">'
+                '<div class="mpo-cmp-bar">'
+                '<span class="mpo-cmp-dates">'
+                f"<strong>{_ck}</strong>"
+                '<span class="mpo-cmp-vs mpo-cmp-vs--muted">— current period only</span>'
+                "</span>"
+                '<span class="mpo-cmp-trail">'
+                f"{_pill}"
+                f'<span class="mpo-cmp-mkt">{_mscope}</span>'
+                "</span>"
+                "</div>"
+                "</div>"
+            )
+        _rk = html.escape(_month_label_short(ref_k))
+        if _sk == "custom":
             _pill = '<span class="mpo-cmp-pill mpo-cmp-pill--custom">Custom</span>'
         else:
             _pill = '<span class="mpo-cmp-pill mpo-cmp-pill--mom">Prior month</span>'
@@ -3279,19 +3327,75 @@ def _mpo_comparison_strip_html(
     )
 
 
-def _mpo_normalize_compare_mode_session(key_suffix: str) -> str:
-    """Scorecard compare is only **mom** or **custom**; legacy auto/yoy/ytd → mom."""
-    _k = f"{key_suffix}_compare_mode"
-    _v = str(st.session_state.get(_k, "mom") or "mom")
-    if _v not in ("mom", "custom"):
-        st.session_state[_k] = "mom"
-        _v = "mom"
+def _mpo_scorecard_compare_label(opt: str) -> str:
+    """Human labels for the unified scorecard comparison selectbox."""
+    return {
+        "mom": "vs prior calendar month (automatic)",
+        "custom": "Custom — choose current month & comparison month",
+        "off": "Off — this period only (no comparison or % deltas)",
+    }.get(str(opt), str(opt))
+
+
+def _mpo_ensure_scorecard_compare_session(key_suffix: str) -> str:
+    """Single session key ``{suffix}_scorecard_compare``: ``off`` | ``mom`` | ``custom``; migrate legacy widgets."""
+    k = f"{key_suffix}_scorecard_compare"
+    if k not in st.session_state:
+        leg_on = f"{key_suffix}_scorecard_compare_on"
+        leg_mode = f"{key_suffix}_compare_mode"
+        if leg_on in st.session_state and not bool(st.session_state[leg_on]):
+            st.session_state[k] = "off"
+        elif leg_mode in st.session_state:
+            m = str(st.session_state.get(leg_mode) or "mom")
+            st.session_state[k] = m if m in ("mom", "custom") else "mom"
+        else:
+            st.session_state[k] = "mom"
+    v = str(st.session_state.get(k) or "mom")
+    if v not in ("off", "mom", "custom"):
+        st.session_state[k] = "mom"
+        v = "mom"
     st.session_state[f"{key_suffix}_scorecard_basis"] = "filtered"
-    return _v
+    return v
 
 
-def _mpo_compare_mode_radio_label(opt: str) -> str:
-    return "Prior month" if str(opt) == "mom" else "Custom dates"
+def _mpo_compare_custom_month_options(months_raw: list[Any]) -> list[str]:
+    """Sorted unique normalized month keys (``YYYY-MM`` strings) for custom compare dropdowns."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for m in months_raw:
+        k = _month_norm_key(m)
+        sk = str(k).strip() if k is not None else ""
+        if not sk or sk.lower() in ("nan", "nat", "none"):
+            continue
+        if sk not in seen:
+            seen.add(sk)
+            out.append(sk)
+    return sorted(out, key=_mpo_month_ts_for_sort)
+
+
+def _mpo_seed_custom_month_selects(
+    key_suffix: str,
+    month_key_opts: list[str],
+    *,
+    legacy_cur_dt: str,
+    legacy_ref_dt: str,
+) -> None:
+    """Default custom Current / Compare from legacy date widgets or last two months in data."""
+    _k_cur = f"{key_suffix}_compare_custom_cur_m"
+    _k_ref = f"{key_suffix}_compare_custom_ref_m"
+    if not month_key_opts:
+        return
+    if _k_cur not in st.session_state and legacy_cur_dt in st.session_state:
+        _mk = _mpo_date_to_month_key(st.session_state[legacy_cur_dt])
+        if _mk and _mk in month_key_opts:
+            st.session_state[_k_cur] = _mk
+    if _k_ref not in st.session_state and legacy_ref_dt in st.session_state:
+        _mr = _mpo_date_to_month_key(st.session_state[legacy_ref_dt])
+        if _mr and _mr in month_key_opts:
+            st.session_state[_k_ref] = _mr
+    if _k_cur not in st.session_state:
+        st.session_state[_k_cur] = month_key_opts[-1]
+    if _k_ref not in st.session_state:
+        st.session_state[_k_ref] = month_key_opts[-2] if len(month_key_opts) >= 2 else month_key_opts[-1]
 
 
 def _apply_marketing_performance_filters(
@@ -3299,7 +3403,7 @@ def _apply_marketing_performance_filters(
     *,
     key_suffix: str,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Performance-tab filters: market, month, then scorecard compare (MoM or custom dates)."""
+    """Performance-tab filters: market × month, plus an optional **Compare scorecard** expander."""
 
     mk_raw = [x for x in df_date["country"].dropna().unique().tolist() if x and x != "Unknown"]
     if "cost" in df_date.columns and mk_raw:
@@ -3318,20 +3422,21 @@ def _apply_marketing_performance_filters(
         key=_mpo_month_ts_for_sort,
     )
 
-    _mpo_normalize_compare_mode_session(key_suffix)
+    _mpo_ensure_scorecard_compare_session(key_suffix)
+    _mpo_normalize_market_multiselect_state(key_suffix)
     try:
         _mpo_filter_panel = st.container(border=True)
     except TypeError:
         _mpo_filter_panel = st.container()
     with _mpo_filter_panel:
-        # Only Market | Month in the first row so Streamlit does not slot the next row under the shorter column.
         _c_mk, _c_mo = st.columns(2, gap="small")
         with _c_mk:
             st.multiselect(
-                "Market",
-                ["All Markets"] + market_opts,
-                default=["All Markets"],
+                "Markets & countries",
+                [_MPO_ALL_GEO_SENTINEL] + market_opts,
+                default=[_MPO_ALL_GEO_SENTINEL],
                 key=f"{key_suffix}_market",
+                help="Default includes every market. Narrow to one or more countries for a focused view.",
             )
         with _c_mo:
             st.multiselect(
@@ -3339,73 +3444,62 @@ def _apply_marketing_performance_filters(
                 ["All Months"] + month_opts,
                 default=["All Months"],
                 key=f"{key_suffix}_month",
+                help="Default uses all months in range; the scorecard highlights the latest month in the table unless you pick specific months.",
             )
 
-        st.radio(
-            "Compare scorecard to",
-            options=["mom", "custom"],
-            format_func=_mpo_compare_mode_radio_label,
-            key=f"{key_suffix}_compare_mode",
-            horizontal=True,
-                help="KPIs use your **Markets**. **Month** shapes the table and which month counts as “current” when All months is on.",
-        )
-        _mode_now = str(st.session_state.get(f"{key_suffix}_compare_mode", "mom") or "mom")
+        try:
+            _cmp_exp = st.expander("Compare scorecard (optional)", expanded=False)
+        except TypeError:
+            _cmp_exp = st.expander("Compare scorecard (optional)")
+        with _cmp_exp:
+            st.caption(
+                "Expand to change how the scorecard compares periods. Your last choice stays in effect when this is collapsed."
+            )
+            st.selectbox(
+                "Scorecard comparison",
+                options=["mom", "custom", "off"],
+                format_func=_mpo_scorecard_compare_label,
+                key=f"{key_suffix}_scorecard_compare",
+                help="Automatic prior-month deltas, your own month pair, or snapshot with no comparison.",
+            )
+            _mode_now = str(st.session_state.get(f"{key_suffix}_scorecard_compare", "mom") or "mom")
 
-        if _mode_now == "custom" and _cust:
-            _date_bounds = [_mpo_month_value_to_date(x) for x in _cust]
-            _date_bounds = [d for d in _date_bounds if d is not None]
-            if _date_bounds:
-                min_d = min(_date_bounds)
-                max_d = max(_date_bounds)
-                _cur_dt = f"{key_suffix}_compare_custom_cur_dt"
-                _ref_dt = f"{key_suffix}_compare_custom_ref_dt"
-                _leg_cur = f"{key_suffix}_compare_custom_cur"
-                _leg_ref = f"{key_suffix}_compare_custom_ref"
-                if _cur_dt not in st.session_state and _leg_cur in st.session_state:
-                    _d0 = _mpo_month_value_to_date(st.session_state[_leg_cur])
-                    if _d0 is not None:
-                        st.session_state[_cur_dt] = _d0
-                if _ref_dt not in st.session_state and _leg_ref in st.session_state:
-                    _d1 = _mpo_month_value_to_date(st.session_state[_leg_ref])
-                    if _d1 is not None:
-                        st.session_state[_ref_dt] = _d1
-                if _cur_dt not in st.session_state:
-                    st.session_state[_cur_dt] = _date_bounds[-1]
-                if _ref_dt not in st.session_state:
-                    st.session_state[_ref_dt] = _date_bounds[-2] if len(_date_bounds) >= 2 else _date_bounds[-1]
-                for _wk in (_cur_dt, _ref_dt):
-                    if _wk not in st.session_state:
-                        continue
-                    v = st.session_state[_wk]
-                    if isinstance(v, datetime):
-                        v = v.date()
-                    if not isinstance(v, date) or v < min_d or v > max_d:
-                        st.session_state[_wk] = _date_bounds[-1] if _wk == _cur_dt else (
-                            _date_bounds[-2] if len(_date_bounds) >= 2 else _date_bounds[-1]
+            if _mode_now == "custom" and _cust:
+                _mko = _mpo_compare_custom_month_options(_cust)
+                if _mko:
+                    _cur_dt = f"{key_suffix}_compare_custom_cur_dt"
+                    _ref_dt = f"{key_suffix}_compare_custom_ref_dt"
+                    _mpo_seed_custom_month_selects(
+                        key_suffix,
+                        _mko,
+                        legacy_cur_dt=_cur_dt,
+                        legacy_ref_dt=_ref_dt,
+                    )
+                    _k_cur = f"{key_suffix}_compare_custom_cur_m"
+                    _k_ref = f"{key_suffix}_compare_custom_ref_m"
+                    _cc, _cr = st.columns(2, gap="small")
+                    with _cc:
+                        st.selectbox(
+                            "Scorecard month (current)",
+                            options=_mko,
+                            format_func=_month_label_short,
+                            key=_k_cur,
                         )
-                st.caption("Pick any day in each month — the full calendar month is used.")
-                dca, dcb = st.columns(2, gap="small")
-                with dca:
-                    st.date_input(
-                        "Current month",
-                        min_value=min_d,
-                        max_value=max_d,
-                        key=_cur_dt,
-                    )
-                with dcb:
-                    st.date_input(
-                        "Compare to",
-                        min_value=min_d,
-                        max_value=max_d,
-                        key=_ref_dt,
-                    )
+                    with _cr:
+                        st.selectbox(
+                            "Compare to month",
+                            options=_mko,
+                            format_func=_month_label_short,
+                            key=_k_ref,
+                        )
 
-    selected_markets = st.session_state.get(f"{key_suffix}_market", ["All Markets"])
+    selected_markets = st.session_state.get(f"{key_suffix}_market", [_MPO_ALL_GEO_SENTINEL])
     selected_months = st.session_state.get(f"{key_suffix}_month", ["All Months"])
 
     df = df_date.copy()
-    if "All Markets" not in selected_markets and selected_markets:
-        df = df[df["country"].isin(selected_markets)]
+    _geo_picks = _mpo_market_scope_countries_only(selected_markets)
+    if _geo_picks:
+        df = df[df["country"].isin(_geo_picks)]
     if "All Months" not in selected_months and selected_months:
         df = df[df["month"].isin(selected_months)]
 
@@ -3414,10 +3508,11 @@ def _apply_marketing_performance_filters(
 
 def _mpo_apply_market_only(df_date: pd.DataFrame, key_suffix: str) -> pd.DataFrame:
     """Same date range as ``df_date``, Market slicer only (no Month filter) — for scorecard comparison months."""
-    sm = st.session_state.get(f"{key_suffix}_market", ["All Markets"])
+    sm = st.session_state.get(f"{key_suffix}_market", [_MPO_ALL_GEO_SENTINEL])
     out = df_date.copy()
-    if "All Markets" not in sm and sm:
-        out = out[out["country"].isin(sm)]
+    picks = _mpo_market_scope_countries_only(sm)
+    if picks:
+        out = out[out["country"].isin(picks)]
     return out
 
 
@@ -3482,13 +3577,40 @@ def _mpo_infer_compare_label(cur_k: Optional[str], ref_k: Optional[str]) -> tupl
     return "reference month", "Custom comparison"
 
 
+def _mpo_scorecard_current_month_mom_style(
+    keys_sorted: list[str],
+    keys_table: list[str],
+    months_sel: Any,
+) -> Optional[str]:
+    """Latest table month (or master) vs month multiselect — same rules as **Prior month** compare current."""
+    if not keys_sorted:
+        return None
+    if not isinstance(months_sel, list):
+        months_sel = ["All Months"]
+    all_months = "All Months" in months_sel
+    picked = [m for m in months_sel if m != "All Months"]
+    norm_pick: list[str] = []
+    for m in picked:
+        k = _month_norm_key(m)
+        if k and str(k).strip().lower() not in ("", "nan", "nat"):
+            norm_pick.append(str(k).strip())
+
+    if all_months:
+        return keys_table[-1] if keys_table else keys_sorted[-1]
+    if not picked:
+        return keys_table[-1] if keys_table else keys_sorted[-1]
+    if not norm_pick:
+        return keys_table[-1] if keys_table else keys_sorted[-1]
+    return max(norm_pick, key=_mpo_month_ts_for_sort)
+
+
 def _mpo_compare_month_keys(
     master_df: pd.DataFrame,
     *,
     key_suffix: str,
     table_df: Optional[pd.DataFrame] = None,
 ) -> tuple[Optional[str], Optional[str], str]:
-    """(current_month_key, reference_month_key, ``mom`` | ``custom``).
+    """(current_month_key, reference_month_key, ``mom`` | ``custom`` | ``off``).
 
     **Current** month:
     - **Custom** mode: from the two date pickers.
@@ -3498,6 +3620,8 @@ def _mpo_compare_month_keys(
 
     **mom:** reference = calendar month before **current** (may not appear in the table).
 
+    **off:** user disabled scorecard comparison — current month only (same ``cur`` as MoM style, no ``ref``).
+
     ``master_df`` must include the same month keys used for KPI math (merged month × market grid).
     """
     keys_sorted = _mpo_month_keys_sorted_master(master_df)
@@ -3505,22 +3629,35 @@ def _mpo_compare_month_keys(
     if table_df is not None and not table_df.empty and "month" in table_df.columns:
         keys_table = _mpo_month_keys_sorted_master(table_df)
     months_sel = st.session_state.get(f"{key_suffix}_month", ["All Months"])
-    all_months = "All Months" in months_sel
-    mode_raw = st.session_state.get(f"{key_suffix}_compare_mode", "mom")
-    mode = str(mode_raw) if mode_raw is not None else "mom"
-    if mode not in ("mom", "custom"):
-        mode = "mom"
+
+    _cmp = str(st.session_state.get(f"{key_suffix}_scorecard_compare", "mom") or "mom")
+    if _cmp not in ("off", "mom", "custom"):
+        _cmp = "mom"
+    if _cmp == "off":
+        cur_off = _mpo_scorecard_current_month_mom_style(keys_sorted, keys_table, months_sel)
+        return cur_off, None, "off"
+
+    mode = _cmp
 
     if mode == "custom":
-        cur_dt = st.session_state.get(f"{key_suffix}_compare_custom_cur_dt")
-        ref_dt = st.session_state.get(f"{key_suffix}_compare_custom_ref_dt")
-        cur = _mpo_date_to_month_key(cur_dt)
-        ref = _mpo_date_to_month_key(ref_dt)
+        def _norm_mkey(v: Any) -> Optional[str]:
+            if v is None or (isinstance(v, str) and not str(v).strip()):
+                return None
+            k = _month_norm_key(v)
+            sk = str(k).strip() if k is not None else ""
+            if not sk or sk.lower() in ("nan", "nat", "none"):
+                return None
+            return sk
+
+        cur = _norm_mkey(st.session_state.get(f"{key_suffix}_compare_custom_cur_m"))
+        ref = _norm_mkey(st.session_state.get(f"{key_suffix}_compare_custom_ref_m"))
         if not cur:
-            cur_raw = st.session_state.get(f"{key_suffix}_compare_custom_cur")
-            ref_raw = st.session_state.get(f"{key_suffix}_compare_custom_ref")
-            cur_n = _month_norm_key(cur_raw) if cur_raw is not None else ""
-            ref_n = _month_norm_key(ref_raw) if ref_raw is not None else ""
+            cur = _mpo_date_to_month_key(st.session_state.get(f"{key_suffix}_compare_custom_cur_dt"))
+        if not ref:
+            ref = _mpo_date_to_month_key(st.session_state.get(f"{key_suffix}_compare_custom_ref_dt"))
+        if not cur:
+            cur_n = _month_norm_key(st.session_state.get(f"{key_suffix}_compare_custom_cur"))
+            ref_n = _month_norm_key(st.session_state.get(f"{key_suffix}_compare_custom_ref"))
             cur = str(cur_n).strip() if cur_n and str(cur_n).strip().lower() not in ("", "nan", "nat") else None
             ref = str(ref_n).strip() if ref_n and str(ref_n).strip().lower() not in ("", "nan", "nat") else None
         if not cur:
@@ -3530,21 +3667,9 @@ def _mpo_compare_month_keys(
     if not keys_sorted:
         return None, None, "mom"
 
-    picked = [m for m in months_sel if m != "All Months"]
-    norm_pick: list[str] = []
-    for m in picked:
-        k = _month_norm_key(m)
-        if k and str(k).strip().lower() not in ("", "nan", "nat"):
-            norm_pick.append(str(k).strip())
-
-    if all_months:
-        cur = keys_table[-1] if keys_table else keys_sorted[-1]
-    elif not picked:
-        cur = keys_table[-1] if keys_table else keys_sorted[-1]
-    elif not norm_pick:
-        cur = keys_table[-1] if keys_table else keys_sorted[-1]
-    else:
-        cur = max(norm_pick, key=_mpo_month_ts_for_sort)
+    cur = _mpo_scorecard_current_month_mom_style(keys_sorted, keys_table, months_sel)
+    if not cur:
+        return None, None, "mom"
 
     ref = _mpo_shift_month_key(cur, -1)
     return cur, ref, "mom"
@@ -3774,8 +3899,16 @@ def _mpo_scorecard_headline_totals_for_month(
     }
 
 
-def _kpi_funnel_delta_html(cur: Optional[float], prev: Optional[float], *, vs_label: str = "prior month") -> str:
+def _kpi_funnel_delta_html(
+    cur: Optional[float],
+    prev: Optional[float],
+    *,
+    vs_label: str = "prior month",
+    disabled: bool = False,
+) -> str:
     """Green/red % change vs reference period; ``vs_label`` e.g. ``prior month`` or ``same month last year``."""
+    if disabled:
+        return '<div class="kpi-funnel-delta kpi-funnel-delta--off" aria-hidden="true"></div>'
     esc = html.escape(vs_label, quote=True)
     if cur is None or prev is None:
         return f'<div class="kpi-funnel-delta kpi-funnel-delta--na">— vs {esc}</div>'
@@ -3837,10 +3970,22 @@ def _kpi_block(
 
     pv = prior or {}
     _vs = str(pv.get("_delta_label") or "prior month")
+    _no_delta = bool(pv.get("_comparison_off"))
 
-    def _card(icon: str, title: str, value_s: str, delta_html: str, sub_html: str, delay: float) -> str:
+    def _card(
+        icon: str,
+        title: str,
+        value_s: str,
+        delta_html: str,
+        sub_html: str,
+        delay: float,
+        *,
+        hue: str = "cw",
+    ) -> str:
+        h = html.escape(hue, quote=True)
         return (
-            f'<div class="kpi-funnel-card" style="animation-delay:{delay:.2f}s">'
+            f'<div class="kpi-funnel-card kpi-funnel-card--pastel kpi-funnel-card--pastel-{h}" '
+            f'style="animation-delay:{delay:.2f}s">'
             f'<span class="kpi-funnel-icon" aria-hidden="true">{icon}</span>'
             f'<div class="kpi-funnel-title">{html.escape(title)}</div>'
             f'<div class="kpi-funnel-value">{html.escape(value_s)}</div>'
@@ -3882,7 +4027,7 @@ def _kpi_block(
         "◎",
         "CW (inc. approved)",
         f"{total_cw:,}",
-        _kpi_funnel_delta_html(pv.get("mom_cw_c"), pv.get("mom_cw_p"), vs_label=_vs),
+        _kpi_funnel_delta_html(pv.get("mom_cw_c"), pv.get("mom_cw_p"), vs_label=_vs, disabled=_no_delta),
         cw_sub,
         _d(),
     )
@@ -3890,7 +4035,7 @@ def _kpi_block(
         "💲",
         "Spend",
         _format_spend_k(total_spend) if total_spend else "$0",
-        _kpi_funnel_delta_html(pv.get("mom_spend_c"), pv.get("mom_spend_p"), vs_label=_vs),
+        _kpi_funnel_delta_html(pv.get("mom_spend_c"), pv.get("mom_spend_p"), vs_label=_vs, disabled=_no_delta),
         spend_sub,
         _d(),
     )
@@ -3898,7 +4043,7 @@ def _kpi_block(
         "$",
         "CPCW",
         cpcw_s,
-        _kpi_funnel_delta_html(pv.get("mom_cpcw_c"), pv.get("mom_cpcw_p"), vs_label=_vs),
+        _kpi_funnel_delta_html(pv.get("mom_cpcw_c"), pv.get("mom_cpcw_p"), vs_label=_vs, disabled=_no_delta),
         cpcw_sub,
         _d(),
     )
@@ -3906,7 +4051,7 @@ def _kpi_block(
         "◆",
         "Actual TCV",
         tcv_s,
-        _kpi_funnel_delta_html(pv.get("mom_tcv_c"), pv.get("mom_tcv_p"), vs_label=_vs),
+        _kpi_funnel_delta_html(pv.get("mom_tcv_c"), pv.get("mom_tcv_p"), vs_label=_vs, disabled=_no_delta),
         tcv_sub,
         _d(),
     )
@@ -3914,7 +4059,7 @@ def _kpi_block(
         "≈",
         "CpCW:LF",
         cpcwlf_s,
-        _kpi_funnel_delta_html(pv.get("mom_cpcwlf_c"), pv.get("mom_cpcwlf_p"), vs_label=_vs),
+        _kpi_funnel_delta_html(pv.get("mom_cpcwlf_c"), pv.get("mom_cpcwlf_p"), vs_label=_vs, disabled=_no_delta),
         cpcwlf_sub,
         _d(),
     )
@@ -3922,7 +4067,7 @@ def _kpi_block(
         "%",
         "Cost / TCV %",
         f"{spend_tcv_pct:.2f}%" if total_tcv else "—",
-        _kpi_funnel_delta_html(pv.get("mom_spend_tcv_pct_c"), pv.get("mom_spend_tcv_pct_p"), vs_label=_vs),
+        _kpi_funnel_delta_html(pv.get("mom_spend_tcv_pct_c"), pv.get("mom_spend_tcv_pct_p"), vs_label=_vs, disabled=_no_delta),
         pct_tcv_sub,
         _d(),
     )
@@ -3940,49 +4085,55 @@ def _kpi_block(
         "👥",
         "Total leads",
         f"{total_leads:,}",
-        _kpi_funnel_delta_html(pv.get("mom_leads_rows_c"), pv.get("mom_leads_rows_p"), vs_label=_vs),
+        _kpi_funnel_delta_html(pv.get("mom_leads_rows_c"), pv.get("mom_leads_rows_p"), vs_label=_vs, disabled=_no_delta),
         sub_tl,
         _d(),
+        hue="leads",
     )
     card_ql = _card(
         "✓",
         "Qualified",
         f"{total_qualified:,}",
-        _kpi_funnel_delta_html(pv.get("mom_qual_status_c"), pv.get("mom_qual_status_p"), vs_label=_vs),
+        _kpi_funnel_delta_html(pv.get("mom_qual_status_c"), pv.get("mom_qual_status_p"), vs_label=_vs, disabled=_no_delta),
         sub_qual,
         _d(),
+        hue="leads",
     )
     card_nw = _card(
         "◇",
         "New + working",
         f"{total_new_working:,}",
-        _kpi_funnel_delta_html(pv.get("mom_nw_c"), pv.get("mom_nw_p"), vs_label=_vs),
+        _kpi_funnel_delta_html(pv.get("mom_nw_c"), pv.get("mom_nw_p"), vs_label=_vs, disabled=_no_delta),
         sub_nw,
         _d(),
+        hue="leads",
     )
     card_sql = _card(
         "‰",
         "SQL %",
         f"{sql_rate:.2f}%",
-        _kpi_funnel_delta_html(pv.get("mom_sql_pct_c"), pv.get("mom_sql_pct_p"), vs_label=_vs),
+        _kpi_funnel_delta_html(pv.get("mom_sql_pct_c"), pv.get("mom_sql_pct_p"), vs_label=_vs, disabled=_no_delta),
         sub_sql,
         _d(),
+        hue="leads",
     )
     card_cpl = _card(
         "⬧",
         "CPL",
         cpl_s,
-        _kpi_funnel_delta_html(pv.get("mom_cpl_c"), pv.get("mom_cpl_p"), vs_label=_vs),
+        _kpi_funnel_delta_html(pv.get("mom_cpl_c"), pv.get("mom_cpl_p"), vs_label=_vs, disabled=_no_delta),
         sub_cpl_c,
         _d(),
+        hue="leads",
     )
     card_cpsql = _card(
         "⬧",
         "CPSQL",
         cpsql_s,
-        _kpi_funnel_delta_html(pv.get("mom_cpsql_c"), pv.get("mom_cpsql_p"), vs_label=_vs),
+        _kpi_funnel_delta_html(pv.get("mom_cpsql_c"), pv.get("mom_cpsql_p"), vs_label=_vs, disabled=_no_delta),
         sub_cpsql_c,
         _d(),
+        hue="leads",
     )
 
     _qual_show = int(total_qualifying)
@@ -4003,41 +4154,46 @@ def _kpi_block(
         "▤",
         "Total live",
         f"{total_total_live:,}",
-        _kpi_funnel_delta_html(pv.get("mom_live_c"), pv.get("mom_live_p"), vs_label=_vs),
+        _kpi_funnel_delta_html(pv.get("mom_live_c"), pv.get("mom_live_p"), vs_label=_vs, disabled=_no_delta),
         sub_live,
         _d(),
+        hue="pipe",
     )
     card_nego = _card(
         "◆",
         "Negotiation",
         f"{total_negotiation:,}",
-        _kpi_funnel_delta_html(pv.get("mom_nego_c"), pv.get("mom_nego_p"), vs_label=_vs),
+        _kpi_funnel_delta_html(pv.get("mom_nego_c"), pv.get("mom_nego_p"), vs_label=_vs, disabled=_no_delta),
         sub_nego,
         _d(),
+        hue="pipe",
     )
     card_commit = _card(
         "◆",
         "Commitment",
         f"{total_commitment:,}",
-        _kpi_funnel_delta_html(pv.get("mom_commit_c"), pv.get("mom_commit_p"), vs_label=_vs),
+        _kpi_funnel_delta_html(pv.get("mom_commit_c"), pv.get("mom_commit_p"), vs_label=_vs, disabled=_no_delta),
         sub_commit,
         _d(),
+        hue="pipe",
     )
     card_clost = _card(
         "✕",
         "Closed lost",
         f"{total_closed_lost:,}",
-        _kpi_funnel_delta_html(pv.get("mom_clost_c"), pv.get("mom_clost_p"), vs_label=_vs),
+        _kpi_funnel_delta_html(pv.get("mom_clost_c"), pv.get("mom_clost_p"), vs_label=_vs, disabled=_no_delta),
         sub_clost,
         _d(),
+        hue="pipe",
     )
     card_qwin = _card(
         "%",
         "Q win rate %",
         f"{q_rate:.2f}%",
-        _kpi_funnel_delta_html(pv.get("mom_qwin_c"), pv.get("mom_qwin_p"), vs_label=_vs),
+        _kpi_funnel_delta_html(pv.get("mom_qwin_c"), pv.get("mom_qwin_p"), vs_label=_vs, disabled=_no_delta),
         sub_qwin,
         _d(),
+        hue="pipe",
     )
 
     sec_cw = _section(
@@ -4057,7 +4213,7 @@ def _kpi_block(
     )
 
     st.markdown(
-        f'<div class="kpi-funnel-wrap">{sec_cw}{sec_leads}{sec_pipe}</div>',
+        f'<div class="kpi-funnel-wrap kpi-funnel-wrap--pastel-scorecard">{sec_cw}{sec_leads}{sec_pipe}</div>',
         unsafe_allow_html=True,
     )
 
@@ -4957,6 +5113,9 @@ def render_page_marketing_performance(
     if cmp_kind == "custom":
         _dl, _ = _mpo_infer_compare_label(ck, rk)
         _kpi_prior["_delta_label"] = _dl
+    elif cmp_kind == "off":
+        _kpi_prior["_comparison_off"] = True
+        _kpi_prior["_delta_label"] = ""
     else:
         _kpi_prior["_delta_label"] = "prior month"
 
@@ -5571,6 +5730,8 @@ def main() -> None:
     }
     .mpo-cmp-pill--mom { background: #ecfdf5; color: #0f766e; border: 1px solid #99f6e4; }
     .mpo-cmp-pill--custom { background: #f1f5f9; color: #475569; border: 1px solid #e2e8f0; }
+    .mpo-cmp-pill--snapshot { background: #fffbeb; color: #a16207; border: 1px solid #fde68a; }
+    .mpo-cmp-vs--muted { font-size: 0.75rem; font-weight: 500; color: #94a3b8; text-transform: none; margin-left: 6px; }
     .mpo-cmp-mkt { font-size: 11px; font-weight: 500; color: #94a3b8; }
     .mpo-cmp-empty {
         padding: 8px 12px;
@@ -5672,19 +5833,39 @@ def main() -> None:
     }
     .kpi-funnel-card {
         position: relative;
-        background: linear-gradient(165deg, #ffffff 0%, #f8fafc 100%);
-        border-radius: 14px;
-        border: 1px solid #e2e8f0;
-        box-shadow: 0 2px 14px rgba(15, 23, 42, 0.06);
-        padding: 15px 14px 12px;
-        min-height: 128px;
+        border-radius: 16px;
+        padding: 14px 14px 12px;
+        min-height: 122px;
         transition: box-shadow 0.25s ease, transform 0.25s ease, border-color 0.25s ease;
         animation: kpi-funnel-enter 0.55s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+        background: linear-gradient(165deg, #ffffff 0%, #f8fafc 100%);
+        border: 1px solid #e8edf2;
+        box-shadow: 0 2px 14px rgba(15, 23, 42, 0.05);
+    }
+    /* Pastel metric tiles (calculation-modal style: soft tint, hue-matched labels, bold black value) */
+    .kpi-funnel-card--pastel {
+        border: none;
+        box-shadow:
+            0 1px 2px rgba(15, 23, 42, 0.04),
+            0 8px 24px rgba(15, 23, 42, 0.06);
+    }
+    .kpi-funnel-card--pastel-cw {
+        background: linear-gradient(160deg, #ecfdf5 0%, #d1fae5 48%, #ecfdf5 100%);
+    }
+    .kpi-funnel-card--pastel-leads {
+        background: linear-gradient(160deg, #eff6ff 0%, #dbeafe 48%, #eff6ff 100%);
+    }
+    .kpi-funnel-card--pastel-pipe {
+        background: linear-gradient(160deg, #faf5ff 0%, #ede9fe 48%, #faf5ff 100%);
     }
     .kpi-funnel-card:hover {
         box-shadow: 0 10px 28px rgba(15, 23, 42, 0.1);
         border-color: #cbd5e1;
         transform: translateY(-2px);
+    }
+    .kpi-funnel-card--pastel:hover {
+        border-color: transparent;
+        box-shadow: 0 12px 32px rgba(15, 23, 42, 0.1);
     }
     .kpi-funnel-icon {
         position: absolute;
@@ -5693,6 +5874,10 @@ def main() -> None:
         font-size: 1.15rem;
         line-height: 1;
         opacity: 0.88;
+    }
+    .kpi-funnel-card--pastel .kpi-funnel-icon {
+        opacity: 0.2;
+        font-size: 0.95rem;
     }
     .kpi-funnel-title {
         font-size: 10px;
@@ -5703,6 +5888,9 @@ def main() -> None:
         margin: 0 28px 6px 0;
         line-height: 1.3;
     }
+    .kpi-funnel-card--pastel-cw .kpi-funnel-title { color: #047857; }
+    .kpi-funnel-card--pastel-leads .kpi-funnel-title { color: #1d4ed8; }
+    .kpi-funnel-card--pastel-pipe .kpi-funnel-title { color: #6d28d9; }
     .kpi-funnel-value {
         font-size: clamp(1.12rem, 2.1vw, 1.48rem);
         font-weight: 700;
@@ -5711,16 +5899,32 @@ def main() -> None:
         margin-bottom: 4px;
         font-variant-numeric: tabular-nums;
     }
+    .kpi-funnel-wrap--pastel-scorecard .kpi-funnel-title {
+        text-transform: none;
+        letter-spacing: 0.01em;
+        font-size: 11px;
+        font-weight: 600;
+    }
+    .kpi-funnel-wrap--pastel-scorecard .kpi-funnel-value {
+        font-size: clamp(1.22rem, 2.35vw, 1.68rem);
+        font-weight: 800;
+        color: #0a0a0a;
+        letter-spacing: -0.035em;
+    }
     .kpi-funnel-delta { font-size: 12px; font-weight: 600; margin-bottom: 8px; line-height: 1.4; }
     .kpi-funnel-delta--up { color: #15803d; }
     .kpi-funnel-delta--down { color: #dc2626; }
     .kpi-funnel-delta--flat { color: #64748b; }
     .kpi-funnel-delta--na { color: #94a3b8; font-weight: 500; }
+    .kpi-funnel-delta--off { display: none !important; height: 0 !important; margin: 0 !important; padding: 0 !important; overflow: hidden !important; }
     .kpi-funnel-sub {
         border-top: 1px solid #f1f5f9;
         padding-top: 8px;
         margin-top: 2px;
     }
+    .kpi-funnel-card--pastel-cw .kpi-funnel-sub { border-top-color: rgba(4, 120, 87, 0.14); }
+    .kpi-funnel-card--pastel-leads .kpi-funnel-sub { border-top-color: rgba(29, 78, 216, 0.14); }
+    .kpi-funnel-card--pastel-pipe .kpi-funnel-sub { border-top-color: rgba(109, 40, 217, 0.14); }
     .kpi-funnel-sub-row {
         display: flex;
         justify-content: space-between;
@@ -5732,6 +5936,20 @@ def main() -> None:
     }
     .kpi-funnel-sub-lbl { color: #64748b; font-weight: 500; }
     .kpi-funnel-sub-val { font-weight: 600; color: #1e293b; font-variant-numeric: tabular-nums; }
+    .kpi-funnel-card--pastel-cw .kpi-funnel-sub-lbl { color: #059669; }
+    .kpi-funnel-card--pastel-cw .kpi-funnel-sub-val { color: #065f46; }
+    .kpi-funnel-card--pastel-leads .kpi-funnel-sub-lbl { color: #2563eb; }
+    .kpi-funnel-card--pastel-leads .kpi-funnel-sub-val { color: #1e3a8a; }
+    .kpi-funnel-card--pastel-pipe .kpi-funnel-sub-lbl { color: #7c3aed; }
+    .kpi-funnel-card--pastel-pipe .kpi-funnel-sub-val { color: #5b21b6; }
+    .kpi-funnel-wrap--pastel-scorecard .kpi-funnel-sub-row { font-size: 10.5px; }
+    .kpi-funnel-wrap--pastel-scorecard .kpi-funnel-section-title {
+        margin: 18px 0 12px 0;
+        padding-bottom: 8px;
+        border-bottom-width: 1px;
+        font-size: 0.9rem;
+    }
+    .kpi-funnel-wrap--pastel-scorecard .kpi-funnel-section:first-child .kpi-funnel-section-title { margin-top: 2px; }
     @keyframes kpi-funnel-enter {
         from { opacity: 0; transform: translateY(12px); }
         to { opacity: 1; transform: translateY(0); }
