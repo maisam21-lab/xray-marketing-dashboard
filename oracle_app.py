@@ -24,6 +24,9 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
 
+# Bump when you ship UI/logic changes — shown on Marketing Performance so you know which file Streamlit loaded.
+DASHBOARD_BUILD = "2026-04-05-mpo-expander-all-data"
+
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 DEFAULT_SOURCE_TRUTH_GID = 8109573
 DEFAULT_LEADS_WORKSHEET_GID = 743065354
@@ -3226,9 +3229,13 @@ def _apply_sheet_filters(
     return df, df_for_tabs
 
 
-# Marketing Performance: one multiselect token = “no geo filter” (replaces legacy ``All Markets`` / ``All Countries``).
-_MPO_ALL_GEO_SENTINEL = "All markets & countries"
-_MPO_ALL_GEO_LEGACY: frozenset[str] = frozenset({"All Markets", "All Countries", _MPO_ALL_GEO_SENTINEL})
+# Marketing Performance: one multiselect token per dimension = full data (no slice on that dimension).
+_MPO_ALL_GEO_SENTINEL = "All data"
+_MPO_ALL_GEO_LEGACY: frozenset[str] = frozenset(
+    {"All Markets", "All Countries", "All markets & countries", _MPO_ALL_GEO_SENTINEL}
+)
+_MPO_ALL_MONTHS_SENTINEL = "All data"
+_MPO_ALL_MONTHS_LEGACY: frozenset[str] = frozenset({"All Months", "All months", _MPO_ALL_MONTHS_SENTINEL})
 
 
 def _mpo_normalize_market_multiselect_state(key_suffix: str) -> None:
@@ -3241,6 +3248,31 @@ def _mpo_normalize_market_multiselect_state(key_suffix: str) -> None:
         return
     if any(str(x) in _MPO_ALL_GEO_LEGACY for x in v):
         st.session_state[k] = [_MPO_ALL_GEO_SENTINEL]
+
+
+def _mpo_normalize_month_multiselect_state(key_suffix: str) -> None:
+    k = f"{key_suffix}_month"
+    if k not in st.session_state:
+        return
+    v = st.session_state[k]
+    if not isinstance(v, list):
+        return
+    if any(str(x) in _MPO_ALL_MONTHS_LEGACY for x in v):
+        st.session_state[k] = [_MPO_ALL_MONTHS_SENTINEL]
+
+
+def _mpo_month_multiselect_is_all(sel: Any) -> bool:
+    if not sel:
+        return True
+    if not isinstance(sel, list):
+        return str(sel) in _MPO_ALL_MONTHS_LEGACY
+    return any(str(x) in _MPO_ALL_MONTHS_LEGACY for x in sel)
+
+
+def _mpo_month_multiselect_explicit(sel: Any) -> list[Any]:
+    if not isinstance(sel, list):
+        return []
+    return [m for m in sel if str(m) not in _MPO_ALL_MONTHS_LEGACY]
 
 
 def _mpo_market_scope_is_all(sel: Any) -> bool:
@@ -3261,10 +3293,10 @@ def _mpo_market_scope_note(key_suffix: str) -> str:
     """Short label for which markets apply (scorecard + table)."""
     sm = st.session_state.get(f"{key_suffix}_market", [_MPO_ALL_GEO_SENTINEL])
     if _mpo_market_scope_is_all(sm):
-        return "All markets & countries"
+        return "All data"
     picks = _mpo_market_scope_countries_only(sm)
     if not picks:
-        return "All markets & countries"
+        return "All data"
     if len(picks) <= 2:
         return ", ".join(html.escape(p) for p in picks)
     return f"{html.escape(picks[0])}, {html.escape(picks[1])} +{len(picks) - 2} more"
@@ -3348,11 +3380,11 @@ def _mpo_ensure_scorecard_compare_session(key_suffix: str) -> str:
             m = str(st.session_state.get(leg_mode) or "mom")
             st.session_state[k] = m if m in ("mom", "custom") else "mom"
         else:
-            st.session_state[k] = "mom"
-    v = str(st.session_state.get(k) or "mom")
+            st.session_state[k] = "off"
+    v = str(st.session_state.get(k) or "off")
     if v not in ("off", "mom", "custom"):
-        st.session_state[k] = "mom"
-        v = "mom"
+        st.session_state[k] = "off"
+        v = "off"
     st.session_state[f"{key_suffix}_scorecard_basis"] = "filtered"
     return v
 
@@ -3424,6 +3456,7 @@ def _apply_marketing_performance_filters(
 
     _mpo_ensure_scorecard_compare_session(key_suffix)
     _mpo_normalize_market_multiselect_state(key_suffix)
+    _mpo_normalize_month_multiselect_state(key_suffix)
     try:
         _mpo_filter_panel = st.container(border=True)
     except TypeError:
@@ -3436,15 +3469,15 @@ def _apply_marketing_performance_filters(
                 [_MPO_ALL_GEO_SENTINEL] + market_opts,
                 default=[_MPO_ALL_GEO_SENTINEL],
                 key=f"{key_suffix}_market",
-                help="Default includes every market. Narrow to one or more countries for a focused view.",
+                help="Default is all data (every market). Remove “All data” and pick countries to narrow.",
             )
         with _c_mo:
             st.multiselect(
                 "Month",
-                ["All Months"] + month_opts,
-                default=["All Months"],
+                [_MPO_ALL_MONTHS_SENTINEL] + month_opts,
+                default=[_MPO_ALL_MONTHS_SENTINEL],
                 key=f"{key_suffix}_month",
-                help="Default uses all months in range; the scorecard highlights the latest month in the table unless you pick specific months.",
+                help="Default is all data (every month in range). The scorecard still highlights the latest table month unless you narrow months.",
             )
 
         try:
@@ -3457,10 +3490,10 @@ def _apply_marketing_performance_filters(
             )
             st.selectbox(
                 "Scorecard comparison",
-                options=["mom", "custom", "off"],
+                options=["off", "mom", "custom"],
                 format_func=_mpo_scorecard_compare_label,
                 key=f"{key_suffix}_scorecard_compare",
-                help="Automatic prior-month deltas, your own month pair, or snapshot with no comparison.",
+                help="Default is all-data snapshot (off). Turn on prior-month or custom to see comparison deltas.",
             )
             _mode_now = str(st.session_state.get(f"{key_suffix}_scorecard_compare", "mom") or "mom")
 
@@ -3494,14 +3527,16 @@ def _apply_marketing_performance_filters(
                         )
 
     selected_markets = st.session_state.get(f"{key_suffix}_market", [_MPO_ALL_GEO_SENTINEL])
-    selected_months = st.session_state.get(f"{key_suffix}_month", ["All Months"])
+    selected_months = st.session_state.get(f"{key_suffix}_month", [_MPO_ALL_MONTHS_SENTINEL])
 
     df = df_date.copy()
     _geo_picks = _mpo_market_scope_countries_only(selected_markets)
     if _geo_picks:
         df = df[df["country"].isin(_geo_picks)]
-    if "All Months" not in selected_months and selected_months:
-        df = df[df["month"].isin(selected_months)]
+    if not _mpo_month_multiselect_is_all(selected_months):
+        _mo_pick = _mpo_month_multiselect_explicit(selected_months)
+        if _mo_pick:
+            df = df[df["month"].isin(_mo_pick)]
 
     return df, df.copy()
 
@@ -3586,9 +3621,9 @@ def _mpo_scorecard_current_month_mom_style(
     if not keys_sorted:
         return None
     if not isinstance(months_sel, list):
-        months_sel = ["All Months"]
-    all_months = "All Months" in months_sel
-    picked = [m for m in months_sel if m != "All Months"]
+        months_sel = [_MPO_ALL_MONTHS_SENTINEL]
+    all_months = _mpo_month_multiselect_is_all(months_sel)
+    picked = _mpo_month_multiselect_explicit(months_sel)
     norm_pick: list[str] = []
     for m in picked:
         k = _month_norm_key(m)
@@ -3628,11 +3663,11 @@ def _mpo_compare_month_keys(
     keys_table: list[str] = []
     if table_df is not None and not table_df.empty and "month" in table_df.columns:
         keys_table = _mpo_month_keys_sorted_master(table_df)
-    months_sel = st.session_state.get(f"{key_suffix}_month", ["All Months"])
+    months_sel = st.session_state.get(f"{key_suffix}_month", [_MPO_ALL_MONTHS_SENTINEL])
 
-    _cmp = str(st.session_state.get(f"{key_suffix}_scorecard_compare", "mom") or "mom")
+    _cmp = str(st.session_state.get(f"{key_suffix}_scorecard_compare", "off") or "off")
     if _cmp not in ("off", "mom", "custom"):
-        _cmp = "mom"
+        _cmp = "off"
     if _cmp == "off":
         cur_off = _mpo_scorecard_current_month_mom_style(keys_sorted, keys_table, months_sel)
         return cur_off, None, "off"
@@ -4722,6 +4757,11 @@ def render_page_marketing_performance(
         return
 
     st.markdown('<h1 class="looker-page-h1">Marketing Performance Overview</h1>', unsafe_allow_html=True)
+    st.caption(
+        f"**Build {DASHBOARD_BUILD}** — Filters should show **Markets & countries** / **Month** and a **Compare scorecard (optional)** "
+        "expander. If you still see old controls (e.g. “COMPARE SCORECARD TO” or only “Market”), stop Streamlit and run "
+        "`streamlit run oracle_app.py` from the **xray-marketing-dashboard-git** folder (this file), not another copy."
+    )
     df, _ = _apply_marketing_performance_filters(df_date, key_suffix=key_suffix)
 
     sheet_id, _ = _workbook_id_resolution()
