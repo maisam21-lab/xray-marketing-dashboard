@@ -5285,9 +5285,15 @@ def main() -> None:
 
     st.markdown(
         """
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
     /* Do not set a tiny font-size on .stApp — it made almost all UI unreadable (~8px). */
-    .stApp { background: #f4f6f8; font-family: 'Segoe UI', system-ui, sans-serif; }
+    .stApp {
+        background: linear-gradient(165deg, #f1f5f9 0%, #eef2f7 45%, #f8fafc 100%);
+        font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+    }
     section[data-testid="stSidebar"] { display: none !important; }
     [data-testid="collapsedControl"] { display: none !important; }
     header[data-testid="stHeader"] { background: #FFFFFF !important; border-bottom: 1px solid #E2E8F0; }
@@ -5304,7 +5310,14 @@ def main() -> None:
         gap: 6px;
         color: #1f2937;
     }
-    .looker-header-title { font-size: 1.35rem; font-weight: 700; color: #111827; margin: 0; line-height: 1.15; }
+    .looker-header-title {
+        font-size: 1.28rem;
+        font-weight: 700;
+        letter-spacing: -0.03em;
+        color: #0f172a;
+        margin: 0;
+        line-height: 1.15;
+    }
     .looker-header-logo {
         width: auto; height: 40px; object-fit: contain;
         margin-right: 6px; vertical-align: middle; border: none;
@@ -5334,7 +5347,14 @@ def main() -> None:
         line-height: 1;
     }
     .stButton > button:hover { border-color: #4f8483; color: #0f766e; }
-    .looker-page-h1 { font-size: 1.65rem; font-weight: 600; color: #202124; margin: 8px 0 16px 0; }
+    .looker-page-h1 {
+        font-size: 1.5rem;
+        font-weight: 700;
+        letter-spacing: -0.035em;
+        color: #0f172a;
+        margin: 4px 0 14px 0;
+        line-height: 1.2;
+    }
     .looker-table-title { font-size: 1.0rem; font-weight: 700; color: #202124; margin: 20px 0 8px 0; }
     /* KPI scorecards: glass panels, staggered entrance, hover lift */
     .kpi-section {
@@ -5493,9 +5513,36 @@ def main() -> None:
         line-height: 1.2;
         font-variant-numeric: tabular-nums;
     }
-    /* MPO filter panel (single bordered container on this page): tighter vertical rhythm */
+    /* MPO filter panel — modern card (single bordered block on MPO) */
+    div[data-testid="stVerticalBlockBorderWrapper"] {
+        background: linear-gradient(180deg, #ffffff 0%, #fafbfc 100%) !important;
+        border: 1px solid rgba(15, 23, 42, 0.07) !important;
+        border-radius: 16px !important;
+        box-shadow:
+            0 1px 0 rgba(255, 255, 255, 0.9) inset,
+            0 14px 40px -18px rgba(15, 23, 42, 0.14) !important;
+    }
     div[data-testid="stVerticalBlockBorderWrapper"] [data-testid="stVerticalBlock"] {
-        gap: 0.35rem !important;
+        gap: 0.65rem !important;
+        padding: 4px 2px 6px 2px !important;
+    }
+    div[data-testid="stVerticalBlockBorderWrapper"] label,
+    div[data-testid="stVerticalBlockBorderWrapper"] [data-testid="stWidgetLabel"] p {
+        font-size: 0.72rem !important;
+        font-weight: 600 !important;
+        letter-spacing: 0.04em !important;
+        text-transform: uppercase !important;
+        color: #64748b !important;
+    }
+    div[data-testid="stVerticalBlockBorderWrapper"] .stRadio [role="radiogroup"] {
+        display: flex !important;
+        flex-wrap: wrap !important;
+        align-items: center !important;
+        gap: 8px !important;
+        padding: 6px !important;
+        background: #f1f5f9 !important;
+        border-radius: 12px !important;
+        border: 1px solid rgba(15, 23, 42, 0.05) !important;
     }
     /* MPO comparison strip — dual “mini scorecards”, dynamic with filters */
     .mpo-cmp-wrap {
@@ -5514,21 +5561,29 @@ def main() -> None:
         .mpo-cmp-vs-col { display: none; }
     }
     .mpo-cmp-card {
-        background: linear-gradient(165deg, #ffffff 0%, #f8fafc 100%);
-        border: 1px solid #e2e8f0;
-        border-radius: 14px;
-        padding: 12px 14px 14px;
-        box-shadow: 0 2px 12px rgba(15, 23, 42, 0.05);
-        transition: box-shadow 0.25s ease, transform 0.25s ease, border-color 0.25s ease;
-        min-height: 92px;
+        background: #ffffff;
+        border: 1px solid rgba(15, 23, 42, 0.06);
+        border-radius: 16px;
+        padding: 14px 16px 16px;
+        box-shadow: 0 2px 8px rgba(15, 23, 42, 0.04);
+        transition: box-shadow 0.22s ease, transform 0.22s ease, border-color 0.22s ease;
+        min-height: 88px;
     }
     .mpo-cmp-card:hover {
-        box-shadow: 0 8px 24px rgba(15, 23, 42, 0.08);
-        border-color: #cbd5e1;
-        transform: translateY(-1px);
+        box-shadow: 0 10px 28px -8px rgba(15, 23, 42, 0.12);
+        border-color: rgba(15, 23, 42, 0.1);
+        transform: translateY(-2px);
     }
-    .mpo-cmp-card--current { border-top: 3px solid #4f8483; }
-    .mpo-cmp-card--ref { border-top: 3px solid #64748b; }
+    .mpo-cmp-card--current {
+        border-top: none;
+        border-left: 4px solid #14b8a6;
+        padding-left: 14px;
+    }
+    .mpo-cmp-card--ref {
+        border-top: none;
+        border-left: 4px solid #94a3b8;
+        padding-left: 14px;
+    }
     .mpo-cmp-card-title {
         font-size: 10px;
         font-weight: 700;
@@ -5572,10 +5627,10 @@ def main() -> None:
         align-items: center;
         gap: 8px 16px;
         margin-top: 10px;
-        padding: 8px 12px;
-        background: #f8fafc;
-        border-radius: 10px;
-        border: 1px solid #e2e8f0;
+        padding: 10px 14px;
+        background: rgba(241, 245, 249, 0.85);
+        border-radius: 12px;
+        border: 1px solid rgba(15, 23, 42, 0.06);
         font-size: 11px;
         color: #475569;
         line-height: 1.45;
@@ -5591,8 +5646,8 @@ def main() -> None:
     }
     .mpo-cmp-mode--ytd { background: #ecfdf5; color: #047857; border: 1px solid #a7f3d0; }
     .mpo-cmp-mode--yoy { background: #eff6ff; color: #1d4ed8; border: 1px solid #bfdbfe; }
-    .mpo-cmp-mode--mom { background: #fff7ed; color: #c2410c; border: 1px solid #fed7aa; }
-    .mpo-cmp-mode--custom { background: #f5f3ff; color: #5b21b6; border: 1px solid #ddd6fe; }
+    .mpo-cmp-mode--mom { background: #ecfdf5; color: #0f766e; border: 1px solid #99f6e4; }
+    .mpo-cmp-mode--custom { background: #f1f5f9; color: #334155; border: 1px solid #cbd5e1; }
     .mpo-cmp-mode--auto { background: #f1f5f9; color: #475569; border: 1px solid #e2e8f0; }
     .mpo-cmp-mode--na { background: #f1f5f9; color: #94a3b8; border: 1px solid #e2e8f0; }
     .mpo-cmp-scope strong { color: #0f172a; font-weight: 600; }
@@ -5824,16 +5879,32 @@ def main() -> None:
     .block-title { font-size: 18px; font-weight: 700; color: #0f172a; margin: 8px 0 4px 0; }
     .block-subtitle { font-size: 12px; color: #64748b; margin-bottom: 12px; }
     .stTabs [data-baseweb="tab-list"] {
-        gap: 8px;
-        background: #F1F5F9;
-        padding: 8px;
-        border-radius: 10px;
+        gap: 6px;
+        background: rgba(255, 255, 255, 0.72);
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
+        padding: 6px;
+        border-radius: 999px;
+        border: 1px solid rgba(15, 23, 42, 0.06);
+        box-shadow: 0 2px 12px rgba(15, 23, 42, 0.04);
         overflow-x: auto !important;
         overflow-y: hidden !important;
         flex-wrap: nowrap !important;
     }
-    .stTabs [data-baseweb="tab"] { padding: 10px 18px; border-radius: 8px; font-weight: 500; color: #475569; flex-shrink: 0; }
-    .stTabs [aria-selected="true"] { background: #4f8483 !important; color: white !important; }
+    .stTabs [data-baseweb="tab"] {
+        padding: 9px 18px;
+        border-radius: 999px;
+        font-weight: 600;
+        font-size: 0.8125rem;
+        color: #64748b;
+        flex-shrink: 0;
+        letter-spacing: -0.01em;
+    }
+    .stTabs [aria-selected="true"] {
+        background: linear-gradient(135deg, #0d9488 0%, #0f766e 100%) !important;
+        color: white !important;
+        box-shadow: 0 2px 10px rgba(13, 148, 136, 0.35);
+    }
     [data-testid="stMetric"] {
         background: #e9f3f8;
         border: 1px solid #d5e4ec;
@@ -5843,23 +5914,31 @@ def main() -> None:
     }
     [data-testid="stMetricLabel"] { font-size: 11px !important; color: #4b5563 !important; }
     [data-testid="stMetricValue"] { font-size: 1.2rem !important; color: #1f2937 !important; }
-    .stRadio [role="radiogroup"] { gap: 14px; }
-    .stSelectbox > label, .stRadio > label, .stTextInput > label { font-size: 11px !important; color: #6b7280 !important; }
+    .stRadio [role="radiogroup"] { gap: 10px; }
+    .stSelectbox > label, .stRadio > label, .stTextInput > label {
+        font-size: 0.72rem !important;
+        font-weight: 600 !important;
+        letter-spacing: 0.04em !important;
+        text-transform: uppercase !important;
+        color: #64748b !important;
+    }
     .stTabs [aria-selected="true"] span { color: white !important; }
     .streamlit-expanderHeader { background: #F8FAFC; border-radius: 8px; border-left: 4px solid #4f8483; }
     .stTextInput input, .stSelectbox > div, .stDateInput input {
-        border-radius: 6px !important;
-        background: #F8FAFC !important;
-        border: 1px solid #E2E8F0 !important;
+        border-radius: 10px !important;
+        background: #ffffff !important;
+        border: 1px solid rgba(15, 23, 42, 0.1) !important;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.04) !important;
     }
     .stDateInput { max-width: 240px; }
     .stDateInput label { font-size: 11px !important; color: #6b7280 !important; }
-    /* Multiselect selected chips: force app green instead of default red */
+    /* Multiselect chips — calm teal */
     .stMultiSelect [data-baseweb="select"] [data-baseweb="tag"],
     .stMultiSelect [data-baseweb="tag"] {
-        background: #4f8483 !important;
+        background: linear-gradient(135deg, #0d9488 0%, #0f766e 100%) !important;
         color: #ffffff !important;
-        border-color: #4f8483 !important;
+        border-color: transparent !important;
+        border-radius: 8px !important;
     }
     .stMultiSelect [data-baseweb="select"] [data-baseweb="tag"] *,
     .stMultiSelect [data-baseweb="tag"] * {
@@ -5875,7 +5954,11 @@ def main() -> None:
         fill: #ffffff !important;
         stroke: #ffffff !important;
     }
-    .stDataFrame { border-radius: 8px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); border: 1px solid #E2E8F0; }
+    .stDataFrame {
+        border-radius: 12px;
+        box-shadow: 0 2px 8px rgba(15, 23, 42, 0.05);
+        border: 1px solid rgba(15, 23, 42, 0.08);
+    }
     [data-testid="stMetricValue"] { color: #1E293B !important; }
     [data-testid="stMetricLabel"] { color: #64748B !important; }
     .stCaption { color: #64748B !important; }
