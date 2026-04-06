@@ -3226,31 +3226,76 @@ def _apply_sheet_filters(
     return df, df_for_tabs
 
 
+def _mpo_toolbar_summary_html(
+    *,
+    basis_ytd: bool,
+    cur_k: Optional[str],
+    ref_k: Optional[str],
+    kind: str,
+) -> str:
+    """Single-line summary under filters (plain language for readers)."""
+    if basis_ytd:
+        if not cur_k:
+            return (
+                '<div class="mpo-toolbar-summary mpo-toolbar-summary--muted">'
+                "Add data in range or pick a month — we need a last month for year-to-date."
+                "</div>"
+            )
+        _cy0 = _mpo_month_keys_calendar_ytd_through(cur_k)
+        _py0 = [_mpo_shift_month_key(m, -12) for m in _cy0] if _cy0 else []
+        _py0 = [x for x in _py0 if x]
+        if not _cy0 or not _py0 or len(_py0) != len(_cy0):
+            return (
+                '<div class="mpo-toolbar-summary mpo-toolbar-summary--muted">'
+                "Year-to-date could not be lined up with last year — check your date range."
+                "</div>"
+            )
+        _a = html.escape(_month_label_short(_cy0[-1]))
+        _p0 = html.escape(_month_label_short(_py0[0]))
+        _p1 = html.escape(_month_label_short(_py0[-1]))
+        _txt = (
+            f"Scorecard totals run from <strong>January through {_a}</strong>. "
+            f"The green/red % lines compare to <strong>{_p0} through {_p1}</strong>."
+        )
+        return f'<div class="mpo-toolbar-summary mpo-toolbar-summary--oneline">{_txt}</div>'
+
+    if cur_k and ref_k:
+        _mk = f"{html.escape(_month_label_short(cur_k))} vs {html.escape(_month_label_short(ref_k))}"
+        if kind == "custom":
+            _txt = f"The % lines compare <strong>{_mk}</strong> (from the two dates you picked)."
+        elif kind == "yoy":
+            _txt = f"Comparing <strong>{_mk}</strong> (vs last year, same month)."
+        elif kind == "mom":
+            _txt = f"Comparing <strong>{_mk}</strong> (vs the month before)."
+        else:
+            _txt = f"Comparing <strong>{_mk}</strong>."
+        return f'<div class="mpo-toolbar-summary mpo-toolbar-summary--oneline">{_txt}</div>'
+
+    return (
+        '<div class="mpo-toolbar-summary mpo-toolbar-summary--muted">'
+        "Choose months in the table filter or widen the date range to see comparisons."
+        "</div>"
+    )
+
+
 def _apply_marketing_performance_filters(
     df_date: pd.DataFrame,
     *,
     key_suffix: str,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Performance-tab filters: compact toolbar (scorecard basis + compare + market + month)."""
+    """Performance-tab filters: two short rows + one-line summary."""
     _basis_labels = {
-        "ytd": "YTD (calendar · default)",
-        "filtered": "Filtered months (grid slice)",
+        "ytd": "Year to date",
+        "filtered": "Months in the table only",
     }
-    _basis_help = (
-        "**YTD** rolls scorecard totals from January through the anchor month (from your Month slicer / latest in range) "
-        "and compares to the **same calendar span last year**. The grid still follows Market + Month below."
-    )
+    _basis_help = "Year to date: January through the month you pick below (or the latest month). The table still uses Market + Month."
     _cmp_labels = {
-        "auto": "Auto (YoY if All months · else MoM)",
-        "mom": "MoM vs prior month",
-        "yoy": "YoY vs same month last year",
-        "custom": "Custom calendars",
+        "auto": "Automatic",
+        "mom": "vs previous month",
+        "yoy": "vs same month last year",
+        "custom": "Pick two months…",
     }
-    _cmp_help = (
-        "Drives red/green **% vs …** when scorecard is **Filtered months**. **Auto** follows the Month slicer. "
-        "**Custom** uses two calendars (any day → full month). Reference uses **Markets** only."
-    )
-    _cmp_help_ytd = _cmp_help + " (Disabled while **YTD** is selected — deltas are **prior-year YTD**.)"
+    _cmp_help = "Only when “Months in the table only” is on. % changes follow this setting; custom uses the two dates below."
 
     mk_raw = [x for x in df_date["country"].dropna().unique().tolist() if x and x != "Unknown"]
     if "cost" in df_date.columns and mk_raw:
@@ -3265,49 +3310,44 @@ def _apply_marketing_performance_filters(
         market_opts = sorted(mk_raw)
     month_opts = sorted([x for x in df_date["month"].dropna().unique().tolist() if x and x != "NaT"])
 
-    tb0, tb1, tb2, tb3 = st.columns([1.0, 1.05, 1, 1], gap="small")
-    with tb0:
+    row1a, row1b = st.columns(2, gap="medium")
+    with row1a:
         st.selectbox(
-            "Scorecard",
+            "Scorecard totals",
             options=["ytd", "filtered"],
             format_func=lambda k: _basis_labels.get(str(k), str(k)),
             key=f"{key_suffix}_scorecard_basis",
             help=_basis_help,
         )
     _basis_now = str(st.session_state.get(f"{key_suffix}_scorecard_basis", "ytd") or "ytd")
-    with tb1:
-        _cmp_kw = dict(
-            format_func=lambda k: _cmp_labels.get(str(k), str(k)),
-            key=f"{key_suffix}_compare_mode",
-            help=_cmp_help_ytd if _basis_now == "ytd" else _cmp_help,
-        )
+    with row1b:
         if _basis_now == "ytd":
-            try:
-                st.selectbox(
-                    "Compare (Δ)",
-                    options=["auto", "mom", "yoy", "custom"],
-                    disabled=True,
-                    **_cmp_kw,
-                )
-            except TypeError:
-                st.selectbox("Compare (Δ)", options=["auto", "mom", "yoy", "custom"], **_cmp_kw)
+            st.caption("Percent changes compare this year to the same calendar months last year.")
         else:
-            st.selectbox("Compare (Δ)", options=["auto", "mom", "yoy", "custom"], **_cmp_kw)
-    with tb2:
+            st.selectbox(
+                "% change vs",
+                options=["auto", "mom", "yoy", "custom"],
+                format_func=lambda k: _cmp_labels.get(str(k), str(k)),
+                key=f"{key_suffix}_compare_mode",
+                help=_cmp_help,
+            )
+
+    row2a, row2b = st.columns(2, gap="medium")
+    with row2a:
         st.multiselect(
             "Market",
             ["All Markets"] + market_opts,
             default=["All Markets"],
             key=f"{key_suffix}_market",
-            help="Grid and scorecard **Markets** slice. YTD and filtered deltas still respect this slice.",
+            help="Which markets appear in the table and in the scorecard.",
         )
-    with tb3:
+    with row2b:
         st.multiselect(
             "Month",
             ["All Months"] + month_opts,
             default=["All Months"],
             key=f"{key_suffix}_month",
-            help="Grid months. Also sets the **through** month for YTD and the anchor for filtered Δ.",
+            help="Which months are in the table. Also sets the last month included in year-to-date.",
         )
 
     _mode_now = str(st.session_state.get(f"{key_suffix}_compare_mode", "auto") or "auto")
@@ -3350,146 +3390,31 @@ def _apply_marketing_performance_filters(
             dca, dcb = st.columns(2, gap="small")
             with dca:
                 st.date_input(
-                    "Δ Current",
+                    "Current month",
                     min_value=min_d,
                     max_value=max_d,
                     key=_cur_dt,
-                    help="Any day in the month — the **full calendar month** is used for scorecard Δ.",
+                    help="Any day in that month counts; the whole month is used.",
                 )
             with dcb:
                 st.date_input(
-                    "Δ Reference",
+                    "Compare to",
                     min_value=min_d,
                     max_value=max_d,
                     key=_ref_dt,
-                    help="Compared **to** this month (Markets slice applies).",
+                    help="Second month for the comparison.",
                 )
 
     cur_k, ref_k, kind = _mpo_compare_month_keys(df_date, key_suffix=key_suffix)
-    if _basis_now == "ytd":
-        _rule = "Prior-year YTD (same calendar span)"
-        if cur_k:
-            _cy0 = _mpo_month_keys_calendar_ytd_through(cur_k)
-            _py0 = [_mpo_shift_month_key(m, -12) for m in _cy0] if _cy0 else []
-            _py0 = [x for x in _py0 if x]
-            if _cy0 and _py0 and len(_py0) == len(_cy0):
-                _lbl_c = f"YTD {_month_label_short(_cy0[0])}\u2013{_month_label_short(_cy0[-1])}"
-                _lbl_p = f"YTD {_month_label_short(_py0[0])}\u2013{_month_label_short(_py0[-1])}"
-                _pair = (
-                    f"{html.escape(_lbl_c)} "
-                    f'<span class="mpo-toolbar-vs">vs</span> '
-                    f"{html.escape(_lbl_p)}"
-                )
-                _line = (
-                    f'<div class="mpo-toolbar-summary">'
-                    f'<span class="mpo-toolbar-chip">Scorecard</span>'
-                    f'<span class="mpo-toolbar-pair">{_pair}</span>'
-                    f'<span class="mpo-toolbar-rule">{html.escape(_rule)}</span>'
-                    f"</div>"
-                )
-            else:
-                _line = (
-                    '<div class="mpo-toolbar-summary mpo-toolbar-summary--muted">'
-                    "<span class=\"mpo-toolbar-chip\">Scorecard</span>"
-                    "<span>Could not build YTD windows — check date range and month data.</span>"
-                    "</div>"
-                )
-        else:
-            _line = (
-                '<div class="mpo-toolbar-summary mpo-toolbar-summary--muted">'
-                "<span class=\"mpo-toolbar-chip\">Scorecard</span>"
-                "<span>No anchor month for YTD — widen the date range or pick months in data.</span>"
-                "</div>"
-            )
-    elif kind == "custom":
-        _rule = _mpo_infer_compare_label(cur_k, ref_k)[1]
-        if cur_k and ref_k:
-            _pair = (
-                f"{html.escape(_month_label_short(cur_k))} "
-                f'<span class="mpo-toolbar-vs">vs</span> '
-                f"{html.escape(_month_label_short(ref_k))}"
-            )
-            _line = (
-                f'<div class="mpo-toolbar-summary">'
-                f'<span class="mpo-toolbar-chip">Scorecard Δ</span>'
-                f'<span class="mpo-toolbar-pair">{_pair}</span>'
-                f'<span class="mpo-toolbar-rule">{html.escape(_rule)}</span>'
-                f"</div>"
-            )
-        else:
-            _line = (
-                '<div class="mpo-toolbar-summary mpo-toolbar-summary--muted">'
-                "<span class=\"mpo-toolbar-chip\">Scorecard Δ</span>"
-                "<span>No comparison window — widen the date range or pick months in data.</span>"
-                "</div>"
-            )
-    elif kind == "yoy":
-        _rule = "Year-over-year (YoY)"
-        if cur_k and ref_k:
-            _pair = (
-                f"{html.escape(_month_label_short(cur_k))} "
-                f'<span class="mpo-toolbar-vs">vs</span> '
-                f"{html.escape(_month_label_short(ref_k))}"
-            )
-            _line = (
-                f'<div class="mpo-toolbar-summary">'
-                f'<span class="mpo-toolbar-chip">Scorecard Δ</span>'
-                f'<span class="mpo-toolbar-pair">{_pair}</span>'
-                f'<span class="mpo-toolbar-rule">{html.escape(_rule)}</span>'
-                f"</div>"
-            )
-        else:
-            _line = (
-                '<div class="mpo-toolbar-summary mpo-toolbar-summary--muted">'
-                "<span class=\"mpo-toolbar-chip\">Scorecard Δ</span>"
-                "<span>No comparison window — widen the date range or pick months in data.</span>"
-                "</div>"
-            )
-    elif kind == "mom":
-        _rule = "Month-over-month (MoM)"
-        if cur_k and ref_k:
-            _pair = (
-                f"{html.escape(_month_label_short(cur_k))} "
-                f'<span class="mpo-toolbar-vs">vs</span> '
-                f"{html.escape(_month_label_short(ref_k))}"
-            )
-            _line = (
-                f'<div class="mpo-toolbar-summary">'
-                f'<span class="mpo-toolbar-chip">Scorecard Δ</span>'
-                f'<span class="mpo-toolbar-pair">{_pair}</span>'
-                f'<span class="mpo-toolbar-rule">{html.escape(_rule)}</span>'
-                f"</div>"
-            )
-        else:
-            _line = (
-                '<div class="mpo-toolbar-summary mpo-toolbar-summary--muted">'
-                "<span class=\"mpo-toolbar-chip\">Scorecard Δ</span>"
-                "<span>No comparison window — widen the date range or pick months in data.</span>"
-                "</div>"
-            )
-    else:
-        _rule = "Comparison"
-        if cur_k and ref_k:
-            _pair = (
-                f"{html.escape(_month_label_short(cur_k))} "
-                f'<span class="mpo-toolbar-vs">vs</span> '
-                f"{html.escape(_month_label_short(ref_k))}"
-            )
-            _line = (
-                f'<div class="mpo-toolbar-summary">'
-                f'<span class="mpo-toolbar-chip">Scorecard Δ</span>'
-                f'<span class="mpo-toolbar-pair">{_pair}</span>'
-                f'<span class="mpo-toolbar-rule">{html.escape(_rule)}</span>'
-                f"</div>"
-            )
-        else:
-            _line = (
-                '<div class="mpo-toolbar-summary mpo-toolbar-summary--muted">'
-                "<span class=\"mpo-toolbar-chip\">Scorecard Δ</span>"
-                "<span>No comparison window — widen the date range or pick months in data.</span>"
-                "</div>"
-            )
-    st.markdown(_line, unsafe_allow_html=True)
+    st.markdown(
+        _mpo_toolbar_summary_html(
+            basis_ytd=(_basis_now == "ytd"),
+            cur_k=cur_k,
+            ref_k=ref_k,
+            kind=str(kind),
+        ),
+        unsafe_allow_html=True,
+    )
 
     selected_markets = st.session_state.get(f"{key_suffix}_market", ["All Markets"])
     selected_months = st.session_state.get(f"{key_suffix}_month", ["All Months"])
@@ -5284,7 +5209,7 @@ def render_page_marketing_performance(
             cw_for_qwin = ytd_totals.get("cw_for_qwin")
             qual_for_qwin = ytd_totals.get("qual_for_qwin")
             _kpi_prior = ytd_prior
-            _kpi_prior["_delta_label"] = "prior-year YTD"
+            _kpi_prior["_delta_label"] = "same period last year"
         else:
             _kpi_prior = _kpi_two_month_compare_dict(
                 ck,
@@ -5322,7 +5247,7 @@ def render_page_marketing_performance(
         else:
             _kpi_prior["_delta_label"] = "prior month"
 
-    st.markdown("#### Marketing performance scorecard")
+    st.markdown("#### KPI scorecard")
     _kpi_block(
         total_spend=total_spend,
         total_impr=total_impr,
@@ -5821,8 +5746,19 @@ def main() -> None:
     }
     .mpo-toolbar-summary--muted {
         color: #64748b;
-        font-size: 12px;
+        font-size: 13px;
         font-weight: 500;
+        line-height: 1.5;
+    }
+    .mpo-toolbar-summary--oneline {
+        font-size: 13px;
+        font-weight: 500;
+        color: #334155;
+        line-height: 1.55;
+    }
+    .mpo-toolbar-summary--oneline strong {
+        color: #0f172a;
+        font-weight: 600;
     }
     .mpo-toolbar-chip {
         flex: 0 0 auto;
@@ -5923,7 +5859,7 @@ def main() -> None:
         margin-bottom: 4px;
         font-variant-numeric: tabular-nums;
     }
-    .kpi-funnel-delta { font-size: 11px; font-weight: 600; margin-bottom: 8px; line-height: 1.35; }
+    .kpi-funnel-delta { font-size: 12px; font-weight: 600; margin-bottom: 8px; line-height: 1.4; }
     .kpi-funnel-delta--up { color: #15803d; }
     .kpi-funnel-delta--down { color: #dc2626; }
     .kpi-funnel-delta--flat { color: #64748b; }
