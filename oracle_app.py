@@ -20,6 +20,8 @@ from typing import Any, Optional, Union
 
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import streamlit as st
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
@@ -3480,108 +3482,192 @@ def _mpo_month_ts_for_sort(m: Any) -> pd.Timestamp:
         return pd.Timestamp.min
 
 
-def _render_mpo_leadership_surface(
+def _mpo_monthly_rollup_from_master(master_df: pd.DataFrame) -> pd.DataFrame:
+    """Month-level sums and derived rates from the master grid (aligned with scorecard filters)."""
+    if master_df.empty or "month" not in master_df.columns:
+        return pd.DataFrame()
+    m = master_df.copy()
+    for c in ("cost", "leads", "qualified", "closed_won"):
+        if c not in m.columns:
+            m[c] = 0.0
+        else:
+            m[c] = pd.to_numeric(m[c], errors="coerce").fillna(0.0)
+    agg = m.groupby("month", as_index=False).agg(
+        spend=("cost", "sum"),
+        leads=("leads", "sum"),
+        qualified=("qualified", "sum"),
+        cw=("closed_won", "sum"),
+    )
+    agg["_ts"] = agg["month"].map(_mpo_month_ts_for_sort)
+    agg = agg.sort_values("_ts").dropna(subset=["_ts"])
+    if agg.empty:
+        return agg
+    agg["Month"] = agg["month"].map(_month_label_short)
+    agg = agg[agg["Month"].astype(str).str.len() > 0]
+    agg["cpl"] = (agg["spend"] / agg["leads"]).where(agg["leads"] > 0)
+    agg["cpsql"] = (agg["spend"] / agg["qualified"]).where(agg["qualified"] > 0)
+    agg["sql_pct"] = (agg["qualified"] / agg["leads"] * 100).where(agg["leads"] > 0)
+    agg["q_win_pct"] = (agg["cw"] / agg["qualified"] * 100).where(agg["qualified"] > 0)
+    return agg
+
+
+def _render_mpo_trend_charts(
     *,
     start_date: date,
     end_date: date,
     master_df: pd.DataFrame,
-    total_spend: float,
-    total_leads: int,
-    total_qualified: int,
-    total_cw: int,
-    cpl: float,
-    cpsql: float,
-    cpcw: float,
-    sql_pct: float,
+    key_suffix: str,
 ) -> None:
-    """Pulse-style strip for leadership: period, headline metrics, optional MoM, and 60s talking points."""
-    st.markdown('<div class="looker-table-title">Leadership snapshot</div>', unsafe_allow_html=True)
+    """Visual trends from the master grid — avoids repeating the same numbers as the KPI scorecard."""
+    st.markdown('<div class="looker-table-title">Trends & exploration</div>', unsafe_allow_html=True)
     st.caption(
-        "Use this row for reviews and Tableau Pulse–style readouts. **Full scorecards** and the **market × month grid** "
-        "below are for depth and ops."
+        "Charts use the **market × month** grid (same filters as the table below). **Headline KPIs** stay in the scorecard — "
+        "this section is for shape, mix, and month-to-month movement."
     )
     st.markdown(
         f"**Reporting period:** {start_date:%d %b %Y} → {end_date:%d %b %Y} "
-        f"(same window as scorecards; Market / Month filters above still apply.)"
+        f"(Market / Month slicers above apply.)"
     )
 
-    delta_spend = delta_leads = delta_cw = None
-    if (
-        not master_df.empty
-        and "month" in master_df.columns
-    ):
-        m = master_df.copy()
-        for c in ("cost", "leads", "closed_won"):
-            if c not in m.columns:
-                m[c] = 0.0
-            else:
-                m[c] = pd.to_numeric(m[c], errors="coerce").fillna(0.0)
-        agg = m.groupby("month", as_index=False).agg(
-            spend=("cost", "sum"),
-            leads=("leads", "sum"),
-            cw=("closed_won", "sum"),
-        )
-        agg["_ts"] = agg["month"].map(_mpo_month_ts_for_sort)
-        agg = agg.sort_values("_ts").dropna(subset=["_ts"])
-        if len(agg) >= 2:
-            prev = agg.iloc[-2]
-            cur = agg.iloc[-1]
-            if float(prev["spend"]) > 1e-6:
-                delta_spend = (float(cur["spend"]) - float(prev["spend"])) / float(prev["spend"]) * 100
-            if float(prev["leads"]) > 0:
-                delta_leads = (float(cur["leads"]) - float(prev["leads"])) / float(prev["leads"]) * 100
-            if float(prev["cw"]) > 0:
-                delta_cw = (float(cur["cw"]) - float(prev["cw"])) / float(prev["cw"]) * 100
+    agg = _mpo_monthly_rollup_from_master(master_df)
+    if agg.empty or len(agg["Month"]) == 0:
+        st.info("Not enough monthly data in the grid to chart trends — widen the date range or relax filters.")
+        return
 
-    def _d_fmt(d: Optional[float]) -> Optional[str]:
-        if d is None or d != d:
-            return None
-        return f"{d:+.1f}% vs prior month in grid"
+    _layout_kw = dict(plot_bgcolor="white", paper_bgcolor="white", margin=dict(l=8, r=8, t=45, b=8))
 
-    m1, m2, m3, m4 = st.columns(4)
-    with m1:
-        st.metric(
-            "Spend",
-            _format_spend_k(total_spend) if total_spend else "$0",
-            delta=_d_fmt(delta_spend),
-            help="Sum of media spend in the filtered period (same logic as scorecard).",
-        )
-    with m2:
-        st.metric(
-            "Total leads",
-            f"{total_leads:,}",
-            delta=_d_fmt(delta_leads),
-            help="Inbound lead rows in the Leads tab (or configured worksheet), after filters.",
-        )
-    with m3:
-        st.metric(
-            "Closed won",
-            f"{total_cw:,}",
-            delta=_d_fmt(delta_cw),
-            help="Closed Won (inc. approved) from post–lead qualification data.",
-        )
-    with m4:
-        st.metric(
-            "CPL",
-            f"${cpl:,.2f}" if total_leads and cpl == cpl else "—",
-            help="Spend ÷ total leads for the period.",
-        )
+    # Compact MoM read on the last two *grid* months (not duplicate KPI tiles).
+    if len(agg) >= 2:
+        prev, cur = agg.iloc[-2], agg.iloc[-1]
+        bits: list[str] = []
+        if float(prev["spend"]) > 1e-6:
+            ds = (float(cur["spend"]) - float(prev["spend"])) / float(prev["spend"]) * 100
+            bits.append(f"Spend {ds:+.1f}% vs prior month in grid")
+        if float(prev["leads"]) > 0:
+            dl = (float(cur["leads"]) - float(prev["leads"])) / float(prev["leads"]) * 100
+            bits.append(f"Leads {dl:+.1f}% vs prior month")
+        if float(prev["cw"]) > 0:
+            dc = (float(cur["cw"]) - float(prev["cw"])) / float(prev["cw"]) * 100
+            bits.append(f"CW {dc:+.1f}% vs prior month")
+        if bits:
+            st.caption(" · ".join(bits))
 
-    bullets: list[str] = []
-    if total_leads > 0 and total_qualified >= 0:
-        bullets.append(f"**SQL rate** is **{sql_pct:.1f}%** ({total_qualified:,} qualified ÷ {total_leads:,} leads).")
-    if total_cw > 0 and total_qualified > 0:
-        qw = total_cw / total_qualified * 100
-        bullets.append(f"**Qualified → win** about **{qw:.1f}%** ({total_cw:,} CW ÷ {total_qualified:,} qualified).")
-    if total_spend > 0 and total_cw > 0 and cpcw == cpcw:
-        bullets.append(f"**CPCW** is **${cpcw:,.2f}** (spend per closed won).")
-    if total_spend > 0 and total_qualified > 0 and cpsql == cpsql:
-        bullets.append(f"**CPSQL** is **${cpsql:,.2f}** (spend per qualified lead).")
-    if not bullets:
-        bullets.append("Add filters or widen the date range if metrics look empty — data must pass Market / Month slicers above.")
-    st.markdown("**Suggested talking points (60 seconds)**")
-    for b in bullets[:4]:
-        st.markdown(f"- {b}")
+    r1c1, r1c2 = st.columns(2)
+    with r1c1:
+        fig_sl = make_subplots(specs=[[{"secondary_y": True}]])
+        fig_sl.add_trace(
+            go.Bar(x=agg["Month"], y=agg["spend"], name="Spend", marker_color="#4f8483"),
+            secondary_y=False,
+        )
+        fig_sl.add_trace(
+            go.Scatter(
+                x=agg["Month"],
+                y=agg["leads"],
+                name="Leads",
+                mode="lines+markers",
+                line=dict(color="#c45c3e", width=2),
+            ),
+            secondary_y=True,
+        )
+        fig_sl.update_yaxes(title_text="Spend", secondary_y=False)
+        fig_sl.update_yaxes(title_text="Leads", secondary_y=True)
+        fig_sl.update_layout(
+            title="Spend (bars) vs leads (line) by month",
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+            **_layout_kw,
+        )
+        st.plotly_chart(fig_sl, use_container_width=True, key=f"{key_suffix}_pl_mpo_spend_leads")
+
+    with r1c2:
+        fig_eff = go.Figure()
+        fig_eff.add_trace(
+            go.Scatter(
+                x=agg["Month"],
+                y=agg["cpl"],
+                name="CPL",
+                mode="lines+markers",
+                line=dict(color="#4f8483", width=2),
+                connectgaps=False,
+            )
+        )
+        fig_eff.add_trace(
+            go.Scatter(
+                x=agg["Month"],
+                y=agg["cpsql"],
+                name="CPSQL",
+                mode="lines+markers",
+                line=dict(color="#7a5fa0", width=2),
+                connectgaps=False,
+            )
+        )
+        fig_eff.update_layout(title="CPL and CPSQL by month", **_layout_kw)
+        st.plotly_chart(fig_eff, use_container_width=True, key=f"{key_suffix}_pl_mpo_cpl_cpsql")
+
+    r2c1, r2c2 = st.columns(2)
+    with r2c1:
+        fig_vol = px.bar(
+            agg,
+            x="Month",
+            y=["cw", "leads", "qualified"],
+            barmode="group",
+            title="Volumes by month: CW, leads, qualified",
+        )
+        fig_vol.update_layout(**_layout_kw)
+        st.plotly_chart(fig_vol, use_container_width=True, key=f"{key_suffix}_pl_mpo_volumes")
+
+    with r2c2:
+        fig_mix = px.line(
+            agg,
+            x="Month",
+            y=["sql_pct", "q_win_pct"],
+            markers=True,
+            title="SQL % and Q win % (CW ÷ qualified) by month",
+        )
+        fig_mix.update_layout(**_layout_kw)
+        st.plotly_chart(fig_mix, use_container_width=True, key=f"{key_suffix}_pl_mpo_rates")
+
+    if "country" in master_df.columns and not master_df.empty:
+        mk = master_df.copy()
+        if "cost" not in mk.columns:
+            mk["cost"] = 0.0
+        else:
+            mk["cost"] = pd.to_numeric(mk["cost"], errors="coerce").fillna(0.0)
+        mk["Market"] = mk["country"].astype(str).map(_market_display_from_join_key)
+        if "closed_won" in mk.columns:
+            mk["closed_won"] = pd.to_numeric(mk["closed_won"], errors="coerce").fillna(0.0)
+            topm = mk.groupby("Market", as_index=False).agg(spend=("cost", "sum"), cw=("closed_won", "sum"))
+        else:
+            topm = mk.groupby("Market", as_index=False).agg(spend=("cost", "sum"))
+            topm["cw"] = 0.0
+        topm = topm.sort_values("spend", ascending=False).head(12)
+        if float(topm["spend"].sum()) > 1e-6:
+            mka, mkb = st.columns(2)
+            with mka:
+                fig_mk = px.bar(
+                    topm,
+                    x="spend",
+                    y="Market",
+                    orientation="h",
+                    title="Spend by market (top 12)",
+                    color_discrete_sequence=["#4f8483"],
+                )
+                fig_mk.update_layout(**_layout_kw)
+                st.plotly_chart(fig_mk, use_container_width=True, key=f"{key_suffix}_pl_mpo_markets_spend")
+            with mkb:
+                topcw = topm.sort_values("cw", ascending=False).head(12)
+                if float(topcw["cw"].sum()) > 0:
+                    fig_cw = px.bar(
+                        topcw,
+                        x="cw",
+                        y="Market",
+                        orientation="h",
+                        title="Closed won by market (same top markets)",
+                        color_discrete_sequence=["#c45c3e"],
+                    )
+                    fig_cw.update_layout(**_layout_kw)
+                    st.plotly_chart(fig_cw, use_container_width=True, key=f"{key_suffix}_pl_mpo_markets_cw")
+                else:
+                    st.caption("No closed-won volume in the filtered grid for this view.")
 
 
 def _master_view_spend_authoritative_from_grid(spend_grid: pd.DataFrame) -> pd.DataFrame:
@@ -4261,20 +4347,11 @@ def render_page_marketing_performance(
     if _normalized_spend_cost_sum(_spend_for_master_ui) < 1e-6 and _normalized_spend_cost_sum(spend_pool_full) > 1e-6:
         _spend_for_master_ui = _spend_sheet_pivot_by_month_country(spend_pool_full)
 
-    _cpcw_headline = (total_spend / total_cw) if total_cw else float("nan")
-    _sql_pct_headline = (total_qualified / total_leads * 100) if total_leads else 0.0
-    _render_mpo_leadership_surface(
+    _render_mpo_trend_charts(
         start_date=start_date,
         end_date=end_date,
         master_df=master_df,
-        total_spend=total_spend,
-        total_leads=int(total_leads),
-        total_qualified=int(total_qualified),
-        total_cw=int(total_cw),
-        cpl=cpl,
-        cpsql=cpsql,
-        cpcw=_cpcw_headline,
-        sql_pct=_sql_pct_headline,
+        key_suffix=key_suffix,
     )
 
     st.markdown("#### Full scorecard (all KPI sections)")
