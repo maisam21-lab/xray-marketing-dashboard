@@ -3337,11 +3337,12 @@ def _kpi_block(
     total_commitment: int,
     total_closed_lost: int,
     total_pitching: int = 0,
+    total_qualifying: int = 0,
     q_win_cw: Optional[int] = None,
     q_win_qualified: Optional[int] = None,
     prior: Optional[dict[str, Optional[float]]] = None,
 ) -> None:
-    """2×4 funnel scorecards: headline value, prior-period % change, and contextual sub-metrics (Looker-style)."""
+    """Original MPO metric groups (Closed won / Leads / Qualified leads) in Looker-style funnel cards + PoP deltas."""
     _cw_q = int(q_win_cw) if q_win_cw is not None else int(total_cw)
     _q_d = int(q_win_qualified) if q_win_qualified is not None else int(total_qualified)
     q_rate = (_cw_q / _q_d * 100) if _q_d else 0.0
@@ -3357,14 +3358,24 @@ def _kpi_block(
     p_ctr = pv.get("ctr")
     p_leads = pv.get("leads")
     p_qualified = pv.get("qualified")
-    p_pitch = pv.get("pitching")
     p_cw = pv.get("cw")
     cur_leads_d = pv.get("leads_cur")
     cur_qualified_d = pv.get("qualified_cur")
-
-    click_to_lead = (total_clicks / total_leads * 100) if total_leads else 0.0
-    pitch_to_lead = (total_pitching / total_leads * 100) if total_leads else 0.0
-    cost_per_pitch = (total_spend / total_pitching) if total_pitching else 0.0
+    p_tcv = pv.get("tcv")
+    p_lf = pv.get("lf")
+    p_cpcw = pv.get("cpcw")
+    p_cpcw_lf = pv.get("cpcw_lf")
+    p_spend_tcv_pct = pv.get("spend_tcv_pct")
+    p_cpl = pv.get("cpl")
+    p_cpsql = pv.get("cpsql")
+    p_sql_rate = pv.get("sql_rate")
+    p_q_win = pv.get("q_win_rate")
+    p_total_live = pv.get("total_live")
+    p_nego = pv.get("negotiation")
+    p_commit = pv.get("commitment")
+    p_clost = pv.get("closed_lost")
+    cur_nw_d = pv.get("new_working_cur")
+    p_nw = pv.get("new_working")
 
     def _card(icon: str, title: str, value_s: str, delta_html: str, sub_html: str, delay: float) -> str:
         return (
@@ -3376,106 +3387,222 @@ def _kpi_block(
             f'<div class="kpi-funnel-sub">{sub_html}</div></div>'
         )
 
-    cpm = (total_spend / total_impr * 1000) if total_impr else 0.0
-    sub_spend = _kpi_funnel_sub_row("Cost / TCV %", f"{spend_tcv_pct:.2f}%" if total_tcv else "—")
-    sub_impr = _kpi_funnel_sub_row("CPM (approx.)", f"${cpm:,.2f}" if total_impr else "—")
-    sub_clicks = _kpi_funnel_sub_row("CPC (avg.)", f"${cpc:,.2f}" if total_clicks else "—")
-    sub_ctr = _kpi_funnel_sub_row("New + working leads", f"{total_new_working:,}")
+    def _section(title: str, accent: str, cards: list[str]) -> str:
+        return (
+            f'<div class="kpi-funnel-section">'
+            f'<div class="kpi-funnel-section-title kpi-funnel-section-title--{html.escape(accent)}">'
+            f"{html.escape(title)}</div>"
+            f'<div class="kpi-funnel-grid">{"".join(cards)}</div></div>'
+        )
 
-    cpl_s = f"${cpl:,.2f}" if total_leads and cpl == cpl else "—"
-    ctl_s = f"{click_to_lead:.1f}%" if total_leads else "—"
-    sub_leads = _kpi_funnel_sub_row("Click-to-lead", ctl_s) + _kpi_funnel_sub_row("CPL", cpl_s)
+    d = 0.0
 
-    cpsql_s = f"${cpsql:,.2f}" if total_qualified and cpsql == cpsql else "—"
-    sub_ql = _kpi_funnel_sub_row("Qualification rate", f"{sql_rate:.1f}%") + _kpi_funnel_sub_row("CPSQL", cpsql_s)
-
-    cpp_s = f"${cost_per_pitch:,.2f}" if total_pitching and cost_per_pitch == cost_per_pitch else "—"
-    ptl_s = f"{pitch_to_lead:.1f}%" if total_leads else "—"
-    sub_pitch = _kpi_funnel_sub_row("Pitch-to-lead", ptl_s) + _kpi_funnel_sub_row("Cost / pitching", cpp_s)
+    def _d() -> float:
+        nonlocal d
+        d += 0.035
+        return d
 
     cpcw_s = f"${cpcw:,.2f}" if total_cw and cpcw == cpcw else "—"
+    tcv_s = _format_currency(total_tcv) if total_tcv else "—"
     cpcwlf_s = f"{cpcw_lf:.2f}" if total_first_month_lf else "—"
-    sub_cw = (
-        _kpi_funnel_sub_row("CPCW", cpcw_s)
-        + _kpi_funnel_sub_row("CpCW:LF", cpcwlf_s)
-        + _kpi_funnel_sub_row("Q win %", f"{q_rate:.1f}%")
+    spend_sub = (
+        _kpi_funnel_sub_row("Impressions", f"{total_impr:,}")
+        + _kpi_funnel_sub_row("Clicks", f"{total_clicks:,}")
+        + _kpi_funnel_sub_row("CTR", f"{ctr:.2f}%")
+        + _kpi_funnel_sub_row("CPM", f"${(total_spend / total_impr * 1000):,.2f}" if total_impr else "—")
+    )
+    cw_sub = _kpi_funnel_sub_row("CPCW", cpcw_s) + _kpi_funnel_sub_row("Spend (same window)", _format_spend_k(total_spend) if total_spend else "$0")
+    cpcw_sub = _kpi_funnel_sub_row("Closed won (same window)", f"{total_cw:,}") + _kpi_funnel_sub_row("Spend", _format_spend_k(total_spend) if total_spend else "$0")
+    tcv_sub = _kpi_funnel_sub_row("CpCW:LF", cpcwlf_s) + _kpi_funnel_sub_row("Cost / TCV %", f"{spend_tcv_pct:.2f}%" if total_tcv else "—")
+    cpcwlf_sub = _kpi_funnel_sub_row("Actual TCV", tcv_s) + _kpi_funnel_sub_row("Spend", _format_spend_k(total_spend) if total_spend else "$0")
+    pct_tcv_sub = _kpi_funnel_sub_row("Actual TCV", tcv_s) + _kpi_funnel_sub_row("Spend", _format_spend_k(total_spend) if total_spend else "$0")
+
+    card_cw = _card(
+        "◎",
+        "CW (inc. approved)",
+        f"{total_cw:,}",
+        _kpi_funnel_delta_html(float(total_cw), p_cw),
+        cw_sub,
+        _d(),
+    )
+    card_spend = _card(
+        "💲",
+        "Spend",
+        _format_spend_k(total_spend) if total_spend else "$0",
+        _kpi_funnel_delta_html(float(total_spend), p_spend),
+        spend_sub,
+        _d(),
+    )
+    card_cpcw = _card(
+        "$",
+        "CPCW",
+        cpcw_s,
+        _kpi_funnel_delta_html(float(cpcw) if total_cw and cpcw == cpcw else None, p_cpcw),
+        cpcw_sub,
+        _d(),
+    )
+    card_tcv = _card(
+        "◆",
+        "Actual TCV",
+        tcv_s,
+        _kpi_funnel_delta_html(float(total_tcv) if total_tcv else None, p_tcv),
+        tcv_sub,
+        _d(),
+    )
+    card_cpcwlf = _card(
+        "≈",
+        "CpCW:LF",
+        cpcwlf_s,
+        _kpi_funnel_delta_html(float(cpcw_lf) if total_first_month_lf else None, p_cpcw_lf),
+        cpcwlf_sub,
+        _d(),
+    )
+    card_ctcv = _card(
+        "%",
+        "Cost / TCV %",
+        f"{spend_tcv_pct:.2f}%" if total_tcv else "—",
+        _kpi_funnel_delta_html(float(spend_tcv_pct) if total_tcv else None, p_spend_tcv_pct),
+        pct_tcv_sub,
+        _d(),
     )
 
-    cards: list[str] = [
-        _card(
-            "💲",
-            "Total spend",
-            _format_spend_k(total_spend) if total_spend else "$0",
-            _kpi_funnel_delta_html(float(total_spend), p_spend),
-            sub_spend,
-            0.0,
-        ),
-        _card(
-            "👁",
-            "Total impressions",
-            f"{total_impr:,}",
-            _kpi_funnel_delta_html(float(total_impr), p_impr),
-            sub_impr,
-            0.05,
-        ),
-        _card(
-            "🖱",
-            "Total clicks",
-            f"{total_clicks:,}",
-            _kpi_funnel_delta_html(float(total_clicks), p_clicks),
-            sub_clicks,
-            0.1,
-        ),
-        _card(
-            "%",
-            "Click-through rate",
-            f"{ctr:.2f}%",
-            _kpi_funnel_delta_html(float(ctr), p_ctr),
-            sub_ctr,
-            0.15,
-        ),
-        _card(
-            "👥",
-            "Leads",
-            f"{total_leads:,}",
-            _kpi_funnel_delta_html(cur_leads_d, p_leads),
-            sub_leads,
-            0.2,
-        ),
-        _card(
-            "✓",
-            "Qualified leads",
-            f"{total_qualified:,}",
-            _kpi_funnel_delta_html(cur_qualified_d, p_qualified),
-            sub_ql,
-            0.25,
-        ),
-        _card(
-            "📊",
-            "Pitching",
-            f"{total_pitching:,}",
-            _kpi_funnel_delta_html(float(total_pitching), p_pitch),
-            sub_pitch,
-            0.3,
-        ),
-        _card(
-            "◎",
-            "Closed wons",
-            f"{total_cw:,}",
-            _kpi_funnel_delta_html(float(total_cw), p_cw),
-            sub_cw,
-            0.35,
-        ),
-    ]
+    cpl_s = f"${cpl:,.2f}" if total_leads and cpl == cpl else "—"
+    cpsql_s = f"${cpsql:,.2f}" if total_qualified and cpsql == cpsql else "—"
+    sub_tl = _kpi_funnel_sub_row("Qualified", f"{total_qualified:,}") + _kpi_funnel_sub_row("SQL %", f"{sql_rate:.2f}%")
+    sub_qual = _kpi_funnel_sub_row("Total leads", f"{total_leads:,}") + _kpi_funnel_sub_row("CPSQL", cpsql_s)
+    sub_nw = _kpi_funnel_sub_row("Total leads", f"{total_leads:,}") + _kpi_funnel_sub_row("Qualified", f"{total_qualified:,}")
+    sub_sql = _kpi_funnel_sub_row("Qualified", f"{total_qualified:,}") + _kpi_funnel_sub_row("Total leads", f"{total_leads:,}")
+    sub_cpl_c = _kpi_funnel_sub_row("Spend", _format_spend_k(total_spend) if total_spend else "$0") + _kpi_funnel_sub_row("Leads", f"{total_leads:,}")
+    sub_cpsql_c = _kpi_funnel_sub_row("Spend", _format_spend_k(total_spend) if total_spend else "$0") + _kpi_funnel_sub_row("Qualified", f"{total_qualified:,}")
+
+    card_tl = _card(
+        "👥",
+        "Total leads",
+        f"{total_leads:,}",
+        _kpi_funnel_delta_html(cur_leads_d, p_leads),
+        sub_tl,
+        _d(),
+    )
+    card_ql = _card(
+        "✓",
+        "Qualified",
+        f"{total_qualified:,}",
+        _kpi_funnel_delta_html(cur_qualified_d, p_qualified),
+        sub_qual,
+        _d(),
+    )
+    card_nw = _card(
+        "◇",
+        "New + working",
+        f"{total_new_working:,}",
+        _kpi_funnel_delta_html(cur_nw_d, p_nw),
+        sub_nw,
+        _d(),
+    )
+    card_sql = _card(
+        "‰",
+        "SQL %",
+        f"{sql_rate:.2f}%",
+        _kpi_funnel_delta_html(float(sql_rate) if total_leads else None, p_sql_rate),
+        sub_sql,
+        _d(),
+    )
+    card_cpl = _card(
+        "⬧",
+        "CPL",
+        cpl_s,
+        _kpi_funnel_delta_html(float(cpl) if total_leads and cpl == cpl else None, p_cpl),
+        sub_cpl_c,
+        _d(),
+    )
+    card_cpsql = _card(
+        "⬧",
+        "CPSQL",
+        cpsql_s,
+        _kpi_funnel_delta_html(float(cpsql) if total_qualified and cpsql == cpsql else None, p_cpsql),
+        sub_cpsql_c,
+        _d(),
+    )
+
+    _qual_show = int(total_qualifying)
+    if _qual_show <= 0 and total_total_live > 0:
+        _qual_show = max(0, int(total_total_live - total_pitching - total_negotiation - total_commitment))
+    sub_live = (
+        _kpi_funnel_sub_row("Qualifying", f"{_qual_show:,}")
+        + _kpi_funnel_sub_row("Pitching", f"{total_pitching:,}")
+        + _kpi_funnel_sub_row("Negotiation", f"{total_negotiation:,}")
+        + _kpi_funnel_sub_row("Commitment", f"{total_commitment:,}")
+    )
+    sub_nego = _kpi_funnel_sub_row("Total live", f"{total_total_live:,}") + _kpi_funnel_sub_row("Commitment", f"{total_commitment:,}")
+    sub_commit = _kpi_funnel_sub_row("Total live", f"{total_total_live:,}") + _kpi_funnel_sub_row("Negotiation", f"{total_negotiation:,}")
+    sub_clost = _kpi_funnel_sub_row("CW (inc. approved)", f"{total_cw:,}") + _kpi_funnel_sub_row("Qualified (Q-win base)", f"{_q_d:,}")
+    sub_qwin = _kpi_funnel_sub_row("CW (post tab)", f"{_cw_q:,}") + _kpi_funnel_sub_row("Qualified (denom.)", f"{_q_d:,}")
+
+    card_live = _card(
+        "▤",
+        "Total live",
+        f"{total_total_live:,}",
+        _kpi_funnel_delta_html(float(total_total_live), p_total_live),
+        sub_live,
+        _d(),
+    )
+    card_nego = _card(
+        "◆",
+        "Negotiation",
+        f"{total_negotiation:,}",
+        _kpi_funnel_delta_html(float(total_negotiation), p_nego),
+        sub_nego,
+        _d(),
+    )
+    card_commit = _card(
+        "◆",
+        "Commitment",
+        f"{total_commitment:,}",
+        _kpi_funnel_delta_html(float(total_commitment), p_commit),
+        sub_commit,
+        _d(),
+    )
+    card_clost = _card(
+        "✕",
+        "Closed lost",
+        f"{total_closed_lost:,}",
+        _kpi_funnel_delta_html(float(total_closed_lost), p_clost),
+        sub_clost,
+        _d(),
+    )
+    card_qwin = _card(
+        "%",
+        "Q win rate %",
+        f"{q_rate:.2f}%",
+        _kpi_funnel_delta_html(float(q_rate) if _q_d else None, p_q_win),
+        sub_qwin,
+        _d(),
+    )
+
+    sec_cw = _section(
+        "Closed won",
+        "cw",
+        [card_cw, card_spend, card_cpcw, card_tcv, card_cpcwlf, card_ctcv],
+    )
+    sec_leads = _section(
+        "Leads",
+        "leads",
+        [card_tl, card_ql, card_nw, card_sql, card_cpl, card_cpsql],
+    )
+    sec_pipe = _section(
+        "Qualified leads",
+        "pipe",
+        [card_live, card_nego, card_commit, card_clost, card_qwin],
+    )
 
     st.markdown(
-        '<div class="kpi-funnel-grid">' + "".join(cards) + "</div>",
+        f'<div class="kpi-funnel-wrap">{sec_cw}{sec_leads}{sec_pipe}</div>',
         unsafe_allow_html=True,
     )
     st.caption(
-        "Previous period = the calendar window of the same length ending the day before your range starts, "
-        "with the same Market / Month slicers. Spend, clicks, pipeline, and CW use that window; **lead / qualified** "
-        "change uses row **Date** when the column exists (otherwise “—”)."
+        "Previous period = the same-length calendar window ending the day before your range, with the same "
+        "Market / Month slicers. Pipeline / CW / spend use that slice; **lead / SQL / new+working** comparisons "
+        "use row **Date** when present (otherwise “—”)."
     )
 
 
@@ -4388,13 +4515,78 @@ def render_page_marketing_performance(
         _kpi_prior["leads_cur"] = float(len(_ld_cur))
         _kpi_prior["qualified"] = float(_qualified_count_from_leads(_ld_pv))
         _kpi_prior["qualified_cur"] = float(_qualified_count_from_leads(_ld_cur))
+        _kpi_prior["new_working"] = float(_new_working_count_from_leads(_ld_pv))
+        _kpi_prior["new_working_cur"] = float(_new_working_count_from_leads(_ld_cur))
     else:
         _kpi_prior["leads"] = None
         _kpi_prior["leads_cur"] = None
         _kpi_prior["qualified"] = None
         _kpi_prior["qualified_cur"] = None
+        _kpi_prior["new_working"] = None
+        _kpi_prior["new_working_cur"] = None
 
-    st.markdown("#### Marketing funnel scorecard")
+    _ld_loaded_pv = _filter_by_date_range(df_loaded, _p0, _p1)
+    _post_kpi_pv = _tab_subset(_ld_loaded_pv, list(_POST_LEAD_SOURCE_TAB_PATTERNS))
+    _pq_gid_pv = _optional_post_qual_gid_from_secrets()
+    if _pq_gid_pv is not None and "worksheet_gid" in _ld_loaded_pv.columns:
+        _wg_pv = pd.to_numeric(_ld_loaded_pv["worksheet_gid"], errors="coerce")
+        _by_pq_pv = _ld_loaded_pv.loc[_wg_pv == int(_pq_gid_pv)].copy()
+        if not _by_pq_pv.empty:
+            _post_kpi_pv = _by_pq_pv
+    elif _pq_gid_pv is not None:
+        try:
+            _sid_pv = _extract_sheet_id(_default_sheet_id_from_secrets())
+            _fppv = _secret_fingerprint(_service_account_from_streamlit_secrets())
+            _dir_pv = load_worksheet_by_gid_preprocessed(_sid_pv, int(_pq_gid_pv), _fppv)
+            if not _dir_pv.empty:
+                _post_kpi_pv = _filter_by_date_range(_dir_pv, _p0, _p1)
+        except Exception:
+            pass
+    if _post_kpi_pv.empty:
+        _post_kpi_pv = _post_pv
+
+    _cw_k_pv = _cw_dataframe_for_kpis(_resolve_cw_tcv_dataframe(df_loaded, _df_pv), _df_pv)
+    _pv_tcv = (
+        float(pd.to_numeric(_cw_k_pv["tcv"], errors="coerce").fillna(0).sum())
+        if not _cw_k_pv.empty and "tcv" in _cw_k_pv.columns
+        else 0.0
+    )
+    _pv_lf = (
+        float(pd.to_numeric(_cw_k_pv["first_month_lf"], errors="coerce").fillna(0).sum())
+        if not _cw_k_pv.empty and "first_month_lf" in _cw_k_pv.columns
+        else 0.0
+    )
+    _pv_nego = int(_post_kpi_pv["negotiation"].sum()) if "negotiation" in _post_kpi_pv.columns else 0
+    _pv_commit = int(_post_kpi_pv["commitment"].sum()) if "commitment" in _post_kpi_pv.columns else 0
+    _pv_cl = int(_post_kpi_pv["closed_lost"].sum()) if "closed_lost" in _post_kpi_pv.columns else 0
+    _pv_qual_tab = int(_post_kpi_pv["qualifying"].sum()) if "qualifying" in _post_kpi_pv.columns else 0
+    _kpi_prior["tcv"] = _pv_tcv
+    _kpi_prior["lf"] = _pv_lf
+    _kpi_prior["negotiation"] = float(_pv_nego)
+    _kpi_prior["commitment"] = float(_pv_commit)
+    _kpi_prior["closed_lost"] = float(_pv_cl)
+    _kpi_prior["total_live"] = float(_pv_qual_tab + _pv_pitch + _pv_nego + _pv_commit)
+    _kpi_prior["cpcw"] = (_pv_spend / float(_pv_cw)) if _pv_cw > 0 else None
+    _kpi_prior["cpcw_lf"] = (_pv_spend / _pv_lf) if _pv_lf > 0 else None
+    _kpi_prior["spend_tcv_pct"] = (_pv_spend / _pv_tcv * 100) if _pv_tcv > 0 else None
+    _cwq_p, _qq_p = _q_win_rate_inputs(_post_kpi_pv, leads_df)
+    _kpi_prior["q_win_rate"] = (float(_cwq_p) / float(_qq_p) * 100.0) if _qq_p else None
+    _pl0 = _kpi_prior.get("leads")
+    _pq0 = _kpi_prior.get("qualified")
+    if _pl0 is not None and float(_pl0) > 0:
+        _kpi_prior["cpl"] = _pv_spend / float(_pl0)
+    else:
+        _kpi_prior["cpl"] = None
+    if _pq0 is not None and float(_pq0) > 0:
+        _kpi_prior["cpsql"] = _pv_spend / float(_pq0)
+    else:
+        _kpi_prior["cpsql"] = None
+    if _pl0 is not None and float(_pl0) > 0 and _pq0 is not None:
+        _kpi_prior["sql_rate"] = float(_pq0) / float(_pl0) * 100.0
+    else:
+        _kpi_prior["sql_rate"] = None
+
+    st.markdown("#### Marketing performance scorecard")
     _kpi_block(
         total_spend=total_spend,
         total_impr=total_impr,
@@ -4416,6 +4608,7 @@ def render_page_marketing_performance(
         total_commitment=total_commitment,
         total_closed_lost=total_closed_lost,
         total_pitching=total_pitching,
+        total_qualifying=total_qualifying,
         prior=_kpi_prior,
     )
 
@@ -4877,7 +5070,21 @@ def main() -> None:
         line-height: 1.2;
         font-variant-numeric: tabular-nums;
     }
-    /* Marketing funnel scorecards (2×4, Looker-style deltas + sub-metrics) */
+    /* Marketing funnel scorecards (Looker-style deltas + sub-metrics) */
+    .kpi-funnel-wrap { display: flex; flex-direction: column; gap: 4px; }
+    .kpi-funnel-section { margin-bottom: 6px; }
+    .kpi-funnel-section-title {
+        font-size: 0.92rem;
+        font-weight: 700;
+        margin: 16px 0 10px 0;
+        padding-bottom: 8px;
+        letter-spacing: -0.02em;
+        border-bottom: 2px solid #cbd5e1;
+    }
+    .kpi-funnel-section-title--cw { color: #0f766e; border-bottom-color: #4f8483; }
+    .kpi-funnel-section-title--leads { color: #1d4ed8; border-bottom-color: #3b82f6; }
+    .kpi-funnel-section-title--pipe { color: #5b21b6; border-bottom-color: #8b5cf6; }
+    .kpi-funnel-section:first-child .kpi-funnel-section-title { margin-top: 2px; }
     .kpi-funnel-grid {
         display: grid;
         grid-template-columns: repeat(4, minmax(0, 1fr));
