@@ -3470,124 +3470,6 @@ def _month_label_short(m: Any) -> str:
         return ""
 
 
-def _mpo_month_ts_for_sort(m: Any) -> pd.Timestamp:
-    """Sort key for calendar months in charts and pivots."""
-    k = _month_norm_key(m)
-    if not k:
-        return pd.Timestamp.min
-    try:
-        return pd.Period(k, freq="M").to_timestamp()
-    except Exception:
-        return pd.Timestamp.min
-
-
-def _render_mpo_trends_and_export(master_df: pd.DataFrame, *, key_suffix: str) -> None:
-    """Interactive Plotly views + CSV export for the same month × market grid as the master table."""
-    st.caption("Charts respect Market / Month filters above. Download matches the filtered master grid.")
-    if master_df.empty:
-        st.info("No rows in the master grid for the current filters.")
-        return
-    mdf = master_df.copy()
-    for c in ("cost", "leads", "closed_won", "qualified"):
-        if c not in mdf.columns:
-            mdf[c] = 0.0
-        else:
-            mdf[c] = pd.to_numeric(mdf[c], errors="coerce").fillna(0)
-
-    monthly = mdf.groupby("month", as_index=False).agg(
-        spend=("cost", "sum"),
-        leads=("leads", "sum"),
-        cw=("closed_won", "sum"),
-        qualified=("qualified", "sum"),
-    )
-    monthly["_sort"] = monthly["month"].map(_mpo_month_ts_for_sort)
-    monthly = monthly.sort_values("_sort").drop(columns=["_sort"], errors="ignore")
-    monthly["Month"] = monthly["month"].map(_month_label_short)
-    monthly = monthly[monthly["Month"].astype(str).str.strip().ne("")]
-
-    ctl1, ctl2, ctl3 = st.columns([2, 2, 2])
-    with ctl1:
-        chart_style = st.selectbox(
-            "Monthly chart style",
-            ["Lines (trend)", "Bars (volume)"],
-            key=f"{key_suffix}_chart_style",
-        )
-    with ctl2:
-        top_n = st.slider("Top markets (side charts)", 5, 20, 8, key=f"{key_suffix}_top_mk")
-    with ctl3:
-        show_qualified = st.checkbox("Include qualified on monthly chart", value=False, key=f"{key_suffix}_sq")
-
-    y_cols = ["spend", "leads", "cw"]
-    if show_qualified:
-        y_cols.append("qualified")
-    y_cols = [c for c in y_cols if c in monthly.columns]
-    _layout_kw = dict(plot_bgcolor="white", paper_bgcolor="white", margin=dict(l=8, r=8, t=48, b=8))
-    if monthly.empty or not y_cols:
-        st.warning("Not enough dated rows to plot monthly totals.")
-    else:
-        if chart_style.startswith("Lines"):
-            fig_m = px.line(
-                monthly,
-                x="Month",
-                y=y_cols,
-                markers=True,
-                title="Monthly totals (sum across filtered markets)",
-            )
-        else:
-            fig_m = px.bar(
-                monthly,
-                x="Month",
-                y=y_cols,
-                barmode="group",
-                title="Monthly totals (sum across filtered markets)",
-            )
-        fig_m.update_layout(**_layout_kw)
-        fig_m.update_xaxes(title="")
-        fig_m.update_yaxes(title="")
-        st.plotly_chart(fig_m, use_container_width=True, key=f"{key_suffix}_pl_monthly_activity")
-
-    by_m = (
-        mdf.groupby("country", as_index=False)
-        .agg(spend=("cost", "sum"), leads=("leads", "sum"), cw=("closed_won", "sum"))
-    )
-    mkt_spend = by_m.nlargest(int(top_n), "spend").copy()
-    mkt_leads = by_m.nlargest(int(top_n), "leads").copy()
-    mkt_spend["Market"] = mkt_spend["country"].map(_market_display_from_join_key)
-    mkt_leads["Market"] = mkt_leads["country"].map(_market_display_from_join_key)
-
-    cbar1, cbar2 = st.columns(2)
-    with cbar1:
-        fig_s = px.bar(
-            mkt_spend.sort_values("spend"),
-            x="spend",
-            y="Market",
-            orientation="h",
-            title=f"Top {top_n} markets by spend",
-        )
-        fig_s.update_layout(**_layout_kw)
-        fig_s.update_traces(marker_color="#4f8483")
-        st.plotly_chart(fig_s, use_container_width=True, key=f"{key_suffix}_pl_bar_spend")
-    with cbar2:
-        fig_l = px.bar(
-            mkt_leads.sort_values("leads"),
-            x="leads",
-            y="Market",
-            orientation="h",
-            title=f"Top {top_n} markets by leads",
-        )
-        fig_l.update_layout(**_layout_kw)
-        fig_l.update_traces(marker_color="#0d9488")
-        st.plotly_chart(fig_l, use_container_width=True, key=f"{key_suffix}_pl_bar_leads")
-
-    st.download_button(
-        label="Download filtered master data (CSV)",
-        data=mdf.to_csv(index=False).encode("utf-8"),
-        file_name="marketing_performance_master_filtered.csv",
-        mime="text/csv",
-        key=f"{key_suffix}_dl_master",
-    )
-
-
 def _master_view_spend_authoritative_from_grid(spend_grid: pd.DataFrame) -> pd.DataFrame:
     """``month`` × display ``Market`` spend from the spend pivot — not from ``master_df`` joins (those can show 0 in UI)."""
     if spend_grid is None or spend_grid.empty or "cost" not in spend_grid.columns or "country" not in spend_grid.columns:
@@ -3900,10 +3782,7 @@ def render_page_marketing_performance(
     st.markdown('<h1 class="looker-page-h1">Marketing Performance Overview</h1>', unsafe_allow_html=True)
     df, _ = _apply_marketing_performance_filters(df_date, key_suffix=key_suffix)
 
-    st.caption(
-        "Filters apply to scorecards, **Trends & exploration**, and the **Master performance table**. "
-        "Use the reporting-period bar above to change the date window for all tabs."
-    )
+    st.caption("Filters apply to scorecards, master table, and charts below.")
 
     sheet_id, _ = _workbook_id_resolution()
     _fp_mpo = _secret_fingerprint(_service_account_from_streamlit_secrets())
@@ -4290,11 +4169,7 @@ def render_page_marketing_performance(
     if _normalized_spend_cost_sum(_spend_for_master_ui) < 1e-6 and _normalized_spend_cost_sum(spend_pool_full) > 1e-6:
         _spend_for_master_ui = _spend_sheet_pivot_by_month_country(spend_pool_full)
 
-    tab_trends, tab_master = st.tabs(["Trends & exploration", "Master performance table"])
-    with tab_trends:
-        _render_mpo_trends_and_export(master_df, key_suffix=key_suffix)
-    with tab_master:
-        _master_performance_table(master_df, key_suffix=key_suffix, spend_grid=_spend_for_master_ui)
+    _master_performance_table(master_df, key_suffix=key_suffix, spend_grid=_spend_for_master_ui)
 
 
 def render_page_market_mom(
@@ -4515,64 +4390,15 @@ def render_main_dashboard(
         st.warning("No data rows were returned. Check tabs and column headers against the ME X-Ray template.")
         return
 
-    if "date" in df_loaded.columns:
-        td_min = pd.to_datetime(df_loaded["date"], errors="coerce").min()
-        td_max = pd.to_datetime(df_loaded["date"], errors="coerce").max()
-        d_min = td_min.date() if pd.notna(td_min) else (date.today() - timedelta(days=730))
-        d_max = td_max.date() if pd.notna(td_max) else date.today()
-    else:
-        d_min = date.today() - timedelta(days=730)
-        d_max = date.today()
-    if d_max < d_min:
-        d_min, d_max = d_max, d_min
-
-    st.markdown('<div class="looker-table-title">Reporting period</div>', unsafe_allow_html=True)
-    st.caption("Quick ranges apply to every dashboard tab. Dates are clipped to data available in the workbook.")
-    if "global_dash_start" not in st.session_state:
-        st.session_state.global_dash_start = max(d_min, min(start_date, d_max))
-    if "global_dash_end" not in st.session_state:
-        st.session_state.global_dash_end = max(d_min, min(end_date, d_max))
-
-    b1, b2, b3, b4, b5 = st.columns(5)
-    _today = date.today()
-    with b1:
-        if st.button("30 days", key="dr_preset_30"):
-            st.session_state.global_dash_end = min(d_max, _today)
-            st.session_state.global_dash_start = max(d_min, _today - timedelta(days=30))
-    with b2:
-        if st.button("90 days", key="dr_preset_90"):
-            st.session_state.global_dash_end = min(d_max, _today)
-            st.session_state.global_dash_start = max(d_min, _today - timedelta(days=90))
-    with b3:
-        if st.button("12 months", key="dr_preset_365"):
-            st.session_state.global_dash_end = min(d_max, _today)
-            st.session_state.global_dash_start = max(d_min, _today - timedelta(days=365))
-    with b4:
-        if st.button("YTD", key="dr_preset_ytd"):
-            st.session_state.global_dash_end = min(d_max, _today)
-            st.session_state.global_dash_start = max(d_min, date(_today.year, 1, 1))
-    with b5:
-        if st.button("Full workbook", key="dr_preset_all"):
-            st.session_state.global_dash_start = d_min
-            st.session_state.global_dash_end = d_max
-
-    dca, dcb = st.columns(2)
-    with dca:
-        start_date_eff = st.date_input("Start date", min_value=d_min, max_value=d_max, key="global_dash_start")
-    with dcb:
-        end_date_eff = st.date_input("End date", min_value=d_min, max_value=d_max, key="global_dash_end")
-    if start_date_eff > end_date_eff:
-        start_date_eff, end_date_eff = end_date_eff, start_date_eff
-
     tab_mpo, tab_mom, tab_pmc, tab_inbound = st.tabs(list(LOOKER_PAGES))
     with tab_mpo:
-        render_page_marketing_performance(df_loaded, start_date_eff, end_date_eff)
+        render_page_marketing_performance(df_loaded, start_date, end_date)
     with tab_mom:
-        render_page_market_mom(df_loaded, start_date_eff, end_date_eff)
+        render_page_market_mom(df_loaded, start_date, end_date)
     with tab_pmc:
-        render_page_channels(df_loaded, start_date_eff, end_date_eff, inbound=False)
+        render_page_channels(df_loaded, start_date, end_date, inbound=False)
     with tab_inbound:
-        render_page_channels(df_loaded, start_date_eff, end_date_eff, inbound=True)
+        render_page_channels(df_loaded, start_date, end_date, inbound=True)
 
 
 def main() -> None:
