@@ -3274,7 +3274,7 @@ def _mpo_comparison_strip_html(
                 '<div class="mpo-cmp-wrap">'
                 '<div class="mpo-cmp-empty">Pick a month in the table filter (or load data) '
                 "to anchor year-to-date.</div>"
-                f"{_foot('Year to date', 'mpo-cmp-mode--ytd')}"
+                f"{_foot('YTD vs last year', 'mpo-cmp-mode--ytd')}"
                 "</div>"
             )
         _cy0 = _mpo_month_keys_calendar_ytd_through(cur_k)
@@ -3284,7 +3284,7 @@ def _mpo_comparison_strip_html(
             return (
                 '<div class="mpo-cmp-wrap">'
                 '<div class="mpo-cmp-empty">Could not align this year with last year for YTD — check the date range.</div>'
-                f"{_foot('Year to date', 'mpo-cmp-mode--ytd')}"
+                f"{_foot('YTD vs last year', 'mpo-cmp-mode--ytd')}"
                 "</div>"
             )
         _c0 = html.escape(_month_label_short(_cy0[0]))
@@ -3311,7 +3311,7 @@ def _mpo_comparison_strip_html(
             '<div class="mpo-cmp-vs-col"><span class="mpo-cmp-vs">vs</span></div>'
             f"{right}"
             "</div>"
-            f"{_foot('Year to date', 'mpo-cmp-mode--ytd')}"
+            f"{_foot('YTD vs last year', 'mpo-cmp-mode--ytd')}"
             "</div>"
         )
 
@@ -3331,13 +3331,13 @@ def _mpo_comparison_strip_html(
             "Used for green/red % lines",
         )
         if kind == "custom":
-            _ml, _mc = "Custom", "mpo-cmp-mode--custom"
+            _ml, _mc = "Custom range", "mpo-cmp-mode--custom"
         elif kind == "yoy":
-            _ml, _mc = "Year over year", "mpo-cmp-mode--yoy"
+            _ml, _mc = "vs year ago", "mpo-cmp-mode--yoy"
         elif kind == "mom":
-            _ml, _mc = "Month over month", "mpo-cmp-mode--mom"
+            _ml, _mc = "vs prior month", "mpo-cmp-mode--mom"
         else:
-            _ml, _mc = "Comparison", "mpo-cmp-mode--auto"
+            _ml, _mc = "Auto compare", "mpo-cmp-mode--auto"
         return (
             '<div class="mpo-cmp-wrap">'
             '<div class="mpo-cmp-row">'
