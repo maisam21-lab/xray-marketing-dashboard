@@ -3248,7 +3248,9 @@ def _mpo_comparison_strip_html(
 ) -> str:
     """Scorecard-style dual cards: current vs reference month (MoM or custom dates)."""
     _mscope = _mpo_market_scope_note(key_suffix)
-    _ref_note = html.escape("Vs uses Market only (not Month).")
+    _ref_note = html.escape(
+        "Two calendar months × your Markets. Month filter = table rows + which month is “current” when All months is on."
+    )
 
     def _foot(_mode_lbl: str, _mode_cls: str) -> str:
         return (
@@ -3373,7 +3375,7 @@ def _apply_marketing_performance_filters(
             format_func=_mpo_compare_mode_radio_label,
             key=f"{key_suffix}_compare_mode",
             horizontal=True,
-            help="Comparison uses **Market** only (not the Month filter).",
+                help="KPIs use your **Markets**. **Month** shapes the table and which month counts as “current” when All months is on.",
         )
         _mode_now = str(st.session_state.get(f"{key_suffix}_compare_mode", "mom") or "mom")
 
@@ -3425,17 +3427,6 @@ def _apply_marketing_performance_filters(
                         max_value=max_d,
                         key=_ref_dt,
                     )
-
-    cur_k, ref_k, kind = _mpo_compare_month_keys(df_date, key_suffix=key_suffix)
-    st.markdown(
-        _mpo_comparison_strip_html(
-            key_suffix=key_suffix,
-            cur_k=cur_k,
-            ref_k=ref_k,
-            kind=str(kind),
-        ),
-        unsafe_allow_html=True,
-    )
 
     selected_markets = st.session_state.get(f"{key_suffix}_market", ["All Markets"])
     selected_months = st.session_state.get(f"{key_suffix}_month", ["All Months"])
@@ -3523,16 +3514,24 @@ def _mpo_compare_month_keys(
     master_df: pd.DataFrame,
     *,
     key_suffix: str,
+    table_df: Optional[pd.DataFrame] = None,
 ) -> tuple[Optional[str], Optional[str], str]:
     """(current_month_key, reference_month_key, ``mom`` | ``custom``).
 
-    **Current** follows Market + Month slicers (latest in grid when All Months, else latest selected).
+    **Current** month:
+    - **Custom** mode: from the two date pickers.
+    - **Prior month** mode: latest month among your **Month** filter choices, or—if **All months**—the
+      latest month present in ``table_df`` when provided (the **table** after Market × Month), else
+      ``master_df``. This keeps the scorecard aligned with what the grid shows.
 
-    **mom:** reference = calendar month before current.
+    **mom:** reference = calendar month before **current** (may not appear in the table).
 
-    **Custom:** both months from ``date_input`` keys ``…_compare_custom_cur_dt`` / ``…_compare_custom_ref_dt``.
+    ``master_df`` must include the same month keys used for KPI math (merged month × market grid).
     """
     keys_sorted = _mpo_month_keys_sorted_master(master_df)
+    keys_table: list[str] = []
+    if table_df is not None and not table_df.empty and "month" in table_df.columns:
+        keys_table = _mpo_month_keys_sorted_master(table_df)
     months_sel = st.session_state.get(f"{key_suffix}_month", ["All Months"])
     all_months = "All Months" in months_sel
     mode_raw = st.session_state.get(f"{key_suffix}_compare_mode", "mom")
@@ -3567,11 +3566,11 @@ def _mpo_compare_month_keys(
             norm_pick.append(str(k).strip())
 
     if all_months:
-        cur = keys_sorted[-1]
+        cur = keys_table[-1] if keys_table else keys_sorted[-1]
     elif not picked:
-        cur = keys_sorted[-1]
+        cur = keys_table[-1] if keys_table else keys_sorted[-1]
     elif not norm_pick:
-        cur = keys_sorted[-1]
+        cur = keys_table[-1] if keys_table else keys_sorted[-1]
     else:
         cur = max(norm_pick, key=_mpo_month_ts_for_sort)
 
@@ -4596,6 +4595,15 @@ def render_page_marketing_performance(
 
     st.markdown('<h1 class="looker-page-h1">Marketing Performance Overview</h1>', unsafe_allow_html=True)
     df, _ = _apply_marketing_performance_filters(df_date, key_suffix=key_suffix)
+    with st.expander("How filters and the scorecard work together", expanded=False):
+        st.markdown(
+            """
+- **Market** — Applies to **both** the table and the scorecard (every KPI and % change).
+- **Month** — Limits **which months appear as rows** in the table. It also sets the scorecard **Current** month when you pick specific months (we use the latest month you selected). With **All months**, **Current** is the **latest month still present in that table** (after Market), so it matches what you’re looking at.
+- **Prior month** — Compares **Current** to the **previous calendar month** (same markets). That prior month might not be in the table; the % still shows the true month-over-month change.
+- **Custom dates** — You choose **Current** and **Compare** explicitly. The big numbers and % deltas are always for **those two calendar months**, not a sum across every row in the grid.
+            """
+        )
 
     sheet_id, _ = _workbook_id_resolution()
     _fp_mpo = _secret_fingerprint(_service_account_from_streamlit_secrets())
@@ -4963,7 +4971,17 @@ def render_page_marketing_performance(
     df_mkt = _mpo_apply_market_only(df_date, key_suffix)
     spend_cmp = _spend_slice_for_dashboard_filters(spend_sheet_master, df_mkt)
     cw_cmp = _cw_dataframe_for_kpis(_resolve_cw_tcv_dataframe(df_loaded, df_mkt), df_mkt)
-    ck, rk, cmp_kind = _mpo_compare_month_keys(master_df, key_suffix=key_suffix)
+    ck, rk, cmp_kind = _mpo_compare_month_keys(master_df, key_suffix=key_suffix, table_df=df)
+
+    st.markdown(
+        _mpo_comparison_strip_html(
+            key_suffix=key_suffix,
+            cur_k=ck,
+            ref_k=rk,
+            kind=str(cmp_kind),
+        ),
+        unsafe_allow_html=True,
+    )
 
     _kpi_prior = _kpi_two_month_compare_dict(
         ck,
