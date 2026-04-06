@@ -3249,7 +3249,7 @@ def _mpo_comparison_strip_html(
 ) -> str:
     """Scorecard-style dual cards: current vs reference windows (updates every rerun)."""
     _mscope = _mpo_market_scope_note(key_suffix)
-    _ref_note = html.escape("Comparison months use your Market filter only — not the Month filter.")
+    _ref_note = html.escape("Vs uses Market only (not Month).")
 
     def _foot(_mode_lbl: str, _mode_cls: str) -> str:
         return (
@@ -3272,8 +3272,7 @@ def _mpo_comparison_strip_html(
         if not cur_k:
             return (
                 '<div class="mpo-cmp-wrap">'
-                '<div class="mpo-cmp-empty">Pick a month in the table filter (or load data) '
-                "to anchor year-to-date.</div>"
+                '<div class="mpo-cmp-empty">Choose a month below (or load data) for YTD.</div>'
                 f"{_foot('YTD vs last year', 'mpo-cmp-mode--ytd')}"
                 "</div>"
             )
@@ -3283,7 +3282,7 @@ def _mpo_comparison_strip_html(
         if not _cy0 or not _py0 or len(_py0) != len(_cy0):
             return (
                 '<div class="mpo-cmp-wrap">'
-                '<div class="mpo-cmp-empty">Could not align this year with last year for YTD — check the date range.</div>'
+                '<div class="mpo-cmp-empty">YTD baseline not available — widen the date range or check data.</div>'
                 f"{_foot('YTD vs last year', 'mpo-cmp-mode--ytd')}"
                 "</div>"
             )
@@ -3294,15 +3293,15 @@ def _mpo_comparison_strip_html(
         _n = len(_cy0)
         left = _card(
             "mpo-cmp-card--current",
-            "Scorecard · this year",
+            "This year",
             f"{_c0}<span class=\"mpo-cmp-ndash\">\u2013</span>{_c1}",
-            f"{_n} month{'s' if _n != 1 else ''} rolled into top KPIs",
+            f"{_n} month{'s' if _n != 1 else ''} in scorecard",
         )
         right = _card(
             "mpo-cmp-card--ref",
-            "Baseline · last year",
+            "Last year",
             f"{_p0}<span class=\"mpo-cmp-ndash\">\u2013</span>{_p1}",
-            "Same calendar months · used for % vs",
+            "Same months · % vs",
         )
         return (
             '<div class="mpo-cmp-wrap">'
@@ -3320,15 +3319,15 @@ def _mpo_comparison_strip_html(
         _rk = html.escape(_month_label_short(ref_k))
         left = _card(
             "mpo-cmp-card--current",
-            "Current period",
+            "Current",
             _ck,
-            "Anchor month for filtered scorecard",
+            "Scorecard month",
         )
         right = _card(
             "mpo-cmp-card--ref",
-            "Reference period",
+            "Compare",
             _rk,
-            "Used for green/red % lines",
+            "% change baseline",
         )
         if kind == "custom":
             _ml, _mc = "Custom range", "mpo-cmp-mode--custom"
@@ -3351,7 +3350,7 @@ def _mpo_comparison_strip_html(
 
     return (
         '<div class="mpo-cmp-wrap">'
-        '<div class="mpo-cmp-empty">Choose months for the table or widen the date range to see comparison windows.</div>'
+        '<div class="mpo-cmp-empty">Pick table months or widen the app date range.</div>'
         f"{_foot('—', 'mpo-cmp-mode--na')}"
         "</div>"
     )
@@ -3412,11 +3411,8 @@ def _apply_marketing_performance_filters(
     *,
     key_suffix: str,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Performance-tab filters: one time-frame control, then Market + Month."""
-    _tf_help = (
-        "**YTD** = Jan through the month you pick. **Auto** = all table months → vs last year; "
-        "otherwise vs prior month. **Custom** = two months. **Market** drives comparisons, not Month."
-    )
+    """Performance-tab filters: compact panel — time frame, market, month (+ custom dates when needed)."""
+    _tf_help = "YTD uses Jan–Month below. Auto picks YoY or MoM. Custom: pick two months. % vs uses **Market** only."
 
     mk_raw = [x for x in df_date["country"].dropna().unique().tolist() if x and x != "Unknown"]
     if "cost" in df_date.columns and mk_raw:
@@ -3430,91 +3426,95 @@ def _apply_marketing_performance_filters(
     else:
         market_opts = sorted(mk_raw)
     month_opts = sorted([x for x in df_date["month"].dropna().unique().tolist() if x and x != "NaT"])
-
-    _mpo_seed_timeframe_from_legacy_widgets(key_suffix)
-    st.selectbox(
-        "📅 Time frame",
-        options=list(_MPO_TIMEFRAME_OPTIONS),
-        format_func=_mpo_timeframe_option_label,
-        key=f"{key_suffix}_timeframe",
-        help=_tf_help,
-    )
-    _tf_sel = str(st.session_state.get(f"{key_suffix}_timeframe", "ytd") or "ytd")
-    _basis_now, _mode_now = _mpo_timeframe_split_basis_mode(_tf_sel)
-    st.session_state[f"{key_suffix}_scorecard_basis"] = _basis_now
-    st.session_state[f"{key_suffix}_compare_mode"] = _mode_now
-
-    row2a, row2b = st.columns(2, gap="medium")
-    with row2a:
-        st.multiselect(
-            "Market",
-            ["All Markets"] + market_opts,
-            default=["All Markets"],
-            key=f"{key_suffix}_market",
-            help="Which markets appear in the table and in the scorecard.",
-        )
-    with row2b:
-        st.multiselect(
-            "Month",
-            ["All Months"] + month_opts,
-            default=["All Months"],
-            key=f"{key_suffix}_month",
-            help="Which months are in the table. Also sets the last month included in year-to-date.",
-        )
-
     _cust = sorted(
         [x for x in df_date["month"].dropna().unique().tolist() if x and str(x) != "NaT"],
         key=_mpo_month_ts_for_sort,
     )
-    if _mode_now == "custom" and _cust and _basis_now != "ytd":
-        _date_bounds = [_mpo_month_value_to_date(x) for x in _cust]
-        _date_bounds = [d for d in _date_bounds if d is not None]
-        if _date_bounds:
-            min_d = min(_date_bounds)
-            max_d = max(_date_bounds)
-            _cur_dt = f"{key_suffix}_compare_custom_cur_dt"
-            _ref_dt = f"{key_suffix}_compare_custom_ref_dt"
-            _leg_cur = f"{key_suffix}_compare_custom_cur"
-            _leg_ref = f"{key_suffix}_compare_custom_ref"
-            if _cur_dt not in st.session_state and _leg_cur in st.session_state:
-                _d0 = _mpo_month_value_to_date(st.session_state[_leg_cur])
-                if _d0 is not None:
-                    st.session_state[_cur_dt] = _d0
-            if _ref_dt not in st.session_state and _leg_ref in st.session_state:
-                _d1 = _mpo_month_value_to_date(st.session_state[_leg_ref])
-                if _d1 is not None:
-                    st.session_state[_ref_dt] = _d1
-            if _cur_dt not in st.session_state:
-                st.session_state[_cur_dt] = _date_bounds[-1]
-            if _ref_dt not in st.session_state:
-                st.session_state[_ref_dt] = _date_bounds[-2] if len(_date_bounds) >= 2 else _date_bounds[-1]
-            for _wk in (_cur_dt, _ref_dt):
-                if _wk not in st.session_state:
-                    continue
-                v = st.session_state[_wk]
-                if isinstance(v, datetime):
-                    v = v.date()
-                if not isinstance(v, date) or v < min_d or v > max_d:
-                    st.session_state[_wk] = _date_bounds[-1] if _wk == _cur_dt else (
-                        _date_bounds[-2] if len(_date_bounds) >= 2 else _date_bounds[-1]
+
+    _mpo_seed_timeframe_from_legacy_widgets(key_suffix)
+    try:
+        _mpo_filter_panel = st.container(border=True)
+    except TypeError:
+        _mpo_filter_panel = st.container()
+    with _mpo_filter_panel:
+        _c_tf, _c_mk, _c_mo = st.columns([1.22, 1, 1], gap="small")
+        with _c_tf:
+            st.selectbox(
+                "📅 Time frame",
+                options=list(_MPO_TIMEFRAME_OPTIONS),
+                format_func=_mpo_timeframe_option_label,
+                key=f"{key_suffix}_timeframe",
+                help=_tf_help,
+            )
+        with _c_mk:
+            st.multiselect(
+                "Market",
+                ["All Markets"] + market_opts,
+                default=["All Markets"],
+                key=f"{key_suffix}_market",
+            )
+        with _c_mo:
+            st.multiselect(
+                "Month",
+                ["All Months"] + month_opts,
+                default=["All Months"],
+                key=f"{key_suffix}_month",
+            )
+
+        _tf_sel = str(st.session_state.get(f"{key_suffix}_timeframe", "ytd") or "ytd")
+        _basis_now, _mode_now = _mpo_timeframe_split_basis_mode(_tf_sel)
+        st.session_state[f"{key_suffix}_scorecard_basis"] = _basis_now
+        st.session_state[f"{key_suffix}_compare_mode"] = _mode_now
+
+        if _mode_now == "custom" and _cust and _basis_now != "ytd":
+            _date_bounds = [_mpo_month_value_to_date(x) for x in _cust]
+            _date_bounds = [d for d in _date_bounds if d is not None]
+            if _date_bounds:
+                min_d = min(_date_bounds)
+                max_d = max(_date_bounds)
+                _cur_dt = f"{key_suffix}_compare_custom_cur_dt"
+                _ref_dt = f"{key_suffix}_compare_custom_ref_dt"
+                _leg_cur = f"{key_suffix}_compare_custom_cur"
+                _leg_ref = f"{key_suffix}_compare_custom_ref"
+                if _cur_dt not in st.session_state and _leg_cur in st.session_state:
+                    _d0 = _mpo_month_value_to_date(st.session_state[_leg_cur])
+                    if _d0 is not None:
+                        st.session_state[_cur_dt] = _d0
+                if _ref_dt not in st.session_state and _leg_ref in st.session_state:
+                    _d1 = _mpo_month_value_to_date(st.session_state[_leg_ref])
+                    if _d1 is not None:
+                        st.session_state[_ref_dt] = _d1
+                if _cur_dt not in st.session_state:
+                    st.session_state[_cur_dt] = _date_bounds[-1]
+                if _ref_dt not in st.session_state:
+                    st.session_state[_ref_dt] = _date_bounds[-2] if len(_date_bounds) >= 2 else _date_bounds[-1]
+                for _wk in (_cur_dt, _ref_dt):
+                    if _wk not in st.session_state:
+                        continue
+                    v = st.session_state[_wk]
+                    if isinstance(v, datetime):
+                        v = v.date()
+                    if not isinstance(v, date) or v < min_d or v > max_d:
+                        st.session_state[_wk] = _date_bounds[-1] if _wk == _cur_dt else (
+                            _date_bounds[-2] if len(_date_bounds) >= 2 else _date_bounds[-1]
+                        )
+                st.divider()
+                st.caption("Custom range — any day in the month counts.")
+                dca, dcb = st.columns(2, gap="small")
+                with dca:
+                    st.date_input(
+                        "Current",
+                        min_value=min_d,
+                        max_value=max_d,
+                        key=_cur_dt,
                     )
-            dca, dcb = st.columns(2, gap="small")
-            with dca:
-                st.date_input(
-                    "Current month",
-                    min_value=min_d,
-                    max_value=max_d,
-                    key=_cur_dt,
-                    help="Any day in that month counts; the whole month is used.",
-                )
-            with dcb:
-                st.date_input(
-                    "Compare to",
-                    min_value=min_d,
-                    max_value=max_d,
-                    key=_ref_dt,
-                    help="Second month for the comparison.",
-                )
+                with dcb:
+                    st.date_input(
+                        "Compare",
+                        min_value=min_d,
+                        max_value=max_d,
+                        key=_ref_dt,
+                    )
 
     cur_k, ref_k, kind = _mpo_compare_month_keys(df_date, key_suffix=key_suffix)
     st.markdown(
@@ -5844,7 +5844,7 @@ def main() -> None:
     }
     /* MPO comparison strip — dual “mini scorecards”, dynamic with filters */
     .mpo-cmp-wrap {
-        margin: 8px 0 16px 0;
+        margin: 4px 0 12px 0;
     }
     .mpo-cmp-row {
         display: grid;
