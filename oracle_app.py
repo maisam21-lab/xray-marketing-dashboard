@@ -3470,6 +3470,120 @@ def _month_label_short(m: Any) -> str:
         return ""
 
 
+def _mpo_month_ts_for_sort(m: Any) -> pd.Timestamp:
+    k = _month_norm_key(m)
+    if not k:
+        return pd.Timestamp.min
+    try:
+        return pd.Period(k, freq="M").to_timestamp()
+    except Exception:
+        return pd.Timestamp.min
+
+
+def _render_mpo_leadership_surface(
+    *,
+    start_date: date,
+    end_date: date,
+    master_df: pd.DataFrame,
+    total_spend: float,
+    total_leads: int,
+    total_qualified: int,
+    total_cw: int,
+    cpl: float,
+    cpsql: float,
+    cpcw: float,
+    sql_pct: float,
+) -> None:
+    """Pulse-style strip for leadership: period, headline metrics, optional MoM, and 60s talking points."""
+    st.markdown('<div class="looker-table-title">Leadership snapshot</div>', unsafe_allow_html=True)
+    st.caption(
+        "Use this row for reviews and Tableau Pulse–style readouts. **Full scorecards** and the **market × month grid** "
+        "below are for depth and ops."
+    )
+    st.markdown(
+        f"**Reporting period:** {start_date:%d %b %Y} → {end_date:%d %b %Y} "
+        f"(same window as scorecards; Market / Month filters above still apply.)"
+    )
+
+    delta_spend = delta_leads = delta_cw = None
+    if (
+        not master_df.empty
+        and "month" in master_df.columns
+    ):
+        m = master_df.copy()
+        for c in ("cost", "leads", "closed_won"):
+            if c not in m.columns:
+                m[c] = 0.0
+            else:
+                m[c] = pd.to_numeric(m[c], errors="coerce").fillna(0.0)
+        agg = m.groupby("month", as_index=False).agg(
+            spend=("cost", "sum"),
+            leads=("leads", "sum"),
+            cw=("closed_won", "sum"),
+        )
+        agg["_ts"] = agg["month"].map(_mpo_month_ts_for_sort)
+        agg = agg.sort_values("_ts").dropna(subset=["_ts"])
+        if len(agg) >= 2:
+            prev = agg.iloc[-2]
+            cur = agg.iloc[-1]
+            if float(prev["spend"]) > 1e-6:
+                delta_spend = (float(cur["spend"]) - float(prev["spend"])) / float(prev["spend"]) * 100
+            if float(prev["leads"]) > 0:
+                delta_leads = (float(cur["leads"]) - float(prev["leads"])) / float(prev["leads"]) * 100
+            if float(prev["cw"]) > 0:
+                delta_cw = (float(cur["cw"]) - float(prev["cw"])) / float(prev["cw"]) * 100
+
+    def _d_fmt(d: Optional[float]) -> Optional[str]:
+        if d is None or d != d:
+            return None
+        return f"{d:+.1f}% vs prior month in grid"
+
+    m1, m2, m3, m4 = st.columns(4)
+    with m1:
+        st.metric(
+            "Spend",
+            _format_spend_k(total_spend) if total_spend else "$0",
+            delta=_d_fmt(delta_spend),
+            help="Sum of media spend in the filtered period (same logic as scorecard).",
+        )
+    with m2:
+        st.metric(
+            "Total leads",
+            f"{total_leads:,}",
+            delta=_d_fmt(delta_leads),
+            help="Inbound lead rows in the Leads tab (or configured worksheet), after filters.",
+        )
+    with m3:
+        st.metric(
+            "Closed won",
+            f"{total_cw:,}",
+            delta=_d_fmt(delta_cw),
+            help="Closed Won (inc. approved) from post–lead qualification data.",
+        )
+    with m4:
+        st.metric(
+            "CPL",
+            f"${cpl:,.2f}" if total_leads and cpl == cpl else "—",
+            help="Spend ÷ total leads for the period.",
+        )
+
+    bullets: list[str] = []
+    if total_leads > 0 and total_qualified >= 0:
+        bullets.append(f"**SQL rate** is **{sql_pct:.1f}%** ({total_qualified:,} qualified ÷ {total_leads:,} leads).")
+    if total_cw > 0 and total_qualified > 0:
+        qw = total_cw / total_qualified * 100
+        bullets.append(f"**Qualified → win** about **{qw:.1f}%** ({total_cw:,} CW ÷ {total_qualified:,} qualified).")
+    if total_spend > 0 and total_cw > 0 and cpcw == cpcw:
+        bullets.append(f"**CPCW** is **${cpcw:,.2f}** (spend per closed won).")
+    if total_spend > 0 and total_qualified > 0 and cpsql == cpsql:
+        bullets.append(f"**CPSQL** is **${cpsql:,.2f}** (spend per qualified lead).")
+    if not bullets:
+        bullets.append("Add filters or widen the date range if metrics look empty — data must pass Market / Month slicers above.")
+    st.markdown("**Suggested talking points (60 seconds)**")
+    for b in bullets[:4]:
+        st.markdown(f"- {b}")
+
+
 def _master_view_spend_authoritative_from_grid(spend_grid: pd.DataFrame) -> pd.DataFrame:
     """``month`` × display ``Market`` spend from the spend pivot — not from ``master_df`` joins (those can show 0 in UI)."""
     if spend_grid is None or spend_grid.empty or "cost" not in spend_grid.columns or "country" not in spend_grid.columns:
@@ -4032,28 +4146,6 @@ def render_page_marketing_performance(
     _pqw = post_df_kpi if not post_df_kpi.empty else post_df
     cw_for_qwin, qual_for_qwin = _q_win_rate_inputs(_pqw, leads_df)
 
-    _kpi_block(
-        total_spend=total_spend,
-        total_impr=total_impr,
-        total_clicks=total_clicks,
-        ctr=ctr,
-        total_leads=total_leads,
-        total_qualified=total_qualified,
-        total_cw=total_cw,
-        q_win_cw=cw_for_qwin,
-        q_win_qualified=qual_for_qwin,
-        total_tcv=total_tcv,
-        total_first_month_lf=total_first_month_lf,
-        cpc=cpc,
-        cpl=cpl,
-        cpsql=cpsql,
-        total_new_working=total_new_working,
-        total_total_live=total_total_live,
-        total_negotiation=total_negotiation,
-        total_commitment=total_commitment,
-        total_closed_lost=total_closed_lost,
-    )
-
     def _agg_for_master(frame: pd.DataFrame, metrics: list[str]) -> pd.DataFrame:
         if frame.empty or "month" not in frame.columns or "country" not in frame.columns:
             return pd.DataFrame(columns=["month", "country"] + metrics)
@@ -4169,6 +4261,47 @@ def render_page_marketing_performance(
     if _normalized_spend_cost_sum(_spend_for_master_ui) < 1e-6 and _normalized_spend_cost_sum(spend_pool_full) > 1e-6:
         _spend_for_master_ui = _spend_sheet_pivot_by_month_country(spend_pool_full)
 
+    _cpcw_headline = (total_spend / total_cw) if total_cw else float("nan")
+    _sql_pct_headline = (total_qualified / total_leads * 100) if total_leads else 0.0
+    _render_mpo_leadership_surface(
+        start_date=start_date,
+        end_date=end_date,
+        master_df=master_df,
+        total_spend=total_spend,
+        total_leads=int(total_leads),
+        total_qualified=int(total_qualified),
+        total_cw=int(total_cw),
+        cpl=cpl,
+        cpsql=cpsql,
+        cpcw=_cpcw_headline,
+        sql_pct=_sql_pct_headline,
+    )
+
+    st.markdown("#### Full scorecard (all KPI sections)")
+    _kpi_block(
+        total_spend=total_spend,
+        total_impr=total_impr,
+        total_clicks=total_clicks,
+        ctr=ctr,
+        total_leads=total_leads,
+        total_qualified=total_qualified,
+        total_cw=total_cw,
+        q_win_cw=cw_for_qwin,
+        q_win_qualified=qual_for_qwin,
+        total_tcv=total_tcv,
+        total_first_month_lf=total_first_month_lf,
+        cpc=cpc,
+        cpl=cpl,
+        cpsql=cpsql,
+        total_new_working=total_new_working,
+        total_total_live=total_total_live,
+        total_negotiation=total_negotiation,
+        total_commitment=total_commitment,
+        total_closed_lost=total_closed_lost,
+    )
+
+    st.markdown("#### Market × month (operational grid)")
+    st.caption("Dense comparison by market and month — use after the snapshot for drill-down.")
     _master_performance_table(master_df, key_suffix=key_suffix, spend_grid=_spend_for_master_ui)
 
 
