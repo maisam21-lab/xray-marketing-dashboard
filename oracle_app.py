@@ -3283,7 +3283,7 @@ def _mpo_comparison_strip_html(
             "% change baseline",
         )
         if kind == "custom":
-            _ml, _mc = "Custom range", "mpo-cmp-mode--custom"
+            _ml, _mc = "Custom dates", "mpo-cmp-mode--custom"
         else:
             _ml, _mc = "vs prior month", "mpo-cmp-mode--mom"
         return (
@@ -3317,7 +3317,7 @@ def _mpo_normalize_compare_mode_session(key_suffix: str) -> str:
 
 
 def _mpo_compare_mode_radio_label(opt: str) -> str:
-    return "vs prior month" if str(opt) == "mom" else "Custom range"
+    return "Prior month" if str(opt) == "mom" else "Custom dates"
 
 
 def _apply_marketing_performance_filters(
@@ -3350,6 +3350,7 @@ def _apply_marketing_performance_filters(
     except TypeError:
         _mpo_filter_panel = st.container()
     with _mpo_filter_panel:
+        # Only Market | Month in the first row so Streamlit does not slot the next row under the shorter column.
         _c_mk, _c_mo = st.columns(2, gap="small")
         with _c_mk:
             st.multiselect(
@@ -3365,14 +3366,15 @@ def _apply_marketing_performance_filters(
                 default=["All Months"],
                 key=f"{key_suffix}_month",
             )
-            st.radio(
-                "Scorecard % vs",
-                options=["mom", "custom"],
-                format_func=_mpo_compare_mode_radio_label,
-                key=f"{key_suffix}_compare_mode",
-                horizontal=True,
-                help="Uses **Market** only for comparison months (not the Month filter above).",
-            )
+
+        st.radio(
+            "Compare scorecard to",
+            options=["mom", "custom"],
+            format_func=_mpo_compare_mode_radio_label,
+            key=f"{key_suffix}_compare_mode",
+            horizontal=True,
+            help="Comparison uses **Market** only (not the Month filter).",
+        )
         _mode_now = str(st.session_state.get(f"{key_suffix}_compare_mode", "mom") or "mom")
 
         if _mode_now == "custom" and _cust:
@@ -3407,18 +3409,18 @@ def _apply_marketing_performance_filters(
                         st.session_state[_wk] = _date_bounds[-1] if _wk == _cur_dt else (
                             _date_bounds[-2] if len(_date_bounds) >= 2 else _date_bounds[-1]
                         )
-                st.caption("Custom range — any day in the month counts.")
+                st.caption("Pick any day in each month — the full calendar month is used.")
                 dca, dcb = st.columns(2, gap="small")
                 with dca:
                     st.date_input(
-                        "Current",
+                        "Current month",
                         min_value=min_d,
                         max_value=max_d,
                         key=_cur_dt,
                     )
                 with dcb:
                     st.date_input(
-                        "Compare",
+                        "Compare to",
                         min_value=min_d,
                         max_value=max_d,
                         key=_ref_dt,
@@ -5490,6 +5492,10 @@ def main() -> None:
         letter-spacing: -0.03em;
         line-height: 1.2;
         font-variant-numeric: tabular-nums;
+    }
+    /* MPO filter panel (single bordered container on this page): tighter vertical rhythm */
+    div[data-testid="stVerticalBlockBorderWrapper"] [data-testid="stVerticalBlock"] {
+        gap: 0.35rem !important;
     }
     /* MPO comparison strip — dual “mini scorecards”, dynamic with filters */
     .mpo-cmp-wrap {
