@@ -658,20 +658,6 @@ _MIDDLE_EAST_MARKET_KEYS: frozenset[str] = frozenset(
         "iraq",
     }
 )
-# Sort order within a month (normalized keys; UAE aliases unified for ordering).
-_ME_MARKET_ORDER: tuple[str, ...] = (
-    "bahrain",
-    "kuwait",
-    "saudi arabia",
-    "united arab emirates",
-    "oman",
-    "qatar",
-    "jordan",
-    "lebanon",
-    "iraq",
-)
-
-
 def _norm_market_key(name: str) -> str:
     return re.sub(r"\s+", " ", str(name).strip().lower())
 
@@ -1114,21 +1100,6 @@ _REGION_SUBTOTAL_NAMES = frozenset(
 _REGION_SUBTOTAL_NAMES_LOWER = frozenset(str(x).strip().lower() for x in _REGION_SUBTOTAL_NAMES)
 # Sheet-level metrics to move from regional aggregate rows onto ME country rows when detail spend is missing.
 _REGIONAL_ROLL_METRICS = frozenset({"spend", "clicks", "impressions"})
-
-
-def _market_row_sort_key_mena(market: str) -> tuple:
-    """Country rows only: Middle East countries in fixed order, then other markets A–Z."""
-    m = str(market).strip()
-    k = _norm_market_key(m)
-    if k == "uae":
-        k = "united arab emirates"
-    if k in _MIDDLE_EAST_MARKET_KEYS:
-        try:
-            pos = _ME_MARKET_ORDER.index(k)
-        except ValueError:
-            pos = 40
-        return (0, f"{pos:02d}", m)
-    return (1, m.lower(), m)
 
 
 def _tab_subset_by_patterns(frame: pd.DataFrame, tab_keywords: list[str]) -> pd.DataFrame:
@@ -3025,7 +2996,7 @@ def _master_view_drop_empty_months(gm: pd.DataFrame) -> pd.DataFrame:
 
 
 def _master_view_append_middle_east_first(gm: pd.DataFrame) -> pd.DataFrame:
-    """Per month: **Middle East** aggregate row first (ME countries only), then country rows."""
+    """Per month: **Middle East** aggregate row first (ME countries only), then markets by spend (high → low)."""
     if gm.empty:
         return gm
     parts: list[pd.DataFrame] = []
@@ -3060,8 +3031,15 @@ def _master_view_append_middle_east_first(gm: pd.DataFrame) -> pd.DataFrame:
 
         if not grp.empty:
             grp = grp.copy()
-            grp["_sk"] = grp["Market"].map(_market_row_sort_key_mena)
-            country_block = grp.sort_values("_sk").drop(columns="_sk")
+            if "spend" in grp.columns:
+                grp["_spend_sort"] = pd.to_numeric(grp["spend"], errors="coerce").fillna(0.0)
+            else:
+                grp["_spend_sort"] = 0.0
+            country_block = grp.sort_values(
+                ["_spend_sort", "Market"],
+                ascending=[False, True],
+                kind="mergesort",
+            ).drop(columns="_spend_sort")
         else:
             country_block = pd.DataFrame(columns=gm.columns)
 
@@ -3257,7 +3235,17 @@ def _apply_marketing_performance_filters(
     c1, c2 = st.columns(2)
 
     with c1:
-        market_opts = sorted([x for x in df_date["country"].dropna().unique().tolist() if x and x != "Unknown"])
+        mk_raw = [x for x in df_date["country"].dropna().unique().tolist() if x and x != "Unknown"]
+        if "cost" in df_date.columns and mk_raw:
+            _tot = (
+                df_date.loc[df_date["country"].isin(mk_raw)]
+                .assign(_co=lambda d: pd.to_numeric(d["cost"], errors="coerce").fillna(0))
+                .groupby("country")["_co"]
+                .sum()
+            )
+            market_opts = sorted(mk_raw, key=lambda c: (-float(_tot.get(c, 0)), str(c).lower()))
+        else:
+            market_opts = sorted(mk_raw)
         selected_markets = st.multiselect(
             "Market",
             ["All Markets"] + market_opts,
