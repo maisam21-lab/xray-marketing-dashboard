@@ -3357,24 +3357,68 @@ def _mpo_comparison_strip_html(
     )
 
 
+_MPO_TIMEFRAME_OPTIONS: tuple[str, ...] = (
+    "ytd",
+    "filt_auto",
+    "filt_mom",
+    "filt_yoy",
+    "filt_custom",
+)
+
+
+def _mpo_timeframe_option_label(tf: str) -> str:
+    """Single-dropdown labels (calendar-style picker)."""
+    return {
+        "ytd": "Year to date · vs same calendar months last year",
+        "filt_auto": "Table months · Auto (YoY if All months, else MoM)",
+        "filt_mom": "Table months · vs previous month",
+        "filt_yoy": "Table months · vs same month last year",
+        "filt_custom": "Table months · Custom (two dates)",
+    }.get(str(tf), str(tf))
+
+
+def _mpo_seed_timeframe_from_legacy_widgets(key_suffix: str) -> None:
+    """First run after upgrade: map old separate widgets onto the combined timeframe key."""
+    _k = f"{key_suffix}_timeframe"
+    if _k in st.session_state:
+        return
+    _b = str(st.session_state.get(f"{key_suffix}_scorecard_basis", "ytd") or "ytd")
+    if _b == "ytd":
+        st.session_state[_k] = "ytd"
+        return
+    _m = str(st.session_state.get(f"{key_suffix}_compare_mode", "auto") or "auto")
+    if _m == "mom":
+        st.session_state[_k] = "filt_mom"
+    elif _m == "yoy":
+        st.session_state[_k] = "filt_yoy"
+    elif _m == "custom":
+        st.session_state[_k] = "filt_custom"
+    else:
+        st.session_state[_k] = "filt_auto"
+
+
+def _mpo_timeframe_split_basis_mode(tf: str) -> tuple[str, str]:
+    """(scorecard_basis, compare_mode) for downstream logic."""
+    t = str(tf)
+    if t == "ytd":
+        return "ytd", "auto"
+    return "filtered", {"filt_auto": "auto", "filt_mom": "mom", "filt_yoy": "yoy", "filt_custom": "custom"}.get(
+        t, "auto"
+    )
+
+
 def _apply_marketing_performance_filters(
     df_date: pd.DataFrame,
     *,
     key_suffix: str,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Performance-tab filters: two short rows + one-line summary."""
-    _basis_labels = {
-        "ytd": "Year to date",
-        "filtered": "Months in the table only",
-    }
-    _basis_help = "Year to date: January through the month you pick below (or the latest month). The table still uses Market + Month."
-    _cmp_labels = {
-        "auto": "Automatic",
-        "mom": "vs previous month",
-        "yoy": "vs same month last year",
-        "custom": "Pick two months…",
-    }
-    _cmp_help = "Only when “Months in the table only” is on. % changes follow this setting; custom uses the two dates below."
+    """Performance-tab filters: one time-frame control, then Market + Month."""
+    _tf_help = (
+        "Chooses how **KPI scorecard** totals and **% vs** are built. "
+        "**Year to date** = January through the month you pick below (or latest). "
+        "**Table months** = only rows in the grid; comparison follows the option you pick. "
+        "Custom shows two calendars. Comparison periods still follow **Market** only, not Month."
+    )
 
     mk_raw = [x for x in df_date["country"].dropna().unique().tolist() if x and x != "Unknown"]
     if "cost" in df_date.columns and mk_raw:
@@ -3389,25 +3433,18 @@ def _apply_marketing_performance_filters(
         market_opts = sorted(mk_raw)
     month_opts = sorted([x for x in df_date["month"].dropna().unique().tolist() if x and x != "NaT"])
 
-    row1a, row1b = st.columns(2, gap="medium")
-    with row1a:
-        st.selectbox(
-            "Scorecard totals",
-            options=["ytd", "filtered"],
-            format_func=lambda k: _basis_labels.get(str(k), str(k)),
-            key=f"{key_suffix}_scorecard_basis",
-            help=_basis_help,
-        )
-    _basis_now = str(st.session_state.get(f"{key_suffix}_scorecard_basis", "ytd") or "ytd")
-    with row1b:
-        if _basis_now != "ytd":
-            st.selectbox(
-                "% change vs",
-                options=["auto", "mom", "yoy", "custom"],
-                format_func=lambda k: _cmp_labels.get(str(k), str(k)),
-                key=f"{key_suffix}_compare_mode",
-                help=_cmp_help,
-            )
+    _mpo_seed_timeframe_from_legacy_widgets(key_suffix)
+    st.selectbox(
+        "📅 Time frame",
+        options=list(_MPO_TIMEFRAME_OPTIONS),
+        format_func=_mpo_timeframe_option_label,
+        key=f"{key_suffix}_timeframe",
+        help=_tf_help,
+    )
+    _tf_sel = str(st.session_state.get(f"{key_suffix}_timeframe", "ytd") or "ytd")
+    _basis_now, _mode_now = _mpo_timeframe_split_basis_mode(_tf_sel)
+    st.session_state[f"{key_suffix}_scorecard_basis"] = _basis_now
+    st.session_state[f"{key_suffix}_compare_mode"] = _mode_now
 
     row2a, row2b = st.columns(2, gap="medium")
     with row2a:
@@ -3427,7 +3464,6 @@ def _apply_marketing_performance_filters(
             help="Which months are in the table. Also sets the last month included in year-to-date.",
         )
 
-    _mode_now = str(st.session_state.get(f"{key_suffix}_compare_mode", "auto") or "auto")
     _cust = sorted(
         [x for x in df_date["month"].dropna().unique().tolist() if x and str(x) != "NaT"],
         key=_mpo_month_ts_for_sort,
