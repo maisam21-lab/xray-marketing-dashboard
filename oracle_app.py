@@ -25,7 +25,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 # Bump when you ship UI/logic changes — shown on Marketing Performance so you know which file Streamlit loaded.
-DASHBOARD_BUILD = "2026-04-07-hide-source-tab-column"
+DASHBOARD_BUILD = "2026-04-07-clicks-impr-month-merge"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 # Optional workbook: set Streamlit secret ``XRAY_SHEET_ID`` to the id or full URL below, then set
@@ -2076,16 +2076,54 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
             ("click",),
             ("ctr", "cpc", "cost", "rate", "conv", "position", "share", "quality", "rank"),
         )
+        if ic is None:
+            ic = _first_best_metric_column_by_keyword(
+                df,
+                ("engagement",),
+                ("rate", "cost", "ctr", "cpc", "conv"),
+            )
         if ic is not None:
             out["clicks"] = _to_number_series(df[ic])
+    else:
+        ic = _first_best_metric_column_by_keyword(
+            df,
+            ("click",),
+            ("ctr", "cpc", "cost", "rate", "conv", "position", "share", "quality", "rank"),
+        )
+        if ic is not None:
+            cand = _to_number_series(df[ic])
+            if float(cand.abs().sum()) > float(pd.to_numeric(out.get("clicks", 0), errors="coerce").fillna(0).abs().sum()) + 1e-6:
+                out["clicks"] = cand
     if _metric_sum_zero("impressions"):
         ii = _first_best_metric_column_by_keyword(
             df,
             ("impr",),
             ("ctr", "cpc", "cost", "rate", "share", "position", "frequency", "quality", "rank"),
         )
+        if ii is None:
+            ii = _first_best_metric_column_by_keyword(
+                df,
+                ("impression",),
+                ("ctr", "cpc", "cost", "rate", "share", "position", "frequency", "quality", "rank", "share_of"),
+            )
         if ii is not None:
             out["impressions"] = _to_number_series(df[ii])
+    else:
+        ii = _first_best_metric_column_by_keyword(
+            df,
+            ("impr",),
+            ("ctr", "cpc", "cost", "rate", "share", "position", "frequency", "quality", "rank"),
+        )
+        if ii is None:
+            ii = _first_best_metric_column_by_keyword(
+                df,
+                ("impression",),
+                ("ctr", "cpc", "cost", "rate", "share", "position", "frequency", "quality", "rank", "share_of"),
+            )
+        if ii is not None:
+            cand_i = _to_number_series(df[ii])
+            if float(cand_i.abs().sum()) > float(pd.to_numeric(out.get("impressions", 0), errors="coerce").fillna(0).abs().sum()) + 1e-6:
+                out["impressions"] = cand_i
 
     for c in _NUM_FIELDS:
         if c in out.columns:
@@ -3990,8 +4028,47 @@ def _mpo_blend_paid_media_for_master_df(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _mpo_allocate_monthly_metrics_by_cost_weight(spend_df: pd.DataFrame, month_totals: pd.DataFrame) -> pd.DataFrame:
+    """Spread pool monthly clicks/impressions onto spend rows by cost share within each month.
+
+    Used when Supermetrics exports have no usable **country** (all ``Unknown``) so month×country merge fails.
+    """
+    if spend_df.empty or month_totals.empty:
+        return spend_df
+    out = spend_df.copy()
+    out["clicks"] = pd.to_numeric(out.get("clicks", 0), errors="coerce").fillna(0)
+    out["impressions"] = pd.to_numeric(out.get("impressions", 0), errors="coerce").fillna(0)
+    mo = out["month"].map(_month_norm_key)
+    for _, row in month_totals.iterrows():
+        mk = _month_norm_key(row.get("month"))
+        if not mk or str(mk).strip().lower() in ("nan", "nat", "none"):
+            continue
+        Tc = float(row.get("clicks", 0) or 0)
+        Ti = float(row.get("impressions", 0) or 0)
+        if Tc < 1e-9 and Ti < 1e-9:
+            continue
+        ix = out.index[mo == mk]
+        if len(ix) == 0:
+            continue
+        if "cost" in out.columns:
+            cost = pd.to_numeric(out.loc[ix, "cost"], errors="coerce").fillna(0)
+        else:
+            cost = pd.Series(1.0, index=ix)
+        total_c = float(cost.sum())
+        if total_c > 1e-9:
+            w = cost / total_c
+        else:
+            w = pd.Series(1.0 / max(len(ix), 1), index=ix)
+        out.loc[ix, "clicks"] = (Tc * w).values
+        out.loc[ix, "impressions"] = (Ti * w).values
+    return out
+
+
 def _mpo_merge_pool_clicks_impressions_onto_spend(spend_master: pd.DataFrame, df_loaded: pd.DataFrame) -> pd.DataFrame:
-    """If the canonical spend tab has no clicks/impressions, roll them up from other paid-media tabs (per month × country)."""
+    """If the canonical spend tab has no clicks/impressions, roll them up from paid-media tabs.
+
+    Tries **month × country** first, then **month-only** allocation by cost weight (Supermetrics / no country).
+    """
     if spend_master.empty:
         return spend_master
     c0 = int(pd.to_numeric(spend_master.get("clicks", 0), errors="coerce").fillna(0).sum())
@@ -4002,24 +4079,42 @@ def _mpo_merge_pool_clicks_impressions_onto_spend(spend_master: pd.DataFrame, df
     if pool.empty:
         return spend_master
     pn = _normalize_master_merge_frame(pool.copy())
-    if pn.empty or "month" not in pn.columns or "country" not in pn.columns:
+    if pn.empty or "month" not in pn.columns:
         return spend_master
-    g = pn.groupby(["month", "country"], as_index=False).agg(
-        clicks=("clicks", "sum"),
-        impressions=("impressions", "sum"),
-    )
+    pool_clicks = float(pd.to_numeric(pn.get("clicks", 0), errors="coerce").fillna(0).sum())
+    pool_impr = float(pd.to_numeric(pn.get("impressions", 0), errors="coerce").fillna(0).sum())
+    if pool_clicks < 1e-9 and pool_impr < 1e-9:
+        return spend_master
+
     out = _normalize_master_merge_frame(spend_master.copy())
     for col in ("clicks", "impressions"):
         if col not in out.columns:
             out[col] = 0
-    out = out.merge(g, on=["month", "country"], how="left", suffixes=("", "_p"))
-    for col in ("clicks", "impressions"):
-        cp = f"{col}_p"
-        if cp in out.columns:
-            base = pd.to_numeric(out[col], errors="coerce").fillna(0)
-            add = pd.to_numeric(out[cp], errors="coerce").fillna(0)
-            out[col] = base + add
-            out = out.drop(columns=[cp], errors="ignore")
+    out["clicks"] = pd.to_numeric(out["clicks"], errors="coerce").fillna(0)
+    out["impressions"] = pd.to_numeric(out["impressions"], errors="coerce").fillna(0)
+
+    merged_ok = False
+    if "country" in pn.columns and "country" in out.columns:
+        g = pn.groupby(["month", "country"], as_index=False).agg(
+            clicks=("clicks", "sum"),
+            impressions=("impressions", "sum"),
+        )
+        out = out.merge(g, on=["month", "country"], how="left", suffixes=("", "_p"))
+        for col in ("clicks", "impressions"):
+            cp = f"{col}_p"
+            if cp in out.columns:
+                out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0) + pd.to_numeric(out[cp], errors="coerce").fillna(0)
+                out = out.drop(columns=[cp], errors="ignore")
+        merged_ok = float(pd.to_numeric(out["clicks"], errors="coerce").fillna(0).sum()) > 1e-6 or float(
+            pd.to_numeric(out["impressions"], errors="coerce").fillna(0).sum()
+        ) > 1e-6
+
+    if not merged_ok:
+        g_m = pn.groupby("month", as_index=False).agg(
+            clicks=("clicks", "sum"),
+            impressions=("impressions", "sum"),
+        )
+        out = _mpo_allocate_monthly_metrics_by_cost_weight(out, g_m)
     return out
 
 
