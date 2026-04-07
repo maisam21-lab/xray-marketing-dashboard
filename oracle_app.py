@@ -4659,18 +4659,167 @@ def _master_view_refresh_middle_east_spend_row(gm: pd.DataFrame) -> pd.DataFrame
     return out
 
 
-def _mpo_master_metric_formula(metric_name: str) -> str:
-    formulas = {
-        "Spend": "Sum of marketing spend in this month and market.",
-        "CW (Inc Approved)": "Count/sum of closed won deals (including approved).",
-        "CPCW": "Spend / CW (Inc Approved).",
-        "1st Month LF": "Sum of first-month license fee values.",
-        "Actual TCV": "Sum of actual TCV values.",
-        "CPCW:LF": "Spend / 1st Month LF.",
-        "Cost/TCV%": "(Spend / Actual TCV) * 100.",
-        "Total Leads": "Count/sum of leads in this month and market.",
+def _mpo_metric_definition(metric_name: str) -> str:
+    """Plain-language definition shown in drill-down (not repeated master cell copy)."""
+    defs = {
+        "Spend": (
+            "Total marketing media cost allocated to this calendar month and market after the sheet is normalized "
+            "(dates → month, country → market). It is the same additive input used for efficiency ratios."
+        ),
+        "CW (Inc Approved)": (
+            "Closed won opportunities (including approved) from the post-qualification pipeline, summed for this "
+            "month × market in the master merge."
+        ),
+        "CPCW": (
+            "Cost per closed won: how much spend was required for each closed won in this slice. "
+            "It is a ratio, not summed across rows in the sheet."
+        ),
+        "1st Month LF": (
+            "Sum of first-month license fee amounts from the RAW CW / deal tab for opportunities in this month and market."
+        ),
+        "Actual TCV": (
+            "Sum of actual total contract value (TCV) from the RAW CW tab for this month and market."
+        ),
+        "CPCW:LF": (
+            "Marketing spend divided by first-month license fee revenue in the same slice — efficiency of spend vs LF."
+        ),
+        "Cost/TCV%": (
+            "Spend as a percentage of actual TCV in the same month and market (spend ÷ TCV × 100)."
+        ),
+        "Total Leads": (
+            "Lead volume for this month and market from the leads sheet / merged lead rows (row-count logic where applicable)."
+        ),
     }
-    return formulas.get(metric_name, "Metric computed from month and market values.")
+    return defs.get(metric_name, "Derived metric for this month and market row in the master view.")
+
+
+def _mpo_calculation_trail(metric_name: str, row: pd.Series) -> list[dict[str, str]]:
+    """Step table: components → how they combine → final metric (same math as the master sheet cell)."""
+    spend = float(pd.to_numeric(row.get("spend", 0), errors="coerce") or 0)
+    cw = int(pd.to_numeric(row.get("cw", 0), errors="coerce") or 0)
+    leads = int(pd.to_numeric(row.get("leads", 0), errors="coerce") or 0)
+    tcv = float(pd.to_numeric(row.get("tcv", 0), errors="coerce") or 0)
+    lf = float(pd.to_numeric(row.get("lf", 0), errors="coerce") or 0)
+
+    def _fmt_money(x: float) -> str:
+        return _format_currency(x) if x and x == x else "—"
+
+    out: list[dict[str, str]] = []
+    if metric_name == "Spend":
+        out = [
+            {
+                "Step": "1",
+                "Component": "Σ marketing cost (month × market in master merge)",
+                "Value": _format_spend_k(spend),
+                "Combines as": "Final cell value (additive)",
+            },
+        ]
+    elif metric_name == "CW (Inc Approved)":
+        out = [
+            {
+                "Step": "1",
+                "Component": "Σ closed won (post-qualification pipeline, month × market)",
+                "Value": f"{cw:,}",
+                "Combines as": "Final cell value (additive)",
+            },
+        ]
+    elif metric_name == "Total Leads":
+        out = [
+            {
+                "Step": "1",
+                "Component": "Σ leads (master merge for this slice)",
+                "Value": f"{leads:,}",
+                "Combines as": "Final cell value (additive)",
+            },
+        ]
+    elif metric_name == "1st Month LF":
+        out = [
+            {
+                "Step": "1",
+                "Component": "Σ first_month_lf (RAW CW, this slice)",
+                "Value": _fmt_money(lf),
+                "Combines as": "Final cell value (additive)",
+            },
+        ]
+    elif metric_name == "Actual TCV":
+        out = [
+            {
+                "Step": "1",
+                "Component": "Σ tcv (RAW CW, this slice)",
+                "Value": _fmt_money(tcv),
+                "Combines as": "Final cell value (additive)",
+            },
+        ]
+    elif metric_name == "CPCW":
+        cpcw = (spend / cw) if cw else float("nan")
+        out = [
+            {"Step": "1", "Component": "Spend (numerator)", "Value": _format_spend_k(spend), "Combines as": "—"},
+            {"Step": "2", "Component": "CW (Inc Approved) (denominator)", "Value": f"{cw:,}", "Combines as": "—"},
+            {
+                "Step": "3",
+                "Component": "CPCW = Spend ÷ CW",
+                "Value": f"${cpcw:,.2f}" if cw and cpcw == cpcw else "—",
+                "Combines as": "Final ratio",
+            },
+        ]
+    elif metric_name == "CPCW:LF":
+        ratio = (spend / lf) if lf else float("nan")
+        out = [
+            {"Step": "1", "Component": "Spend (numerator)", "Value": _format_spend_k(spend), "Combines as": "—"},
+            {"Step": "2", "Component": "1st Month LF (denominator)", "Value": _fmt_money(lf), "Combines as": "—"},
+            {
+                "Step": "3",
+                "Component": "CPCW:LF = Spend ÷ LF",
+                "Value": f"{ratio:,.2f}" if lf and ratio == ratio else "—",
+                "Combines as": "Final ratio",
+            },
+        ]
+    elif metric_name == "Cost/TCV%":
+        pct = (spend / tcv * 100.0) if tcv else float("nan")
+        out = [
+            {"Step": "1", "Component": "Spend", "Value": _format_spend_k(spend), "Combines as": "—"},
+            {"Step": "2", "Component": "Actual TCV", "Value": _fmt_money(tcv), "Combines as": "—"},
+            {
+                "Step": "3",
+                "Component": "Cost/TCV % = (Spend ÷ TCV) × 100",
+                "Value": f"{pct:.2f}%" if tcv and pct == pct else "—",
+                "Combines as": "Final %",
+            },
+        ]
+    else:
+        out = [{"Step": "1", "Component": metric_name, "Value": "—", "Combines as": "See master merge"}]
+    return out
+
+
+def _mpo_metric_source_rows_for_metric(
+    metric_name: str,
+    source_rows: Optional[list[dict[str, str]]],
+) -> list[dict[str, str]]:
+    """Only source lines that feed the selected metric (avoid repeating unrelated pivots)."""
+    if not source_rows:
+        return []
+    m_src = {
+        "Spend": {("Spend worksheet", "Spend"), ("Spend worksheet", "Clicks"), ("Spend worksheet", "Impressions")},
+        "CPCW": {
+            ("Spend worksheet", "Spend"),
+            ("Post qualification", "Closed won"),
+        },
+        "CW (Inc Approved)": {("Post qualification", "Closed won")},
+        "Total Leads": {("Raw leads", "Total leads"), ("Raw leads", "Qualified")},
+        "1st Month LF": {("RAW CW", "1st Month LF")},
+        "Actual TCV": {("RAW CW", "Actual TCV")},
+        "CPCW:LF": {("Spend worksheet", "Spend"), ("RAW CW", "1st Month LF")},
+        "Cost/TCV%": {("Spend worksheet", "Spend"), ("RAW CW", "Actual TCV")},
+    }
+    want = m_src.get(metric_name)
+    if not want:
+        return source_rows
+    out = []
+    for r in source_rows:
+        key = (r.get("source"), r.get("metric"))
+        if key in want:
+            out.append(r)
+    return out if out else source_rows
 
 
 def _mpo_source_pivot_rows(
@@ -4749,38 +4898,31 @@ def _render_mpo_master_metric_detail_card(
     value_text: str,
     source_rows: Optional[list[dict[str, str]]] = None,
 ) -> None:
-    spend = float(pd.to_numeric(row.get("spend", 0), errors="coerce") or 0)
-    cw = int(pd.to_numeric(row.get("cw", 0), errors="coerce") or 0)
-    leads = int(pd.to_numeric(row.get("leads", 0), errors="coerce") or 0)
-    tcv = float(pd.to_numeric(row.get("tcv", 0), errors="coerce") or 0)
-    lf = float(pd.to_numeric(row.get("lf", 0), errors="coerce") or 0)
-    formula = _mpo_master_metric_formula(metric_name)
-    st.markdown(
-        (
-            '<div class="mpo-detail-card">'
-            f'<div class="mpo-detail-title">Calculation Details for {html.escape(market_label)} - {html.escape(month_label)}</div>'
-            f'<div class="mpo-detail-sub">{html.escape(metric_name)}</div>'
-            '<div class="mpo-detail-grid">'
-            f'<div class="mpo-detail-kpi"><div class="mpo-detail-kpi-lbl">Selected metric</div><div class="mpo-detail-kpi-val">{html.escape(value_text)}</div></div>'
-            f'<div class="mpo-detail-kpi"><div class="mpo-detail-kpi-lbl">Marketing Spend</div><div class="mpo-detail-kpi-val">{html.escape(_format_spend_k(spend))}</div></div>'
-            f'<div class="mpo-detail-kpi"><div class="mpo-detail-kpi-lbl">Closed Won</div><div class="mpo-detail-kpi-val">{cw:,}</div></div>'
-            '</div>'
-            '<div class="mpo-detail-table-wrap">'
-            '<table class="mpo-detail-table"><thead><tr>'
-            '<th>Leads</th><th>Actual TCV</th><th>1st Month LF</th>'
-            '</tr></thead>'
-            f'<tbody><tr><td>{leads:,}</td><td>{html.escape(_format_currency(tcv) if tcv else "—")}</td><td>{html.escape(_format_currency(lf) if lf else "—")}</td></tr></tbody></table>'
-            "</div>"
-            f'<div class="mpo-detail-note"><strong>About this calculation</strong><br>{html.escape(formula)}</div>'
-            "</div>"
-        ),
-        unsafe_allow_html=True,
+    st.subheader("Calculation details")
+    st.markdown(f"**{metric_name}** · {market_label} · {month_label}")
+    st.caption(f"Master sheet cell value: {value_text}")
+    st.markdown("##### What this metric means")
+    st.write(_mpo_metric_definition(metric_name))
+    trail = _mpo_calculation_trail(metric_name, row)
+    trail_df = pd.DataFrame(trail)
+    st.markdown("##### Calculation trail (inputs → final value)")
+    st.dataframe(
+        trail_df,
+        use_container_width=True,
+        hide_index=True,
+        key=f"mpo_trail_{metric_name}_{market_label}_{month_label}",
     )
-    if source_rows:
-        src_df = pd.DataFrame(source_rows)
-        src_df = src_df.rename(columns={"source": "Source", "metric": "Metric", "value": "Value"})
-        st.markdown("**Data source pivot (for this month and market)**")
-        st.dataframe(src_df, use_container_width=True, hide_index=True, key=f"mpo_src_pivot_{month_label}_{market_label}_{metric_name}")
+    filtered = _mpo_metric_source_rows_for_metric(metric_name, source_rows)
+    if filtered:
+        src_df = pd.DataFrame(filtered)
+        src_df = src_df.rename(columns={"source": "Source tab / roll-up", "metric": "Field", "value": "Value"})
+        st.markdown("##### Source check (only rows that feed this metric)")
+        st.dataframe(
+            src_df,
+            use_container_width=True,
+            hide_index=True,
+            key=f"mpo_src_metric_{metric_name}_{market_label}_{month_label}",
+        )
 
 
 def _master_performance_table(
@@ -4817,6 +4959,7 @@ def _master_performance_table(
     df = _master_view_impute_month_for_spend_rows(df)
     if section_title:
         st.markdown(f'<div class="looker-table-title">{section_title}</div>', unsafe_allow_html=True)
+    _tbl_col, _quick_col = st.columns([3, 1], gap="small")
     agg: dict[str, tuple[str, str]] = {
         "spend": ("cost", "sum"),
         "cw": ("closed_won", "sum"),
@@ -4975,17 +5118,18 @@ def _master_performance_table(
             subset=[col],
         )
     detail_state = None
-    try:
-        detail_state = st.dataframe(
-            styler,
-            use_container_width=True,
-            hide_index=True,
-            key=f"{key_suffix}_df_master_pivot",
-            on_select="rerun",
-            selection_mode="single-cell",
-        )
-    except TypeError:
-        st.dataframe(styler, use_container_width=True, hide_index=True, key=f"{key_suffix}_df_master_pivot")
+    with _tbl_col:
+        try:
+            detail_state = st.dataframe(
+                styler,
+                use_container_width=True,
+                hide_index=True,
+                key=f"{key_suffix}_df_master_pivot",
+                on_select="rerun",
+                selection_mode="single-cell",
+            )
+        except TypeError:
+            st.dataframe(styler, use_container_width=True, hide_index=True, key=f"{key_suffix}_df_master_pivot")
 
     _detail_base = f"{key_suffix}_master_metric_detail"
     _payload_k = f"{_detail_base}_payload"
@@ -5075,13 +5219,26 @@ def _master_performance_table(
                     "tcv": float(pd.to_numeric(row.get("tcv", 0), errors="coerce") or 0),
                     "lf": float(pd.to_numeric(row.get("lf", 0), errors="coerce") or 0),
                     "source_rows": _mpo_source_pivot_rows(
-                            month_key=month_key,
-                            market_label=market_label,
-                            detail_sources=detail_sources,
-                        ),
+                        month_key=month_key,
+                        market_label=market_label,
+                        detail_sources=detail_sources,
+                    ),
                 }
 
     payload = st.session_state.get(_payload_k)
+    with _quick_col:
+        st.markdown('<div class="mpo-quick-panel">', unsafe_allow_html=True)
+        if isinstance(payload, dict):
+            _mn = str(payload.get("metric_name") or "")
+            st.markdown(f"**{_mn}**")
+            st.caption(f"{payload.get('market_label')} · {payload.get('month_label')}")
+            st.caption(f"Master cell: **{payload.get('value_text')}**")
+            _def = _mpo_metric_definition(_mn)
+            st.caption(_def[:400] + ("…" if len(_def) > 400 else ""))
+        else:
+            st.caption("Click a metric cell. This panel shows a quick definition; the dialog shows the full calculation trail.")
+        st.markdown("</div>", unsafe_allow_html=True)
+
     is_open = bool(st.session_state.get(_open_k)) and isinstance(payload, dict)
     if not is_open:
         return
@@ -6790,6 +6947,14 @@ def main() -> None:
         border-radius: 12px;
         box-shadow: 0 2px 8px rgba(15, 23, 42, 0.05);
         border: 1px solid rgba(15, 23, 42, 0.08);
+    }
+    .mpo-quick-panel {
+        min-height: 140px;
+        padding: 10px 12px;
+        border-radius: 12px;
+        border: 1px solid rgba(15, 23, 42, 0.08);
+        background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+        box-shadow: 0 2px 10px rgba(15, 23, 42, 0.04);
     }
     .mpo-detail-card {
         margin: 12px 0 4px 0;
