@@ -25,7 +25,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 # Bump when you ship UI/logic changes — shown on Marketing Performance so you know which file Streamlit loaded.
-DASHBOARD_BUILD = "2026-04-08-restore-scorecard-compare"
+DASHBOARD_BUILD = "2026-04-08-cmp-strip-no-pills"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 # Optional workbook: set Streamlit secret ``XRAY_SHEET_ID`` to the id or full URL below, then set
@@ -3528,14 +3528,12 @@ def _mpo_comparison_strip_html(
     ref_k: Optional[str],
     kind: str,
 ) -> str:
-    """One compact row: current vs compare month + mode + markets (no large cards or long footer)."""
-    _mscope = _mpo_market_scope_note(key_suffix)
+    """One compact row: current vs compare month only (mode/market pills removed — use Scorecard comparison expander)."""
+    _ = (key_suffix, kind)  # stable API; expander holds MoM/YoY + market scope
 
     if cur_k:
         _ck = html.escape(_month_label_short(cur_k))
-        _sk = str(kind)
         if not ref_k:
-            _pill = '<span class="mpo-cmp-pill mpo-cmp-pill--mom">Month vs month</span>'
             return (
                 '<div class="mpo-cmp-wrap">'
                 '<div class="mpo-cmp-bar mpo-cmp-bar--surface">'
@@ -3543,18 +3541,10 @@ def _mpo_comparison_strip_html(
                 f"<strong>{_ck}</strong>"
                 '<span class="mpo-cmp-vs mpo-cmp-vs--muted">— add data to compare</span>'
                 "</span>"
-                '<span class="mpo-cmp-trail">'
-                f"{_pill}"
-                f'<span class="mpo-cmp-mkt">{_mscope}</span>'
-                "</span>"
                 "</div>"
                 "</div>"
             )
         _rk = html.escape(_month_label_short(ref_k))
-        if _sk == "yoy":
-            _pill = '<span class="mpo-cmp-pill mpo-cmp-pill--yoy">Year vs year</span>'
-        else:
-            _pill = '<span class="mpo-cmp-pill mpo-cmp-pill--mom">Month vs month</span>'
         return (
             '<div class="mpo-cmp-wrap">'
             '<div class="mpo-cmp-bar mpo-cmp-bar--surface">'
@@ -3562,10 +3552,6 @@ def _mpo_comparison_strip_html(
             f"<strong>{_ck}</strong>"
             '<span class="mpo-cmp-vs">vs</span>'
             f"<strong>{_rk}</strong>"
-            "</span>"
-            '<span class="mpo-cmp-trail">'
-            f"{_pill}"
-            f'<span class="mpo-cmp-mkt">{_mscope}</span>'
             "</span>"
             "</div>"
             "</div>"
