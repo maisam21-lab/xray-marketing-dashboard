@@ -3505,23 +3505,25 @@ def _apply_marketing_performance_filters(
             "</div>",
             unsafe_allow_html=True,
         )
-        _c_mk, _c_mo = st.columns(2, gap="small")
+        st.markdown('<div class="mpo-top-toolbar">', unsafe_allow_html=True)
+        _c_mk, _c_div, _c_mo = st.columns([1, 0.03, 1], gap="small")
         with _c_mk:
             st.multiselect(
                 "Markets & countries",
                 [_MPO_ALL_GEO_SENTINEL] + market_opts,
                 default=[_MPO_ALL_GEO_SENTINEL],
                 key=f"{key_suffix}_market",
-                help="Default: **All markets**. Remove it and pick countries to narrow the table and scorecard.",
             )
+        with _c_div:
+            st.markdown('<div class="mpo-toolbar-divider" aria-hidden="true"></div>', unsafe_allow_html=True)
         with _c_mo:
             st.multiselect(
                 "Month",
                 [_MPO_ALL_MONTHS_SENTINEL] + month_opts,
                 default=[_MPO_ALL_MONTHS_SENTINEL],
                 key=f"{key_suffix}_month",
-                help="Default: **All months** in range — headline KPIs **sum** across those months. Narrow to specific months if needed.",
             )
+        st.markdown("</div>", unsafe_allow_html=True)
 
         _mko = _mpo_sorted_month_key_list(month_opts)
         _years = sorted({pd.Period(str(x), freq="M").year for x in _mko}) if _mko else [date.today().year]
@@ -3545,20 +3547,20 @@ def _apply_marketing_performance_filters(
         st.markdown(
             '<div class="mpo-expander-anchor">'
             '<span class="mpo-expander-anchor-line"></span>'
-            '<span class="mpo-expander-anchor-txt">% change vs comparison period</span>'
+            '<span class="mpo-expander-anchor-txt">% change comparison controls</span>'
             '<span class="mpo-expander-anchor-line"></span>'
             "</div>",
             unsafe_allow_html=True,
         )
         try:
-            _cmp_exp = st.expander("Scorecard comparison", expanded=True)
+            _cmp_panel = st.container(border=True)
         except TypeError:
-            _cmp_exp = st.expander("Scorecard comparison")
-        with _cmp_exp:
+            _cmp_panel = st.container()
+        with _cmp_panel:
             st.markdown(
                 '<div class="mpo-cmp-panel-intro">'
-                "Headline numbers use the months you selected above (default: <strong>all months</strong>, summed). "
-                "Below, choose which two periods to use for <strong>% change</strong> on the scorecard."
+                "Headline values stay summed by your scope above. "
+                "Use these controls only for <strong>% change</strong> on the scorecard."
                 "</div>",
                 unsafe_allow_html=True,
             )
@@ -3569,7 +3571,6 @@ def _apply_marketing_performance_filters(
                     options=["mom", "yoy"],
                     format_func=_mpo_scorecard_compare_label,
                     key=f"{key_suffix}_scorecard_compare",
-                    help="Month vs month: pick any two months. Year vs year: same calendar month in two years.",
                 )
             else:
                 st.radio(
@@ -3578,7 +3579,6 @@ def _apply_marketing_performance_filters(
                     format_func=_mpo_scorecard_compare_label,
                     key=f"{key_suffix}_scorecard_compare",
                     horizontal=True,
-                    help="Month vs month: pick any two months. Year vs year: same calendar month in two years.",
                 )
             _cmp_mode = str(st.session_state.get(f"{key_suffix}_scorecard_compare", "mom") or "mom")
             if _mko and _cmp_mode == "mom":
@@ -5808,18 +5808,18 @@ def main() -> None:
         line-height: 1.2;
         font-variant-numeric: tabular-nums;
     }
-    /* MPO filter panel — modern card (single bordered block on MPO) */
+    /* MPO filter panel — executive controls shell */
     div[data-testid="stVerticalBlockBorderWrapper"] {
-        background: linear-gradient(180deg, #ffffff 0%, #fafbfc 100%) !important;
-        border: 1px solid rgba(15, 23, 42, 0.07) !important;
-        border-radius: 16px !important;
+        background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%) !important;
+        border: 1px solid rgba(15, 23, 42, 0.09) !important;
+        border-radius: 14px !important;
         box-shadow:
             0 1px 0 rgba(255, 255, 255, 0.9) inset,
-            0 14px 40px -18px rgba(15, 23, 42, 0.14) !important;
+            0 10px 30px -18px rgba(15, 23, 42, 0.16) !important;
     }
     div[data-testid="stVerticalBlockBorderWrapper"] [data-testid="stVerticalBlock"] {
-        gap: 0.65rem !important;
-        padding: 4px 2px 6px 2px !important;
+        gap: 0.7rem !important;
+        padding: 6px 4px 8px 4px !important;
     }
     div[data-testid="stVerticalBlockBorderWrapper"] label,
     div[data-testid="stVerticalBlockBorderWrapper"] [data-testid="stWidgetLabel"] p {
@@ -5886,13 +5886,13 @@ def main() -> None:
     .mpo-cmp-pill--mom { background: #ecfdf5; color: #0f766e; border: 1px solid #99f6e4; }
     .mpo-cmp-pill--yoy { background: #ede9fe; color: #5b21b6; border: 1px solid #c4b5fd; }
     .mpo-cmp-panel-intro {
-        font-size: 13px;
+        font-size: 12px;
         color: #475569;
         line-height: 1.45;
-        margin: 0 0 12px 0;
-        padding: 10px 12px;
+        margin: 0 0 10px 0;
+        padding: 9px 11px;
         background: #f8fafc;
-        border-radius: 10px;
+        border-radius: 8px;
         border: 1px solid #e2e8f0;
     }
     .mpo-cmp-vs--muted { font-size: 0.75rem; font-weight: 500; color: #94a3b8; text-transform: none; margin-left: 6px; }
@@ -6086,30 +6086,44 @@ def main() -> None:
     .mpo-filter-ribbon {
         display: flex;
         flex-wrap: wrap;
-        align-items: baseline;
+        align-items: center;
         justify-content: space-between;
-        gap: 6px 12px;
-        margin: 0 0 10px 0;
-        padding-bottom: 8px;
-        border-bottom: 1px solid rgba(15, 23, 42, 0.06);
+        gap: 8px 12px;
+        margin: -2px 0 8px 0;
+        padding: 0 0 10px 0;
+        border-bottom: 1px solid rgba(15, 23, 42, 0.07);
     }
     .mpo-filter-ribbon-title {
-        font-size: 11px;
+        font-size: 10px;
         font-weight: 800;
-        letter-spacing: 0.11em;
+        letter-spacing: 0.13em;
         text-transform: uppercase;
         color: #0f766e;
+        padding: 5px 10px;
+        border-radius: 999px;
+        background: #ecfdf5;
+        border: 1px solid #a7f3d0;
     }
     .mpo-filter-ribbon-hint {
-        font-size: 11px;
+        font-size: 10px;
         font-weight: 500;
-        color: #94a3b8;
+        color: #64748b;
+    }
+    .mpo-top-toolbar {
+        margin: 2px 0 2px 0;
+    }
+    .mpo-toolbar-divider {
+        width: 1px;
+        height: 62px;
+        margin: 8px auto 0 auto;
+        background: linear-gradient(180deg, rgba(148, 163, 184, 0.08), rgba(71, 85, 105, 0.35), rgba(148, 163, 184, 0.08));
+        border-radius: 999px;
     }
     .mpo-expander-anchor {
         display: flex;
         align-items: center;
         gap: 12px;
-        margin: 14px 0 8px 0;
+        margin: 10px 0 6px 0;
     }
     .mpo-expander-anchor-line {
         flex: 1 1 auto;
@@ -6118,11 +6132,11 @@ def main() -> None:
     }
     .mpo-expander-anchor-txt {
         flex: 0 0 auto;
-        font-size: 10px;
+        font-size: 9px;
         font-weight: 800;
         letter-spacing: 0.14em;
         text-transform: uppercase;
-        color: #94a3b8;
+        color: #64748b;
     }
     /* MPO filter toolbar — compact bar, same glass feel as funnel scorecards */
     .mpo-toolbar-summary {
@@ -6455,25 +6469,27 @@ def main() -> None:
     /* Multiselect chips — calm teal */
     .stMultiSelect [data-baseweb="select"] [data-baseweb="tag"],
     .stMultiSelect [data-baseweb="tag"] {
-        background: linear-gradient(135deg, #0d9488 0%, #0f766e 100%) !important;
-        color: #ffffff !important;
-        border-color: transparent !important;
-        border-radius: 8px !important;
+        background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%) !important;
+        color: #111827 !important;
+        border: 1px solid #cbd5e1 !important;
+        border-radius: 999px !important;
+        font-weight: 600 !important;
     }
     .stMultiSelect [data-baseweb="select"] [data-baseweb="tag"] *,
     .stMultiSelect [data-baseweb="tag"] * {
-        color: #ffffff !important;
+        color: #111827 !important;
     }
     .stMultiSelect [data-baseweb="select"] [data-baseweb="tag"] [role="button"] svg,
     .stMultiSelect [data-baseweb="tag"] [role="button"] svg {
-        fill: #ffffff !important;
-        color: #ffffff !important;
+        fill: #374151 !important;
+        color: #374151 !important;
     }
     .stMultiSelect [data-baseweb="select"] [data-baseweb="tag"] [role="button"] svg path,
     .stMultiSelect [data-baseweb="tag"] [role="button"] svg path {
-        fill: #ffffff !important;
-        stroke: #ffffff !important;
+        fill: #374151 !important;
+        stroke: #374151 !important;
     }
+    [data-testid="stWidgetLabelHelp"] { display: none !important; }
     .stDataFrame {
         border-radius: 12px;
         box-shadow: 0 2px 8px rgba(15, 23, 42, 0.05);
