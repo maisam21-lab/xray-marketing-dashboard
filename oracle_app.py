@@ -4659,6 +4659,57 @@ def _master_view_refresh_middle_east_spend_row(gm: pd.DataFrame) -> pd.DataFrame
     return out
 
 
+def _mpo_master_metric_formula(metric_name: str) -> str:
+    formulas = {
+        "Spend": "Sum of marketing spend in this month and market.",
+        "CW (Inc Approved)": "Count/sum of closed won deals (including approved).",
+        "CPCW": "Spend / CW (Inc Approved).",
+        "1st Month LF": "Sum of first-month license fee values.",
+        "Actual TCV": "Sum of actual TCV values.",
+        "CPCW:LF": "Spend / 1st Month LF.",
+        "Cost/TCV%": "(Spend / Actual TCV) * 100.",
+        "Total Leads": "Count/sum of leads in this month and market.",
+    }
+    return formulas.get(metric_name, "Metric computed from month and market values.")
+
+
+def _render_mpo_master_metric_detail_card(
+    *,
+    row: pd.Series,
+    metric_name: str,
+    month_label: str,
+    market_label: str,
+    value_text: str,
+) -> None:
+    spend = float(pd.to_numeric(row.get("spend", 0), errors="coerce") or 0)
+    cw = int(pd.to_numeric(row.get("cw", 0), errors="coerce") or 0)
+    leads = int(pd.to_numeric(row.get("leads", 0), errors="coerce") or 0)
+    tcv = float(pd.to_numeric(row.get("tcv", 0), errors="coerce") or 0)
+    lf = float(pd.to_numeric(row.get("lf", 0), errors="coerce") or 0)
+    formula = _mpo_master_metric_formula(metric_name)
+    st.markdown(
+        (
+            '<div class="mpo-detail-card">'
+            f'<div class="mpo-detail-title">Calculation Details for {html.escape(market_label)} - {html.escape(month_label)}</div>'
+            f'<div class="mpo-detail-sub">{html.escape(metric_name)}</div>'
+            '<div class="mpo-detail-grid">'
+            f'<div class="mpo-detail-kpi"><div class="mpo-detail-kpi-lbl">Selected metric</div><div class="mpo-detail-kpi-val">{html.escape(value_text)}</div></div>'
+            f'<div class="mpo-detail-kpi"><div class="mpo-detail-kpi-lbl">Marketing Spend</div><div class="mpo-detail-kpi-val">{html.escape(_format_spend_k(spend))}</div></div>'
+            f'<div class="mpo-detail-kpi"><div class="mpo-detail-kpi-lbl">Closed Won</div><div class="mpo-detail-kpi-val">{cw:,}</div></div>'
+            '</div>'
+            '<div class="mpo-detail-table-wrap">'
+            '<table class="mpo-detail-table"><thead><tr>'
+            '<th>Leads</th><th>Actual TCV</th><th>1st Month LF</th>'
+            '</tr></thead>'
+            f'<tbody><tr><td>{leads:,}</td><td>{html.escape(_format_currency(tcv) if tcv else "—")}</td><td>{html.escape(_format_currency(lf) if lf else "—")}</td></tr></tbody></table>'
+            "</div>"
+            f'<div class="mpo-detail-note"><strong>About this calculation</strong><br>{html.escape(formula)}</div>'
+            "</div>"
+        ),
+        unsafe_allow_html=True,
+    )
+
+
 def _master_performance_table(
     df: pd.DataFrame,
     *,
@@ -4849,7 +4900,49 @@ def _master_performance_table(
             axis=0,
             subset=[col],
         )
-    st.dataframe(styler, use_container_width=True, hide_index=True, key=f"{key_suffix}_df_master_pivot")
+    detail_state = None
+    try:
+        detail_state = st.dataframe(
+            styler,
+            use_container_width=True,
+            hide_index=True,
+            key=f"{key_suffix}_df_master_pivot",
+            on_select="rerun",
+            selection_mode="single-cell",
+        )
+    except TypeError:
+        st.dataframe(styler, use_container_width=True, hide_index=True, key=f"{key_suffix}_df_master_pivot")
+
+    if detail_state is None:
+        return
+    sel = getattr(detail_state, "selection", None)
+    if not sel:
+        return
+    rows = list(getattr(sel, "rows", []) or [])
+    cols = list(getattr(sel, "columns", []) or [])
+    if not rows or not cols:
+        return
+    rix = int(rows[0])
+    col_name = str(cols[0])
+    if rix < 0 or rix >= len(gm):
+        return
+    if col_name not in metrics:
+        return
+    row = gm.reset_index(drop=True).iloc[rix]
+    month_label = _month_label_short(row.get("month")) or str(row.get("month") or "Selected period")
+    market_label = str(row.get("Market") or "Selected market")
+    value_fn = fmt_map.get(col_name, lambda x: str(x))
+    try:
+        value_text = str(value_fn(row.get(col_name)))
+    except Exception:
+        value_text = str(row.get(col_name))
+    _render_mpo_master_metric_detail_card(
+        row=row,
+        metric_name=col_name,
+        month_label=month_label,
+        market_label=market_label,
+        value_text=value_text,
+    )
 
 
 def render_page_marketing_performance(
@@ -6509,6 +6602,86 @@ def main() -> None:
         border-radius: 12px;
         box-shadow: 0 2px 8px rgba(15, 23, 42, 0.05);
         border: 1px solid rgba(15, 23, 42, 0.08);
+    }
+    .mpo-detail-card {
+        margin: 12px 0 4px 0;
+        border: 1px solid #e2e8f0;
+        border-radius: 12px;
+        background: #ffffff;
+        box-shadow: 0 6px 18px rgba(15, 23, 42, 0.06);
+        padding: 14px;
+    }
+    .mpo-detail-title {
+        font-size: 1.02rem;
+        font-weight: 800;
+        letter-spacing: -0.02em;
+        color: #0f172a;
+        margin: 0 0 2px 0;
+    }
+    .mpo-detail-sub {
+        font-size: 12px;
+        font-weight: 600;
+        color: #64748b;
+        margin: 0 0 10px 0;
+    }
+    .mpo-detail-grid {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+        margin-bottom: 10px;
+    }
+    .mpo-detail-kpi {
+        background: linear-gradient(145deg, #f8fafc 0%, #f1f5f9 100%);
+        border: 1px solid #e2e8f0;
+        border-radius: 10px;
+        padding: 9px 10px;
+    }
+    .mpo-detail-kpi-lbl {
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        color: #64748b;
+    }
+    .mpo-detail-kpi-val {
+        margin-top: 4px;
+        font-size: 1.12rem;
+        font-weight: 800;
+        color: #0f172a;
+        font-variant-numeric: tabular-nums;
+    }
+    .mpo-detail-table-wrap {
+        border: 1px solid #e2e8f0;
+        border-radius: 10px;
+        overflow: hidden;
+        margin-bottom: 10px;
+    }
+    .mpo-detail-table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 12px;
+    }
+    .mpo-detail-table th, .mpo-detail-table td {
+        padding: 8px 10px;
+        border-bottom: 1px solid #f1f5f9;
+        text-align: left;
+    }
+    .mpo-detail-table thead th {
+        background: #f8fafc;
+        color: #334155;
+        font-weight: 700;
+    }
+    .mpo-detail-note {
+        font-size: 12px;
+        line-height: 1.5;
+        color: #92400e;
+        background: #fffbeb;
+        border: 1px solid #fde68a;
+        border-radius: 10px;
+        padding: 10px 11px;
+    }
+    @media (max-width: 780px) {
+        .mpo-detail-grid { grid-template-columns: 1fr; }
     }
     [data-testid="stMetricValue"] { color: #1E293B !important; }
     [data-testid="stMetricLabel"] { color: #64748B !important; }
