@@ -4673,6 +4673,73 @@ def _mpo_master_metric_formula(metric_name: str) -> str:
     return formulas.get(metric_name, "Metric computed from month and market values.")
 
 
+def _mpo_source_pivot_rows(
+    *,
+    month_key: str,
+    market_label: str,
+    detail_sources: Optional[dict[str, pd.DataFrame]],
+) -> list[dict[str, str]]:
+    if not detail_sources:
+        return []
+
+    def _slice(df: Optional[pd.DataFrame]) -> pd.DataFrame:
+        if df is None or df.empty:
+            return pd.DataFrame()
+        x = _normalize_master_merge_frame(df.copy())
+        if "month" not in x.columns or "country" not in x.columns:
+            return pd.DataFrame()
+        x["_mk"] = x["month"].map(_month_norm_key)
+        x["_ml"] = x["country"].map(_market_display_from_join_key).astype(str).str.strip()
+        m = x["_mk"].eq(month_key) & x["_ml"].eq(str(market_label).strip())
+        return x.loc[m].copy()
+
+    rows: list[dict[str, str]] = []
+
+    sp = _slice(detail_sources.get("spend"))
+    if not sp.empty:
+        spend = float(pd.to_numeric(sp.get("cost", 0), errors="coerce").fillna(0).sum())
+        clicks = int(pd.to_numeric(sp.get("clicks", 0), errors="coerce").fillna(0).sum())
+        impr = int(pd.to_numeric(sp.get("impressions", 0), errors="coerce").fillna(0).sum())
+        rows += [
+            {"source": "Spend worksheet", "metric": "Spend", "value": _format_spend_k(spend)},
+            {"source": "Spend worksheet", "metric": "Clicks", "value": f"{clicks:,}"},
+            {"source": "Spend worksheet", "metric": "Impressions", "value": f"{impr:,}"},
+        ]
+
+    ld = _slice(detail_sources.get("leads"))
+    if not ld.empty:
+        leads_n = _lead_rows_count(ld)
+        qual_n = _qualified_count_from_leads(ld)
+        rows += [
+            {"source": "Raw leads", "metric": "Total leads", "value": f"{int(leads_n):,}"},
+            {"source": "Raw leads", "metric": "Qualified", "value": f"{int(qual_n):,}"},
+        ]
+
+    pq = _slice(detail_sources.get("post"))
+    if not pq.empty:
+        cw = int(pd.to_numeric(pq.get("closed_won", 0), errors="coerce").fillna(0).sum())
+        pitching = int(pd.to_numeric(pq.get("pitching", 0), errors="coerce").fillna(0).sum())
+        negotiation = int(pd.to_numeric(pq.get("negotiation", 0), errors="coerce").fillna(0).sum())
+        commitment = int(pd.to_numeric(pq.get("commitment", 0), errors="coerce").fillna(0).sum())
+        rows += [
+            {"source": "Post qualification", "metric": "Closed won", "value": f"{cw:,}"},
+            {"source": "Post qualification", "metric": "Pitching", "value": f"{pitching:,}"},
+            {"source": "Post qualification", "metric": "Negotiation", "value": f"{negotiation:,}"},
+            {"source": "Post qualification", "metric": "Commitment", "value": f"{commitment:,}"},
+        ]
+
+    cwf = _slice(detail_sources.get("cw"))
+    if not cwf.empty:
+        tcv = float(pd.to_numeric(cwf.get("tcv", 0), errors="coerce").fillna(0).sum())
+        lf = float(pd.to_numeric(cwf.get("first_month_lf", 0), errors="coerce").fillna(0).sum())
+        rows += [
+            {"source": "RAW CW", "metric": "Actual TCV", "value": _format_currency(tcv) if tcv else "—"},
+            {"source": "RAW CW", "metric": "1st Month LF", "value": _format_currency(lf) if lf else "—"},
+        ]
+
+    return rows
+
+
 def _render_mpo_master_metric_detail_card(
     *,
     row: pd.Series,
@@ -4680,6 +4747,7 @@ def _render_mpo_master_metric_detail_card(
     month_label: str,
     market_label: str,
     value_text: str,
+    source_rows: Optional[list[dict[str, str]]] = None,
 ) -> None:
     spend = float(pd.to_numeric(row.get("spend", 0), errors="coerce") or 0)
     cw = int(pd.to_numeric(row.get("cw", 0), errors="coerce") or 0)
@@ -4708,6 +4776,11 @@ def _render_mpo_master_metric_detail_card(
         ),
         unsafe_allow_html=True,
     )
+    if source_rows:
+        src_df = pd.DataFrame(source_rows)
+        src_df = src_df.rename(columns={"source": "Source", "metric": "Metric", "value": "Value"})
+        st.markdown("**Data source pivot (for this month and market)**")
+        st.dataframe(src_df, use_container_width=True, hide_index=True, key=f"mpo_src_pivot_{month_label}_{market_label}_{metric_name}")
 
 
 def _master_performance_table(
@@ -4716,6 +4789,7 @@ def _master_performance_table(
     key_suffix: str,
     section_title: Optional[str] = "Marketing Performance Master View",
     spend_grid: Optional[pd.DataFrame] = None,
+    detail_sources: Optional[dict[str, pd.DataFrame]] = None,
 ) -> None:
     """Month column (label on first row per month only), Middle East subtotal, cyan input metrics, R/G/Y."""
     df = _normalize_master_merge_frame(df)
@@ -4987,6 +5061,7 @@ def _master_performance_table(
                 value_text = str(row.get(col_name))
             sig = f"{month_label}|{market_label}|{col_name}|{rix}"
             if st.session_state.get(_last_sig_k) != sig:
+                month_key = _month_norm_key(row.get("month")) or ""
                 st.session_state[_last_sig_k] = sig
                 st.session_state[_open_k] = True
                 st.session_state[_payload_k] = {
@@ -4999,6 +5074,11 @@ def _master_performance_table(
                     "leads": int(pd.to_numeric(row.get("leads", 0), errors="coerce") or 0),
                     "tcv": float(pd.to_numeric(row.get("tcv", 0), errors="coerce") or 0),
                     "lf": float(pd.to_numeric(row.get("lf", 0), errors="coerce") or 0),
+                    "source_rows": _mpo_source_pivot_rows(
+                            month_key=month_key,
+                            market_label=market_label,
+                            detail_sources=detail_sources,
+                        ),
                 }
 
     payload = st.session_state.get(_payload_k)
@@ -5025,6 +5105,7 @@ def _master_performance_table(
                 month_label=str(payload.get("month_label") or "Selected period"),
                 market_label=str(payload.get("market_label") or "Selected market"),
                 value_text=str(payload.get("value_text") or "—"),
+                source_rows=payload.get("source_rows"),
             )
             if st.button("Close", key=f"{_detail_base}_dlg_close"):
                 st.session_state[_open_k] = False
@@ -5038,6 +5119,7 @@ def _master_performance_table(
             month_label=str(payload.get("month_label") or "Selected period"),
             market_label=str(payload.get("market_label") or "Selected market"),
             value_text=str(payload.get("value_text") or "—"),
+            source_rows=payload.get("source_rows"),
         )
 
 
@@ -5513,7 +5595,17 @@ def render_page_marketing_performance(
         prior=_kpi_prior,
     )
 
-    _master_performance_table(master_df, key_suffix=key_suffix, spend_grid=_spend_for_master_ui)
+    _master_performance_table(
+        master_df,
+        key_suffix=key_suffix,
+        spend_grid=_spend_for_master_ui,
+        detail_sources={
+            "spend": spend_sheet_master,
+            "leads": leads_df,
+            "post": post_df_kpi,
+            "cw": cw_kpi,
+        },
+    )
 
     _render_mpo_trend_charts(
         start_date=start_date,
