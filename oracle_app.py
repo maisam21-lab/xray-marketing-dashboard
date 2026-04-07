@@ -25,7 +25,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 # Bump when you ship UI/logic changes — shown on Marketing Performance so you know which file Streamlit loaded.
-DASHBOARD_BUILD = "2026-04-07-paid-media-labels-metrics"
+DASHBOARD_BUILD = "2026-04-07-hide-source-tab-column"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 # Optional workbook: set Streamlit secret ``XRAY_SHEET_ID`` to the id or full URL below, then set
@@ -4038,7 +4038,6 @@ def _mpo_render_paid_media_by_platform_summary(df_loaded: pd.DataFrame, *, key_s
         cpc = (sp / cl) if cl else None
         rows.append(
             {
-                "Tab": str(tab),
                 "Platform": plat,
                 "Spend": sp,
                 "Impressions": im,
@@ -5214,7 +5213,6 @@ def _mpo_spend_records_display_table(
         "utm_source",
         "clicks",
         "impressions",
-        "source_tab",
     ]
     cols = [c for c in pref if c in d.columns]
     if not cols:
@@ -5285,6 +5283,7 @@ def _mpo_dataframe_for_export(df: Optional[pd.DataFrame]) -> pd.DataFrame:
     out = df.copy()
     drop = [c for c in out.columns if str(c).startswith("_")]
     out = out.drop(columns=[c for c in drop if c in out.columns], errors="ignore")
+    out = out.drop(columns=[c for c in ("source_tab",) if c in out.columns], errors="ignore")
     return out
 
 
@@ -5365,7 +5364,7 @@ def _mpo_build_spend_drilldown_table(sp: pd.DataFrame) -> pd.DataFrame:
     sp = sp.copy()
     sp["_cost"] = pd.to_numeric(sp["cost"], errors="coerce").fillna(0.0)
     group_col: Optional[str] = None
-    for c in ("campaign_name", "campaign", "utm_campaign", "channel", "utm_source", "source_tab"):
+    for c in ("campaign_name", "campaign", "utm_campaign", "channel", "utm_source", "platform"):
         if c in sp.columns and sp[c].notna().any():
             group_col = c
             break
