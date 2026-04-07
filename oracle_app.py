@@ -3495,6 +3495,7 @@ def _apply_marketing_performance_filters(
     _mpo_normalize_month_multiselect_state(key_suffix)
     _mpo_filter_panel = st.container()
     with _mpo_filter_panel:
+        st.markdown('<div class="mpo-data-surface">', unsafe_allow_html=True)
         st.markdown(
             '<div class="mpo-filter-ribbon">'
             '<span class="mpo-filter-ribbon-title">Data scope</span>'
@@ -3615,6 +3616,7 @@ def _apply_marketing_performance_filters(
                         format_func=lambda m: pd.Timestamp(2020, int(m), 1).strftime("%B"),
                         key=_k_ym,
                     )
+        st.markdown("</div>", unsafe_allow_html=True)
 
     selected_markets = st.session_state.get(f"{key_suffix}_market", [_MPO_ALL_GEO_SENTINEL])
     selected_months = st.session_state.get(f"{key_suffix}_month", [_MPO_ALL_MONTHS_SENTINEL])
@@ -6089,6 +6091,17 @@ def main() -> None:
         margin: -2px 0 8px 0;
         padding: 0 0 10px 0;
         border-bottom: 1px solid rgba(15, 23, 42, 0.07);
+    }
+    .mpo-data-surface {
+        margin: 0 0 8px 0;
+        padding: 12px 12px 10px;
+        border-radius: 14px;
+        background:
+            radial-gradient(circle at 86% 16%, rgba(13, 148, 136, 0.1) 0%, rgba(13, 148, 136, 0.0) 42%),
+            linear-gradient(145deg, rgba(255, 255, 255, 0.96) 0%, rgba(240, 253, 250, 0.58) 45%, rgba(248, 250, 252, 0.96) 100%);
+        box-shadow:
+            0 1px 0 rgba(255, 255, 255, 0.9) inset,
+            0 8px 24px -18px rgba(15, 23, 42, 0.2);
     }
     .streamlit-expanderHeader {
         border-radius: 10px !important;
