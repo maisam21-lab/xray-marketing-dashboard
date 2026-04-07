@@ -3493,10 +3493,7 @@ def _apply_marketing_performance_filters(
     _mpo_ensure_scorecard_compare_session(key_suffix)
     _mpo_normalize_market_multiselect_state(key_suffix)
     _mpo_normalize_month_multiselect_state(key_suffix)
-    try:
-        _mpo_filter_panel = st.container(border=True)
-    except TypeError:
-        _mpo_filter_panel = st.container()
+    _mpo_filter_panel = st.container()
     with _mpo_filter_panel:
         st.markdown(
             '<div class="mpo-filter-ribbon">'
@@ -3553,9 +3550,9 @@ def _apply_marketing_performance_filters(
             unsafe_allow_html=True,
         )
         try:
-            _cmp_panel = st.container(border=True)
+            _cmp_panel = st.expander("Scorecard comparison", expanded=False)
         except TypeError:
-            _cmp_panel = st.container()
+            _cmp_panel = st.expander("Scorecard comparison")
         with _cmp_panel:
             st.markdown(
                 '<div class="mpo-cmp-panel-intro">'
@@ -6093,6 +6090,17 @@ def main() -> None:
         padding: 0 0 10px 0;
         border-bottom: 1px solid rgba(15, 23, 42, 0.07);
     }
+    .streamlit-expanderHeader {
+        border-radius: 10px !important;
+        border-left: 3px solid #4f8483 !important;
+        background: #f8fafc !important;
+    }
+    [data-testid="stExpanderDetails"] {
+        border: 1px solid rgba(15, 23, 42, 0.08);
+        border-radius: 10px;
+        background: rgba(255, 255, 255, 0.82);
+        padding: 10px 10px 6px 10px;
+    }
     .mpo-filter-ribbon-title {
         font-size: 10px;
         font-weight: 800;
@@ -6114,7 +6122,7 @@ def main() -> None:
     }
     .mpo-toolbar-divider {
         width: 1px;
-        height: 62px;
+        height: 58px;
         margin: 8px auto 0 auto;
         background: linear-gradient(180deg, rgba(148, 163, 184, 0.08), rgba(71, 85, 105, 0.35), rgba(148, 163, 184, 0.08));
         border-radius: 999px;
