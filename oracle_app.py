@@ -25,7 +25,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 # Bump when you ship UI/logic changes — shown in the hero so you know which code the app loaded.
-DASHBOARD_BUILD = "2026-04-07-xray-spend-supermetrics-ci"
+DASHBOARD_BUILD = "2026-04-08-no-row-export-dialog-footer"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 # Optional workbook: set Streamlit secret ``XRAY_SHEET_ID`` to the id or full URL below, then set
@@ -5414,75 +5414,6 @@ def _mpo_iter_spend_record_tables_by_country(
     return sections
 
 
-def _mpo_dataframe_for_export(df: Optional[pd.DataFrame]) -> pd.DataFrame:
-    """Drop internal join columns; safe for CSV / preview."""
-    if df is None or df.empty:
-        return pd.DataFrame()
-    out = df.copy()
-    drop = [c for c in out.columns if str(c).startswith("_")]
-    out = out.drop(columns=[c for c in drop if c in out.columns], errors="ignore")
-    out = out.drop(columns=[c for c in ("source_tab",) if c in out.columns], errors="ignore")
-    return out
-
-
-def _mpo_df_to_csv_bytes(df: pd.DataFrame) -> bytes:
-    buf = io.BytesIO()
-    _mpo_dataframe_for_export(df).to_csv(buf, index=False, encoding="utf-8-sig")
-    return buf.getvalue()
-
-
-def _mpo_render_row_level_data_exports(
-    *,
-    key_suffix: str,
-    start_date: date,
-    end_date: date,
-    spend_rows: pd.DataFrame,
-    leads_rows: pd.DataFrame,
-    post_rows: pd.DataFrame,
-    cw_rows: pd.DataFrame,
-) -> None:
-    """Preview + CSV download for line-level spend, leads, pipeline, RAW CW (Marketing Performance scope)."""
-    with st.expander("Row-level source data (preview & CSV)", expanded=False):
-        st.caption(
-            "Line-level workbook rows behind the KPIs: **Spend** uses the dashboard + date filters; "
-            "**Leads**, **Post qualification**, and **RAW CW** match the same sources as the master view."
-        )
-        ds = start_date.isoformat()
-        de = end_date.isoformat()
-
-        def _block(title: str, df: pd.DataFrame, file_prefix: str, kid: str) -> None:
-            st.markdown(f"##### {title}")
-            if df is None or df.empty:
-                st.caption("0 rows")
-                st.info("No rows in the current scope.")
-                return
-            ex = _mpo_dataframe_for_export(df)
-            st.caption(f"{len(ex):,} rows · {len(ex.columns)} columns (preview up to 500 rows)")
-            b1, b2 = st.columns([1, 2])
-            with b1:
-                st.download_button(
-                    label="Download CSV",
-                    data=_mpo_df_to_csv_bytes(df),
-                    file_name=f"{file_prefix}_{ds}_{de}.csv",
-                    mime="text/csv",
-                    key=f"{key_suffix}_dl_{kid}",
-                )
-            with b2:
-                st.caption("Opens in Excel with UTF-8.")
-            st.dataframe(
-                ex.head(500),
-                use_container_width=True,
-                hide_index=True,
-                height=280,
-                key=f"{key_suffix}_prev_{kid}",
-            )
-
-        _block("Spend (media cost rows)", spend_rows, "marketing_spend_rows", "spend")
-        _block("Leads", leads_rows, "marketing_leads_rows", "leads")
-        _block("Post qualification (pipeline)", post_rows, "marketing_post_qual_rows", "post")
-        _block("RAW CW (TCV / LF)", cw_rows, "marketing_raw_cw_rows", "cw")
-
-
 def _mpo_month_period_range_caption(month_key: str) -> str:
     try:
         p = pd.Period(str(month_key), freq="M")
@@ -6073,7 +6004,16 @@ def _master_performance_table(
     )
     _dialog = getattr(st, "dialog", None)
     if callable(_dialog):
-        @_dialog("Details", width="large")
+
+        def _dismiss_master_metric_dialog() -> None:
+            st.session_state[_open_k] = False
+
+        try:
+            _dialog_decorator = _dialog("Details", width="large", on_dismiss=_dismiss_master_metric_dialog)
+        except TypeError:
+            _dialog_decorator = _dialog("Details", width="large")
+
+        @_dialog_decorator
         def _show_master_metric_dialog() -> None:
             _render_mpo_master_metric_detail_card(
                 row=payload_row,
@@ -6087,18 +6027,6 @@ def _master_performance_table(
                 impr=int(payload.get("impr") or 0),
                 clk=int(payload.get("clk") or 0),
             )
-            st.markdown('<div class="mpo-dialog-close-row">', unsafe_allow_html=True)
-            _dc1, _dc2 = st.columns([1, 1])
-            with _dc2:
-                if st.button(
-                    "Close",
-                    key=f"{_detail_base}_dlg_close",
-                    type="primary",
-                    use_container_width=True,
-                ):
-                    st.session_state[_open_k] = False
-                    st.rerun()
-            st.markdown("</div>", unsafe_allow_html=True)
 
         _show_master_metric_dialog()
     else:
@@ -6621,16 +6549,6 @@ def render_page_marketing_performance(
             "post": post_df_kpi,
             "cw": cw_kpi,
         },
-    )
-
-    _mpo_render_row_level_data_exports(
-        key_suffix=key_suffix,
-        start_date=start_date,
-        end_date=end_date,
-        spend_rows=spend_df,
-        leads_rows=leads_df,
-        post_rows=post_df_kpi,
-        cw_rows=cw_kpi,
     )
 
     _render_mpo_trend_charts(
@@ -7906,41 +7824,7 @@ def main() -> None:
         color: #0f172a;
         font-variant-numeric: tabular-nums;
     }
-    /* Footer Close: wide column + nowrap so label is never forced into a tiny circle. */
-    [data-testid="stDialog"] .mpo-dialog-close-row {
-        width: 100%;
-    }
-    [data-testid="stDialog"] .mpo-dialog-close-row [data-testid="column"]:last-child [data-testid="stButton"] {
-        width: 100% !important;
-        max-width: 100% !important;
-        min-width: 0 !important;
-    }
-    [data-testid="stDialog"] .mpo-dialog-close-row [data-testid="stButton"],
-    [data-testid="stDialog"] .mpo-dialog-close-row [data-testid="stButton"] > div,
-    [data-testid="stDialog"] .mpo-dialog-close-row [data-baseweb="button"],
-    [data-testid="stDialog"] .mpo-dialog-close-row button {
-        border-radius: 8px !important;
-        min-height: 44px !important;
-        width: 100% !important;
-        max-width: 100% !important;
-        padding-left: 16px !important;
-        padding-right: 16px !important;
-        font-size: 15px !important;
-        font-weight: 600 !important;
-        letter-spacing: 0.02em !important;
-        white-space: nowrap !important;
-        line-height: 1.25 !important;
-        overflow: visible !important;
-    }
-    [data-testid="stDialog"] .mpo-dialog-close-row button p,
-    [data-testid="stDialog"] .mpo-dialog-close-row button span,
-    [data-testid="stDialog"] .mpo-dialog-close-row [data-baseweb="button"] p,
-    [data-testid="stDialog"] .mpo-dialog-close-row [data-baseweb="button"] span {
-        white-space: nowrap !important;
-        overflow: visible !important;
-        text-overflow: clip !important;
-    }
-    /* Dialog chrome dismiss (X) — header only, not footer primary "Close" (same aria-label). */
+    /* Dialog header dismiss (X) */
     [data-testid="stDialog"] [data-testid="stHeader"] button[aria-label="Close"],
     [data-testid="stDialog"] [data-testid="stHeader"] button {
         min-width: 44px !important;
