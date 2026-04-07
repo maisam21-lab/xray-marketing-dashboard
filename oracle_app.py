@@ -25,7 +25,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 # Bump when you ship UI/logic changes — shown on Marketing Performance so you know which file Streamlit loaded.
-DASHBOARD_BUILD = "2026-04-07-clicks-impr-month-merge"
+DASHBOARD_BUILD = "2026-04-07-default-supermetrics-sheet"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 # Optional workbook: set Streamlit secret ``XRAY_SHEET_ID`` to the id or full URL below, then set
@@ -33,10 +33,11 @@ DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 # ``gid`` from the URL when that tab is open (example tab gid=279936880):
 # https://docs.google.com/spreadsheets/d/1tcjVk7UD-4LG3DG-73ELTNCfzD2XnwnEYqdS8NoH71I/edit?gid=279936880
 #
-# Optional **second** workbook (e.g. Supermetrics: "Kitchen park | Supermetrics Connector"): set
-# ``PAID_MEDIA_SHEET_ID`` (or ``SUPERMETRICS_SHEET_ID`` / ``XRAY_ADS_SHEET_ID``) to that spreadsheet’s
-# id or full URL. Its tabs are stacked after the primary workbook so Google/Meta/Snapchat/LinkedIn Ads Data
-# sheets blend with ME X-Ray CRM tabs without replacing ``XRAY_SHEET_ID``.
+# **Paid media (clicks / impressions / per-platform Ads Data tabs)** defaults to this Supermetrics workbook
+# (Kitchen Park connector). It is stacked after the primary ME X-Ray workbook. Override with
+# ``PAID_MEDIA_SHEET_ID`` / ``SUPERMETRICS_SHEET_ID`` / ``XRAY_ADS_SHEET_ID``, or set ``PAID_MEDIA_SHEET_ID``
+# to ``none`` to disable the second load. ``DISABLE_PAID_MEDIA_SECOND_WORKBOOK=1`` also disables it.
+DEFAULT_PAID_MEDIA_SHEET_ID = "1tcjVk7UD-4LG3DG-73ELTNCfzD2XnwnEYqdS8NoH71I"
 DEFAULT_SOURCE_TRUTH_GID = 8109573
 DEFAULT_LEADS_WORKSHEET_GID = 743065354
 # Default empty on Streamlit Cloud; set `XRAY_EXCEL_PATH` in secrets or `XRAY_EXCEL_PATH_DEFAULT` locally.
@@ -72,12 +73,26 @@ def _workbook_id_resolution() -> tuple[str, str]:
     return DEFAULT_SHEET_ID, "DEFAULT_SHEET_ID in code (ME X-Ray workbook)"
 
 
-def _optional_paid_media_sheet_id_from_secrets() -> str:
-    """Second spreadsheet: per-platform paid media / Supermetrics exports (optional).
+def _paid_media_sheet_id_value_disables_second_workbook(v: str) -> bool:
+    return (v or "").strip().lower() in ("none", "false", "0", "-", "off", "disable", "disabled")
 
-    Accepts id or full URL from Streamlit secrets or env:
-    ``PAID_MEDIA_SHEET_ID``, ``SUPERMETRICS_SHEET_ID``, ``XRAY_ADS_SHEET_ID`` (and lowercase variants).
+
+def _optional_paid_media_sheet_id_from_secrets() -> str:
+    """Second spreadsheet: per-platform paid media / Supermetrics (clicks, impressions, Ads Data tabs).
+
+    Defaults to ``DEFAULT_PAID_MEDIA_SHEET_ID`` so ME X-Ray primary + Supermetrics connector merge without
+    extra config. Secrets/env override: ``PAID_MEDIA_SHEET_ID``, ``SUPERMETRICS_SHEET_ID``, ``XRAY_ADS_SHEET_ID``.
+    Set ``PAID_MEDIA_SHEET_ID`` to ``none`` (or env ``DISABLE_PAID_MEDIA_SECOND_WORKBOOK=1``) to disable.
     """
+    try:
+        d = (st.secrets.get("DISABLE_PAID_MEDIA_SECOND_WORKBOOK") or "").strip().lower()
+        if d in ("1", "true", "yes", "on"):
+            return ""
+    except Exception:
+        pass
+    if (os.environ.get("DISABLE_PAID_MEDIA_SECOND_WORKBOOK") or "").strip().lower() in ("1", "true", "yes", "on"):
+        return ""
+
     keys = (
         "PAID_MEDIA_SHEET_ID",
         "paid_media_sheet_id",
@@ -90,15 +105,21 @@ def _optional_paid_media_sheet_id_from_secrets() -> str:
         s = st.secrets
         for k in keys:
             v = (s.get(k) or "").strip()
-            if v:
-                return _extract_sheet_id(v)
+            if not v:
+                continue
+            if _paid_media_sheet_id_value_disables_second_workbook(v):
+                return ""
+            return _extract_sheet_id(v)
     except Exception:
         pass
     for k in ("PAID_MEDIA_SHEET_ID", "SUPERMETRICS_SHEET_ID", "XRAY_ADS_SHEET_ID"):
         v = (os.environ.get(k) or "").strip()
-        if v:
-            return _extract_sheet_id(v)
-    return ""
+        if not v:
+            continue
+        if _paid_media_sheet_id_value_disables_second_workbook(v):
+            return ""
+        return _extract_sheet_id(v)
+    return DEFAULT_PAID_MEDIA_SHEET_ID
 
 
 def _dataframe_with_spreadsheet_id(df: pd.DataFrame, spreadsheet_id: str) -> pd.DataFrame:
