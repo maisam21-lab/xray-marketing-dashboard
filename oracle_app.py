@@ -1383,6 +1383,7 @@ _NORM_TO_FIELD: dict[str, str] = {
     "unique_link_clicks": "clicks",
     "outbound_clicks": "clicks",
     "all_clicks": "clicks",
+    "interactions": "clicks",
     "impressions_gp": "impressions",
     "impressions": "impressions",
     "impr": "impressions",
@@ -2261,6 +2262,23 @@ def _tab_title_looks_like_spend_worksheet(title: str) -> bool:
     )
 
 
+def _tab_title_looks_like_ads_data_sheet(title: str) -> bool:
+    """Per-platform export tabs, e.g. ``Google Ads Data``, ``Meta Ads Data``, ``Snapchat Ads Data``."""
+    tl = str(title).strip().lower()
+    return bool(
+        re.search(r"(google|meta|snapchat|linkedin|tiktok|bing|youtube|pinterest|reddit)\s*ads?\s*data", tl)
+        or tl.endswith(" ads data")
+    )
+
+
+def _mpo_tab_title_to_platform_label(title: str) -> str:
+    """Display label from tab title: ``Google Ads Data`` → ``Google Ads``."""
+    t = str(title).strip()
+    if t.lower().endswith(" data"):
+        return t[: -len(" data")].strip()
+    return t
+
+
 def _best_spend_pool_from_df_loaded(df_loaded: pd.DataFrame) -> pd.DataFrame:
     """Use spend rows already in the combined workbook load (often non-empty when gid=0 reload is empty)."""
     if df_loaded.empty or "cost" not in df_loaded.columns:
@@ -2459,7 +2477,9 @@ def load_worksheet_by_gid_preprocessed(sheet_id: str, worksheet_gid: int, _secre
     title = _tab_title_for_worksheet_gid(sheet_id, worksheet_gid, _secret_fp)
     raw = _preprocess_excel_sheet(raw, title)
     out = _normalize(raw)
-    if not out.empty and _tab_title_looks_like_spend_worksheet(str(title)):
+    if not out.empty and (
+        _tab_title_looks_like_spend_worksheet(str(title)) or _tab_title_looks_like_ads_data_sheet(str(title))
+    ):
         out = _canonicalize_spend_month_column(out)
     out["source_tab"] = title
     out["worksheet_gid"] = int(worksheet_gid)
@@ -3825,12 +3845,13 @@ def _mpo_blend_paid_media_for_master_df(df: pd.DataFrame) -> pd.DataFrame:
         return raw
     out = raw.copy()
     tab = out["source_tab"].astype(str).str.strip()
+    plat_from_tab = tab.map(_mpo_tab_title_to_platform_label)
     if "platform" in out.columns:
         p = out["platform"].astype(str).str.strip()
         mask = p.isin(["", "Unknown", "unknown", "nan", "None", "<NA>"])
-        out.loc[mask, "platform"] = tab.loc[mask].values
+        out.loc[mask, "platform"] = plat_from_tab.loc[mask].values
     else:
-        out["platform"] = tab.values
+        out["platform"] = plat_from_tab.values
     if "channel" in out.columns:
         ch = out["channel"].astype(str).str.strip()
         mask = ch.isin(["", "Unknown", "unknown", "nan", "None", "<NA>"])
@@ -3840,7 +3861,7 @@ def _mpo_blend_paid_media_for_master_df(df: pd.DataFrame) -> pd.DataFrame:
     if "utm_source" in out.columns:
         u = out["utm_source"].astype(str).str.strip()
         mask = u.isin(["", "Unknown", "unknown", "nan", "None", "<NA>"])
-        out.loc[mask, "utm_source"] = tab.loc[mask].values
+        out.loc[mask, "utm_source"] = plat_from_tab.loc[mask].values
     return out
 
 
