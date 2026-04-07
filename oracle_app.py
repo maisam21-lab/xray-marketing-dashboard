@@ -4920,35 +4920,67 @@ def _master_performance_table(
 
     if detail_state is not None:
         sel = getattr(detail_state, "selection", None)
-        rows = list(getattr(sel, "rows", []) or []) if sel else []
-        cols = list(getattr(sel, "columns", []) or []) if sel else []
-        if rows and cols:
-            rix = int(rows[0])
-            col_name = str(cols[0])
-            if 0 <= rix < len(gm) and col_name in metrics:
-                row = gm.reset_index(drop=True).iloc[rix]
-                month_label = _month_label_short(row.get("month")) or str(row.get("month") or "Selected period")
-                market_label = str(row.get("Market") or "Selected market")
-                value_fn = fmt_map.get(col_name, lambda x: str(x))
+        sel_dict: dict[str, Any] = {}
+        if sel is not None:
+            if hasattr(sel, "to_dict"):
                 try:
-                    value_text = str(value_fn(row.get(col_name)))
+                    sel_dict = dict(sel.to_dict())
                 except Exception:
-                    value_text = str(row.get(col_name))
-                sig = f"{month_label}|{market_label}|{col_name}|{rix}"
-                if st.session_state.get(_last_sig_k) != sig:
-                    st.session_state[_last_sig_k] = sig
-                    st.session_state[_open_k] = True
-                    st.session_state[_payload_k] = {
-                        "metric_name": col_name,
-                        "month_label": month_label,
-                        "market_label": market_label,
-                        "value_text": value_text,
-                        "spend": float(pd.to_numeric(row.get("spend", 0), errors="coerce") or 0),
-                        "cw": int(pd.to_numeric(row.get("cw", 0), errors="coerce") or 0),
-                        "leads": int(pd.to_numeric(row.get("leads", 0), errors="coerce") or 0),
-                        "tcv": float(pd.to_numeric(row.get("tcv", 0), errors="coerce") or 0),
-                        "lf": float(pd.to_numeric(row.get("lf", 0), errors="coerce") or 0),
-                    }
+                    sel_dict = {}
+            elif isinstance(sel, dict):
+                sel_dict = dict(sel)
+
+        rix: Optional[int] = None
+        col_raw: Any = None
+        cells = list(sel_dict.get("cells", []) or [])
+        if cells:
+            c0 = cells[0] or {}
+            try:
+                rix = int(c0.get("row"))
+            except Exception:
+                rix = None
+            col_raw = c0.get("column")
+        else:
+            rows = list(getattr(sel, "rows", []) or sel_dict.get("rows", []) or []) if sel else []
+            cols = list(getattr(sel, "columns", []) or sel_dict.get("columns", []) or []) if sel else []
+            if rows and cols:
+                try:
+                    rix = int(rows[0])
+                except Exception:
+                    rix = None
+                col_raw = cols[0]
+
+        col_name: Optional[str] = None
+        if isinstance(col_raw, int):
+            if 0 <= int(col_raw) < len(pvt.columns):
+                col_name = str(pvt.columns[int(col_raw)])
+        elif col_raw is not None:
+            col_name = str(col_raw)
+
+        if rix is not None and col_name and 0 <= rix < len(gm) and col_name in metrics:
+            row = gm.reset_index(drop=True).iloc[rix]
+            month_label = _month_label_short(row.get("month")) or str(row.get("month") or "Selected period")
+            market_label = str(row.get("Market") or "Selected market")
+            value_fn = fmt_map.get(col_name, lambda x: str(x))
+            try:
+                value_text = str(value_fn(row.get(col_name)))
+            except Exception:
+                value_text = str(row.get(col_name))
+            sig = f"{month_label}|{market_label}|{col_name}|{rix}"
+            if st.session_state.get(_last_sig_k) != sig:
+                st.session_state[_last_sig_k] = sig
+                st.session_state[_open_k] = True
+                st.session_state[_payload_k] = {
+                    "metric_name": col_name,
+                    "month_label": month_label,
+                    "market_label": market_label,
+                    "value_text": value_text,
+                    "spend": float(pd.to_numeric(row.get("spend", 0), errors="coerce") or 0),
+                    "cw": int(pd.to_numeric(row.get("cw", 0), errors="coerce") or 0),
+                    "leads": int(pd.to_numeric(row.get("leads", 0), errors="coerce") or 0),
+                    "tcv": float(pd.to_numeric(row.get("tcv", 0), errors="coerce") or 0),
+                    "lf": float(pd.to_numeric(row.get("lf", 0), errors="coerce") or 0),
+                }
 
     payload = st.session_state.get(_payload_k)
     is_open = bool(st.session_state.get(_open_k)) and isinstance(payload, dict)
