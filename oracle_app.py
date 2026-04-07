@@ -3794,21 +3794,21 @@ def _mpo_spend_activity_for_month(spend_df: pd.DataFrame, month_key: Optional[st
 
 
 def _mpo_rows_paid_media_from_combined(df_loaded: pd.DataFrame) -> pd.DataFrame:
-    """Rows from spend / paid-media tabs (one tab per platform is OK); excludes CRM / leads / post / CW tabs."""
+    """Rows from paid-media tabs: **all non-CRM tabs** with spend/clicks/impressions (each tab = one platform)."""
     if df_loaded.empty or "source_tab" not in df_loaded.columns:
         return pd.DataFrame()
     stl = df_loaded["source_tab"].astype(str).str.lower()
     is_excl = stl.str.contains(
-        r"raw\s*leads?|post\s*qual|raw\s*cw|pipeline|crm|opportunity|deal\s*stage",
+        r"raw\s*leads?|post\s*qual|raw\s*cw|pipeline|crm\b|opportunity|deal\s*stage|lead\s*sheet",
         na=False,
         regex=True,
     )
-    is_media = stl.str.contains(
-        r"spend|media|ppc|paid|facebook|meta|google|ads|linkedin|tiktok|snap|programmatic|dv360|sa360|youtube|twitter|pinterest|reddit|bing",
+    is_summary = stl.str.contains(
+        r"^summary$|^readme$|instructions|sheet\s*index|^_",
         na=False,
         regex=True,
-    ) | df_loaded["source_tab"].astype(str).str.match(r"^gid:\d+_spend$", na=False)
-    sub = df_loaded.loc[~is_excl & is_media].copy()
+    )
+    sub = df_loaded.loc[~is_excl & ~is_summary].copy()
     if sub.empty:
         return sub
     c = pd.to_numeric(sub.get("cost", 0), errors="coerce").fillna(0)
@@ -3816,6 +3816,32 @@ def _mpo_rows_paid_media_from_combined(df_loaded: pd.DataFrame) -> pd.DataFrame:
     im = pd.to_numeric(sub.get("impressions", 0), errors="coerce").fillna(0)
     mask = (c.abs() + cl.abs() + im.abs()) > 1e-9
     return sub.loc[mask]
+
+
+def _mpo_blend_paid_media_for_master_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Use stacked workbook rows for spend KPIs; set ``platform`` / ``channel`` / ``utm_source`` from tab title when Unknown."""
+    raw = _mpo_rows_paid_media_from_combined(df)
+    if raw.empty:
+        return raw
+    out = raw.copy()
+    tab = out["source_tab"].astype(str).str.strip()
+    if "platform" in out.columns:
+        p = out["platform"].astype(str).str.strip()
+        mask = p.isin(["", "Unknown", "unknown", "nan", "None", "<NA>"])
+        out.loc[mask, "platform"] = tab.loc[mask].values
+    else:
+        out["platform"] = tab.values
+    if "channel" in out.columns:
+        ch = out["channel"].astype(str).str.strip()
+        mask = ch.isin(["", "Unknown", "unknown", "nan", "None", "<NA>"])
+        out.loc[mask, "channel"] = "Paid media"
+    else:
+        out["channel"] = "Paid media"
+    if "utm_source" in out.columns:
+        u = out["utm_source"].astype(str).str.strip()
+        mask = u.isin(["", "Unknown", "unknown", "nan", "None", "<NA>"])
+        out.loc[mask, "utm_source"] = tab.loc[mask].values
+    return out
 
 
 def _mpo_merge_pool_clicks_impressions_onto_spend(spend_master: pd.DataFrame, df_loaded: pd.DataFrame) -> pd.DataFrame:
@@ -5829,47 +5855,57 @@ def render_page_marketing_performance(
 
     sheet_id, _ = _workbook_id_resolution()
     _fp_mpo = _secret_fingerprint(_service_account_from_streamlit_secrets())
-    # Spend only from the canonical Spend worksheet (gid=0) on the ME X-Ray workbook:
-    # https://docs.google.com/spreadsheets/d/1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8/edit?gid=0
-    spend_gid0_wks = load_spend_gid0_normalized(sheet_id, _fp_mpo)
-    spend_pool_full = spend_gid0_wks.copy() if not spend_gid0_wks.empty else pd.DataFrame()
-    spend_sheet_master = _filter_spend_for_dashboard(spend_gid0_wks, start_date, end_date)
-    if spend_sheet_master.empty and "worksheet_gid" in df_loaded.columns:
-        _g0 = df_loaded.loc[pd.to_numeric(df_loaded["worksheet_gid"], errors="coerce") == 0].copy()
-        if not _g0.empty:
-            spend_sheet_master = _filter_spend_for_dashboard(_g0, start_date, end_date)
-    # If gid=0 is not the Spend layout (or dates filter everything out) but another tab is named Spend / Raw Spend, use it.
-    if _normalized_spend_cost_sum(spend_sheet_master) == 0.0:
-        alt_spend = load_first_matching_worksheet_normalized(
-            sheet_id,
-            (r"^spend$", r"raw\s*spend", r"sum\s*spend"),
-            _fp_mpo,
-        )
-        if not alt_spend.empty and _normalized_spend_cost_sum(alt_spend) > _normalized_spend_cost_sum(spend_pool_full):
-            spend_pool_full = alt_spend.copy()
-        alt_f = _filter_spend_for_dashboard(alt_spend, start_date, end_date)
-        if _normalized_spend_cost_sum(alt_f) > 0.0:
-            spend_sheet_master = alt_f
-    if _normalized_spend_cost_sum(spend_sheet_master) == 0.0:
-        fb_spend = load_spend_worksheet_fallback(sheet_id, _fp_mpo)
-        if not fb_spend.empty and _normalized_spend_cost_sum(fb_spend) > _normalized_spend_cost_sum(spend_pool_full):
-            spend_pool_full = fb_spend.copy()
-        fb_f = _filter_spend_for_dashboard(fb_spend, start_date, end_date)
-        if _normalized_spend_cost_sum(fb_f) > 0.0:
-            spend_sheet_master = fb_f
+    # Spend: **blend all non-CRM tabs** from the combined workbook (each tab name = platform when columns are blank).
+    # Falls back to canonical gid=0 / named Spend when the blend has no rows.
+    spend_blended = _mpo_blend_paid_media_for_master_df(df_date)
+    if spend_blended.empty and not df_loaded.empty:
+        spend_blended = _mpo_blend_paid_media_for_master_df(df_loaded)
+        if not spend_blended.empty:
+            spend_blended = _filter_by_date_range(spend_blended, start_date, end_date)
+    if not spend_blended.empty:
+        spend_sheet_master = _filter_spend_for_dashboard(spend_blended, start_date, end_date)
+        if spend_sheet_master.empty:
+            spend_sheet_master = spend_blended.copy()
+        spend_pool_full = spend_blended.copy()
+    else:
+        spend_gid0_wks = load_spend_gid0_normalized(sheet_id, _fp_mpo)
+        spend_pool_full = spend_gid0_wks.copy() if not spend_gid0_wks.empty else pd.DataFrame()
+        spend_sheet_master = _filter_spend_for_dashboard(spend_gid0_wks, start_date, end_date)
+        if spend_sheet_master.empty and "worksheet_gid" in df_loaded.columns:
+            _g0 = df_loaded.loc[pd.to_numeric(df_loaded["worksheet_gid"], errors="coerce") == 0].copy()
+            if not _g0.empty:
+                spend_sheet_master = _filter_spend_for_dashboard(_g0, start_date, end_date)
+        if _normalized_spend_cost_sum(spend_sheet_master) == 0.0:
+            alt_spend = load_first_matching_worksheet_normalized(
+                sheet_id,
+                (r"^spend$", r"raw\s*spend", r"sum\s*spend"),
+                _fp_mpo,
+            )
+            if not alt_spend.empty and _normalized_spend_cost_sum(alt_spend) > _normalized_spend_cost_sum(spend_pool_full):
+                spend_pool_full = alt_spend.copy()
+            alt_f = _filter_spend_for_dashboard(alt_spend, start_date, end_date)
+            if _normalized_spend_cost_sum(alt_f) > 0.0:
+                spend_sheet_master = alt_f
+        if _normalized_spend_cost_sum(spend_sheet_master) == 0.0:
+            fb_spend = load_spend_worksheet_fallback(sheet_id, _fp_mpo)
+            if not fb_spend.empty and _normalized_spend_cost_sum(fb_spend) > _normalized_spend_cost_sum(spend_pool_full):
+                spend_pool_full = fb_spend.copy()
+            fb_f = _filter_spend_for_dashboard(fb_spend, start_date, end_date)
+            if _normalized_spend_cost_sum(fb_f) > 0.0:
+                spend_sheet_master = fb_f
 
-    if _normalized_spend_cost_sum(spend_pool_full) < 1e-9:
-        _rec_loaded = _best_spend_pool_from_df_loaded(df_loaded)
-        if not _rec_loaded.empty:
-            spend_pool_full = _rec_loaded.copy()
-        else:
-            _scan_best = _scan_workbook_for_best_spend_frame(sheet_id, _fp_mpo)
-            if not _scan_best.empty:
-                spend_pool_full = _scan_best.copy()
-        if _normalized_spend_cost_sum(spend_pool_full) > 1e-9 and _normalized_spend_cost_sum(spend_sheet_master) < 1e-9:
-            spend_sheet_master = _filter_spend_for_dashboard(spend_pool_full, start_date, end_date)
-            if _normalized_spend_cost_sum(spend_sheet_master) < 1e-9:
-                spend_sheet_master = spend_pool_full.copy()
+        if _normalized_spend_cost_sum(spend_pool_full) < 1e-9:
+            _rec_loaded = _best_spend_pool_from_df_loaded(df_loaded)
+            if not _rec_loaded.empty:
+                spend_pool_full = _rec_loaded.copy()
+            else:
+                _scan_best = _scan_workbook_for_best_spend_frame(sheet_id, _fp_mpo)
+                if not _scan_best.empty:
+                    spend_pool_full = _scan_best.copy()
+            if _normalized_spend_cost_sum(spend_pool_full) > 1e-9 and _normalized_spend_cost_sum(spend_sheet_master) < 1e-9:
+                spend_sheet_master = _filter_spend_for_dashboard(spend_pool_full, start_date, end_date)
+                if _normalized_spend_cost_sum(spend_sheet_master) < 1e-9:
+                    spend_sheet_master = spend_pool_full.copy()
 
     spend_sheet_for_kpis = _mpo_merge_pool_clicks_impressions_onto_spend(spend_sheet_master, df_date)
     spend_df = _spend_slice_for_dashboard_filters(spend_sheet_for_kpis, df)
