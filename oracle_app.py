@@ -25,7 +25,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 # Bump when you ship UI/logic changes — shown on Marketing Performance so you know which file Streamlit loaded.
-DASHBOARD_BUILD = "2026-04-05-mpo-sum-compare-pickers"
+DASHBOARD_BUILD = "2026-04-05-mpo-ui-polish"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 DEFAULT_SOURCE_TRUTH_GID = 8109573
@@ -3327,7 +3327,7 @@ def _mpo_comparison_strip_html(
             _pill = '<span class="mpo-cmp-pill mpo-cmp-pill--mom">Month vs month</span>'
             return (
                 '<div class="mpo-cmp-wrap">'
-                '<div class="mpo-cmp-bar">'
+                '<div class="mpo-cmp-bar mpo-cmp-bar--surface">'
                 '<span class="mpo-cmp-dates">'
                 f"<strong>{_ck}</strong>"
                 '<span class="mpo-cmp-vs mpo-cmp-vs--muted">— add data to compare</span>'
@@ -3346,7 +3346,7 @@ def _mpo_comparison_strip_html(
             _pill = '<span class="mpo-cmp-pill mpo-cmp-pill--mom">Month vs month</span>'
         return (
             '<div class="mpo-cmp-wrap">'
-            '<div class="mpo-cmp-bar">'
+            '<div class="mpo-cmp-bar mpo-cmp-bar--surface">'
             '<span class="mpo-cmp-dates">'
             f"<strong>{_ck}</strong>"
             '<span class="mpo-cmp-vs">vs</span>'
@@ -3364,6 +3364,68 @@ def _mpo_comparison_strip_html(
         '<div class="mpo-cmp-wrap">'
         '<div class="mpo-cmp-empty">Pick months in the filters above or widen the app date range.</div>'
         "</div>"
+    )
+
+
+def _mpo_marketing_performance_hero_html() -> str:
+    """Page hero: title, short explainer, build id."""
+    b = html.escape(DASHBOARD_BUILD)
+    return (
+        '<div class="mpo-hero">'
+        '<div class="mpo-hero-bg" aria-hidden="true"></div>'
+        '<div class="mpo-hero-main">'
+        '<p class="mpo-hero-kicker">Marketing · RevOps</p>'
+        '<h1 class="mpo-hero-title">Performance overview</h1>'
+        '<p class="mpo-hero-lead">Spend, pipeline, and funnel KPIs for the selected date range. '
+        "Filters define the <strong>summed headline</strong>; comparison pickers drive "
+        "<strong>% change</strong> only.</p>"
+        "</div>"
+        f'<div class="mpo-hero-badge" title="Deployed build id">Build <span class="mpo-hero-build">{b}</span></div>'
+        "</div>"
+    )
+
+
+def _mpo_headline_scope_html(key_suffix: str, headline_month_keys: list[str]) -> str:
+    """Chip row describing headline aggregation scope (markets + months)."""
+    months_sel = st.session_state.get(f"{key_suffix}_month", [_MPO_ALL_MONTHS_SENTINEL])
+    mkt = _mpo_market_scope_note(key_suffix)
+    if _mpo_month_multiselect_is_all(months_sel):
+        n = len(headline_month_keys)
+        if n <= 0:
+            mo_chip = html.escape("All months · no data in range")
+        elif n == 1:
+            mo_chip = html.escape("All months · 1 month summed")
+        else:
+            mo_chip = html.escape(f"All months · {n} months summed")
+    else:
+        picks = _mpo_month_multiselect_explicit(months_sel)
+        labs = [_month_label_short(m) for m in picks if _month_label_short(m)]
+        if not labs:
+            mo_chip = html.escape("Selected months")
+        else:
+            s = ", ".join(labs[:5])
+            if len(labs) > 5:
+                s += "…"
+            mo_chip = html.escape(s)
+    return (
+        '<div class="mpo-scope-row">'
+        '<div class="mpo-scope-row-inner">'
+        '<span class="mpo-scope-label">Headline scope</span>'
+        f'<span class="mpo-scope-pill mpo-scope-pill--geo">{mkt}</span>'
+        f'<span class="mpo-scope-pill mpo-scope-pill--time">{mo_chip}</span>'
+        "</div></div>"
+    )
+
+
+def _mpo_kpi_section_head_html() -> str:
+    return (
+        '<div class="mpo-sec-head">'
+        '<div class="mpo-sec-head-accent" aria-hidden="true"></div>'
+        '<div class="mpo-sec-head-body">'
+        '<h2 class="mpo-sec-head-title">KPI scorecard</h2>'
+        '<p class="mpo-sec-head-desc">Large numbers are <strong>period totals</strong> for the scope above. '
+        "Row-level % changes compare against the period you set in <em>Scorecard comparison</em>.</p>"
+        "</div></div>"
     )
 
 
@@ -3436,6 +3498,13 @@ def _apply_marketing_performance_filters(
     except TypeError:
         _mpo_filter_panel = st.container()
     with _mpo_filter_panel:
+        st.markdown(
+            '<div class="mpo-filter-ribbon">'
+            '<span class="mpo-filter-ribbon-title">Data scope</span>'
+            "<span class=\"mpo-filter-ribbon-hint\">Defaults: all markets &amp; all months in range</span>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
         _c_mk, _c_mo = st.columns(2, gap="small")
         with _c_mk:
             st.multiselect(
@@ -3473,6 +3542,14 @@ def _apply_marketing_performance_filters(
         if _k_ym not in st.session_state:
             st.session_state[_k_ym] = int(pd.Period(str(_mko[-1]), freq="M").month) if _mko else 1
 
+        st.markdown(
+            '<div class="mpo-expander-anchor">'
+            '<span class="mpo-expander-anchor-line"></span>'
+            '<span class="mpo-expander-anchor-txt">% change vs comparison period</span>'
+            '<span class="mpo-expander-anchor-line"></span>'
+            "</div>",
+            unsafe_allow_html=True,
+        )
         try:
             _cmp_exp = st.expander("Scorecard comparison", expanded=True)
         except TypeError:
@@ -4285,7 +4362,7 @@ def _kpi_block(
     )
 
     st.markdown(
-        f'<div class="kpi-funnel-wrap kpi-funnel-wrap--pastel-scorecard">{sec_cw}{sec_leads}{sec_pipe}</div>',
+        f'<div class="kpi-funnel-wrap kpi-funnel-wrap--pastel-scorecard mpo-kpi-shell">{sec_cw}{sec_leads}{sec_pipe}</div>',
         unsafe_allow_html=True,
     )
 
@@ -4793,8 +4870,7 @@ def render_page_marketing_performance(
         st.info("No rows in the selected date range.")
         return
 
-    st.markdown('<h1 class="looker-page-h1">Marketing Performance Overview</h1>', unsafe_allow_html=True)
-    st.caption(f"Build **{DASHBOARD_BUILD}**")
+    st.markdown(_mpo_marketing_performance_hero_html(), unsafe_allow_html=True)
     df, _ = _apply_marketing_performance_filters(df_date, key_suffix=key_suffix)
 
     sheet_id, _ = _workbook_id_resolution()
@@ -5165,6 +5241,11 @@ def render_page_marketing_performance(
     cw_cmp = _cw_dataframe_for_kpis(_resolve_cw_tcv_dataframe(df_loaded, df_mkt), df_mkt)
     ck, rk, cmp_kind = _mpo_compare_month_keys(master_df, key_suffix=key_suffix, table_df=df)
 
+    _headline_keys = _mpo_headline_month_keys_for_scope(master_df, df, key_suffix)
+    if not _headline_keys:
+        _fb = _mpo_month_keys_sorted_master(master_df)
+        _headline_keys = _fb[-1:] if _fb else []
+
     st.markdown(
         _mpo_comparison_strip_html(
             key_suffix=key_suffix,
@@ -5174,6 +5255,7 @@ def render_page_marketing_performance(
         ),
         unsafe_allow_html=True,
     )
+    st.markdown(_mpo_headline_scope_html(key_suffix, _headline_keys), unsafe_allow_html=True)
 
     _kpi_prior = _kpi_two_month_compare_dict(
         ck,
@@ -5189,10 +5271,6 @@ def render_page_marketing_performance(
         _kpi_prior["_delta_label"] = "the compare month"
 
     # Headline KPIs: **sum** across months in scope (All months = everything in the table).
-    _headline_keys = _mpo_headline_month_keys_for_scope(master_df, df, key_suffix)
-    if not _headline_keys:
-        _fb = _mpo_month_keys_sorted_master(master_df)
-        _headline_keys = _fb[-1:] if _fb else []
     _hm = (
         _mpo_scorecard_headline_totals_for_months(
             _headline_keys,
@@ -5227,7 +5305,7 @@ def render_page_marketing_performance(
         cw_for_qwin = _hm.get("cw_for_qwin")
         qual_for_qwin = _hm.get("qual_for_qwin")
 
-    st.markdown("#### KPI scorecard")
+    st.markdown(_mpo_kpi_section_head_html(), unsafe_allow_html=True)
     _kpi_block(
         total_spend=total_spend,
         total_impr=total_impr,
@@ -5828,6 +5906,223 @@ def main() -> None:
         border-radius: 8px;
         border: 1px dashed #e2e8f0;
         margin-bottom: 6px;
+    }
+    .mpo-cmp-bar--surface {
+        background: linear-gradient(135deg, #ffffff 0%, #f8fafc 55%, #f1f5f9 100%) !important;
+        border: 1px solid rgba(15, 23, 42, 0.09) !important;
+        border-radius: 14px !important;
+        box-shadow:
+            0 1px 0 rgba(255, 255, 255, 0.9) inset,
+            0 10px 28px -14px rgba(15, 23, 42, 0.18) !important;
+        padding: 12px 16px 12px 22px !important;
+        position: relative;
+        overflow: hidden;
+    }
+    .mpo-cmp-bar--surface::before {
+        content: "";
+        position: absolute;
+        left: 0;
+        top: 0;
+        bottom: 0;
+        width: 4px;
+        border-radius: 14px 0 0 14px;
+        background: linear-gradient(180deg, #0d9488 0%, #4f8483 100%);
+        opacity: 0.95;
+    }
+    .mpo-cmp-bar--surface > * { position: relative; z-index: 1; }
+    /* Marketing Performance — page chrome */
+    .mpo-hero {
+        position: relative;
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 14px 20px;
+        margin: 0 0 18px 0;
+        padding: 18px 20px 20px;
+        border-radius: 18px;
+        border: 1px solid rgba(15, 23, 42, 0.07);
+        background: linear-gradient(145deg, rgba(255, 255, 255, 0.98) 0%, rgba(240, 253, 250, 0.5) 48%, rgba(248, 250, 252, 0.95) 100%);
+        box-shadow: 0 12px 40px -24px rgba(15, 23, 42, 0.2);
+        overflow: hidden;
+    }
+    .mpo-hero-bg {
+        position: absolute;
+        inset: -40% -20% auto auto;
+        width: 55%;
+        height: 140%;
+        background: radial-gradient(circle at 70% 30%, rgba(13, 148, 136, 0.14) 0%, transparent 58%);
+        pointer-events: none;
+    }
+    .mpo-hero-main { flex: 1 1 280px; min-width: 0; position: relative; z-index: 1; }
+    .mpo-hero-kicker {
+        margin: 0 0 6px 0;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: #0f766e;
+    }
+    .mpo-hero-title {
+        margin: 0 0 8px 0;
+        font-size: clamp(1.35rem, 2.4vw, 1.75rem);
+        font-weight: 800;
+        letter-spacing: -0.045em;
+        line-height: 1.12;
+        color: #0f172a;
+    }
+    .mpo-hero-lead {
+        margin: 0;
+        max-width: 52rem;
+        font-size: 0.9375rem;
+        line-height: 1.55;
+        color: #475569;
+        font-weight: 500;
+    }
+    .mpo-hero-badge {
+        flex: 0 0 auto;
+        align-self: center;
+        padding: 8px 12px;
+        border-radius: 12px;
+        font-size: 11px;
+        font-weight: 600;
+        color: #475569;
+        background: rgba(255, 255, 255, 0.85);
+        border: 1px solid rgba(15, 23, 42, 0.08);
+        box-shadow: 0 2px 8px rgba(15, 23, 42, 0.05);
+        position: relative;
+        z-index: 1;
+    }
+    .mpo-hero-build {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 10px;
+        font-weight: 600;
+        color: #0f766e;
+        margin-left: 4px;
+    }
+    .mpo-scope-row {
+        margin: 0 0 16px 0;
+    }
+    .mpo-scope-row-inner {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px 10px;
+        padding: 10px 14px;
+        border-radius: 14px;
+        background: rgba(255, 255, 255, 0.72);
+        border: 1px solid rgba(15, 23, 42, 0.06);
+        box-shadow: 0 2px 12px rgba(15, 23, 42, 0.04);
+    }
+    .mpo-scope-label {
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+        color: #94a3b8;
+        margin-right: 4px;
+    }
+    .mpo-scope-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 5px 11px;
+        border-radius: 999px;
+        font-size: 12px;
+        font-weight: 600;
+        line-height: 1.3;
+        border: 1px solid transparent;
+    }
+    .mpo-scope-pill--geo {
+        background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%);
+        color: #065f46;
+        border-color: rgba(16, 185, 129, 0.35);
+    }
+    .mpo-scope-pill--time {
+        background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
+        color: #1e40af;
+        border-color: rgba(59, 130, 246, 0.35);
+    }
+    .mpo-sec-head {
+        display: flex;
+        gap: 14px;
+        align-items: stretch;
+        margin: 6px 0 14px 0;
+        padding: 14px 16px 16px;
+        border-radius: 16px;
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.95) 0%, rgba(248, 250, 252, 0.65) 100%);
+        border: 1px solid rgba(15, 23, 42, 0.07);
+        box-shadow: 0 4px 20px rgba(15, 23, 42, 0.05);
+    }
+    .mpo-sec-head-accent {
+        width: 5px;
+        border-radius: 999px;
+        background: linear-gradient(180deg, #0d9488, #6366f1);
+        flex-shrink: 0;
+    }
+    .mpo-sec-head-body { min-width: 0; }
+    .mpo-sec-head-title {
+        margin: 0 0 6px 0;
+        font-size: 1.125rem;
+        font-weight: 800;
+        letter-spacing: -0.03em;
+        color: #0f172a;
+    }
+    .mpo-sec-head-desc {
+        margin: 0;
+        font-size: 0.8125rem;
+        line-height: 1.55;
+        color: #64748b;
+        font-weight: 500;
+    }
+    .mpo-kpi-shell {
+        margin-top: 2px;
+        padding: 18px 14px 10px;
+        border-radius: 18px;
+        background: linear-gradient(165deg, rgba(255, 255, 255, 0.65) 0%, rgba(248, 250, 252, 0.4) 100%);
+        border: 1px solid rgba(15, 23, 42, 0.06);
+        box-shadow: 0 16px 48px -28px rgba(15, 23, 42, 0.14);
+    }
+    .mpo-filter-ribbon {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 6px 12px;
+        margin: 0 0 10px 0;
+        padding-bottom: 8px;
+        border-bottom: 1px solid rgba(15, 23, 42, 0.06);
+    }
+    .mpo-filter-ribbon-title {
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0.11em;
+        text-transform: uppercase;
+        color: #0f766e;
+    }
+    .mpo-filter-ribbon-hint {
+        font-size: 11px;
+        font-weight: 500;
+        color: #94a3b8;
+    }
+    .mpo-expander-anchor {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin: 14px 0 8px 0;
+    }
+    .mpo-expander-anchor-line {
+        flex: 1 1 auto;
+        height: 1px;
+        background: linear-gradient(90deg, transparent, rgba(15, 23, 42, 0.12), transparent);
+    }
+    .mpo-expander-anchor-txt {
+        flex: 0 0 auto;
+        font-size: 10px;
+        font-weight: 800;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: #94a3b8;
     }
     /* MPO filter toolbar — compact bar, same glass feel as funnel scorecards */
     .mpo-toolbar-summary {
