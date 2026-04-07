@@ -5249,7 +5249,6 @@ def render_page_marketing_performance(
         ),
         unsafe_allow_html=True,
     )
-    st.markdown(_mpo_headline_scope_html(key_suffix, _headline_keys), unsafe_allow_html=True)
 
     _kpi_prior = _kpi_two_month_compare_dict(
         ck,
