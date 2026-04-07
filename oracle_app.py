@@ -25,7 +25,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 # Bump when you ship UI/logic changes — shown on Marketing Performance so you know which file Streamlit loaded.
-DASHBOARD_BUILD = "2026-04-07-paid-media-second-workbook"
+DASHBOARD_BUILD = "2026-04-07-paid-media-labels-metrics"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 # Optional workbook: set Streamlit secret ``XRAY_SHEET_ID`` to the id or full URL below, then set
@@ -624,6 +624,27 @@ def _guess_spend_value_column_raw(raw: pd.DataFrame) -> Optional[str]:
             best_c = c
     if best_c is None or best_sm < 1e-6:
         return None
+    return best_c
+
+
+def _first_best_metric_column_by_keyword(
+    df: pd.DataFrame,
+    keywords: tuple[str, ...],
+    exclude_substrings: tuple[str, ...],
+) -> Optional[str]:
+    """Pick the raw column whose normalized name contains all ``keywords`` (as substrings) and has largest numeric mass."""
+    best_c: Optional[str] = None
+    best_sum = -1.0
+    for c in df.columns:
+        nk = _norm_header_key(c)
+        if not all(k in nk for k in keywords):
+            continue
+        if any(ex in nk for ex in exclude_substrings):
+            continue
+        sm = float(_to_number_series(df[c]).abs().sum())
+        if sm > best_sum:
+            best_sum = sm
+            best_c = c
     return best_c
 
 
@@ -1438,9 +1459,14 @@ _NORM_TO_FIELD: dict[str, str] = {
     "outbound_clicks": "clicks",
     "all_clicks": "clicks",
     "interactions": "clicks",
+    "post_clicks": "clicks",
+    "paid_clicks": "clicks",
+    "link_click": "clicks",
     "impressions_gp": "impressions",
     "impressions": "impressions",
     "impr": "impressions",
+    "post_impressions": "impressions",
+    "paid_impressions": "impressions",
     "leads": "leads",
     "qualified": "qualified",
     "pitching": "pitching",
@@ -2039,6 +2065,28 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
     _still_ancient = out["date"].notna() & (out["date"] < pd.Timestamp("2000-01-01"))
     out.loc[_still_ancient, "date"] = pd.NaT
 
+    def _metric_sum_zero(col: str) -> bool:
+        if col not in out.columns:
+            return True
+        return float(_to_number_series(out[col]).abs().sum()) < 1e-9
+
+    if _metric_sum_zero("clicks"):
+        ic = _first_best_metric_column_by_keyword(
+            df,
+            ("click",),
+            ("ctr", "cpc", "cost", "rate", "conv", "position", "share", "quality", "rank"),
+        )
+        if ic is not None:
+            out["clicks"] = _to_number_series(df[ic])
+    if _metric_sum_zero("impressions"):
+        ii = _first_best_metric_column_by_keyword(
+            df,
+            ("impr",),
+            ("ctr", "cpc", "cost", "rate", "share", "position", "frequency", "quality", "rank"),
+        )
+        if ii is not None:
+            out["impressions"] = _to_number_series(df[ii])
+
     for c in _NUM_FIELDS:
         if c in out.columns:
             if c == "closed_won":
@@ -2331,6 +2379,33 @@ def _mpo_tab_title_to_platform_label(title: str) -> str:
     if t.lower().endswith(" data"):
         return t[: -len(" data")].strip()
     return t
+
+
+def _tab_title_is_spend_rollup_tab(title: str) -> bool:
+    """ME X-Ray / connector **aggregate** spend tabs — not per-network ``* Ads Data`` exports."""
+    if _tab_title_looks_like_ads_data_sheet(title):
+        return False
+    tl = str(title).strip().lower()
+    if re.match(r"^gid:\d+_spend$", tl):
+        return True
+    if tl in ("spend", "raw spend", "sum spend", "media spend", "rawspend"):
+        return True
+    if re.fullmatch(r"raw\s*spend", tl):
+        return True
+    return _tab_title_looks_like_spend_worksheet(title)
+
+
+def _mpo_platform_label_from_source_tab(title: str) -> str:
+    """Stable platform / utm label from ``source_tab`` (overrides misleading sheet ``Platform`` cells)."""
+    t = str(title).strip()
+    tl = t.lower()
+    if _tab_title_looks_like_ads_data_sheet(t):
+        return _mpo_tab_title_to_platform_label(t)
+    if re.match(r"^gid:\d+_spend$", tl):
+        return "Spend (rollup)"
+    if _tab_title_is_spend_rollup_tab(t):
+        return "Spend (rollup)"
+    return _mpo_tab_title_to_platform_label(t)
 
 
 def _best_spend_pool_from_df_loaded(df_loaded: pd.DataFrame) -> pd.DataFrame:
@@ -3885,6 +3960,10 @@ def _mpo_rows_paid_media_from_combined(df_loaded: pd.DataFrame) -> pd.DataFrame:
     sub = df_loaded.loc[~is_excl & ~is_summary].copy()
     if sub.empty:
         return sub
+    st_tab = df_loaded["source_tab"].astype(str)
+    has_any_ads_data_tab = bool(st_tab.map(lambda t: _tab_title_looks_like_ads_data_sheet(str(t))).any())
+    if has_any_ads_data_tab:
+        sub = sub.loc[~sub["source_tab"].astype(str).map(_tab_title_is_spend_rollup_tab)].copy()
     c = pd.to_numeric(sub.get("cost", 0), errors="coerce").fillna(0)
     cl = pd.to_numeric(sub.get("clicks", 0), errors="coerce").fillna(0)
     im = pd.to_numeric(sub.get("impressions", 0), errors="coerce").fillna(0)
@@ -3899,23 +3978,15 @@ def _mpo_blend_paid_media_for_master_df(df: pd.DataFrame) -> pd.DataFrame:
         return raw
     out = raw.copy()
     tab = out["source_tab"].astype(str).str.strip()
-    plat_from_tab = tab.map(_mpo_tab_title_to_platform_label)
-    if "platform" in out.columns:
-        p = out["platform"].astype(str).str.strip()
-        mask = p.isin(["", "Unknown", "unknown", "nan", "None", "<NA>"])
-        out.loc[mask, "platform"] = plat_from_tab.loc[mask].values
-    else:
-        out["platform"] = plat_from_tab.values
+    plat_from_tab = tab.map(_mpo_platform_label_from_source_tab)
+    out["platform"] = plat_from_tab.values
     if "channel" in out.columns:
         ch = out["channel"].astype(str).str.strip()
         mask = ch.isin(["", "Unknown", "unknown", "nan", "None", "<NA>"])
         out.loc[mask, "channel"] = "Paid media"
     else:
         out["channel"] = "Paid media"
-    if "utm_source" in out.columns:
-        u = out["utm_source"].astype(str).str.strip()
-        mask = u.isin(["", "Unknown", "unknown", "nan", "None", "<NA>"])
-        out.loc[mask, "utm_source"] = plat_from_tab.loc[mask].values
+    out["utm_source"] = plat_from_tab.values
     return out
 
 
@@ -3962,12 +4033,7 @@ def _mpo_render_paid_media_by_platform_summary(df_loaded: pd.DataFrame, *, key_s
         sp = float(pd.to_numeric(sub.get("cost", 0), errors="coerce").fillna(0).sum())
         cl = int(pd.to_numeric(sub.get("clicks", 0), errors="coerce").fillna(0).sum())
         im = int(pd.to_numeric(sub.get("impressions", 0), errors="coerce").fillna(0).sum())
-        plat = "—"
-        if "platform" in sub.columns:
-            u = sub["platform"].dropna().astype(str).str.strip()
-            u = u[u.ne("") & u.ne("Unknown") & u.ne("nan")]
-            if not u.empty:
-                plat = str(u.iloc[0])
+        plat = _mpo_platform_label_from_source_tab(str(tab))
         ctr = (cl / im * 100.0) if im else None
         cpc = (sp / cl) if cl else None
         rows.append(
