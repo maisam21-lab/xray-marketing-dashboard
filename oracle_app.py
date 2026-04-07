@@ -4913,36 +4913,81 @@ def _master_performance_table(
     except TypeError:
         st.dataframe(styler, use_container_width=True, hide_index=True, key=f"{key_suffix}_df_master_pivot")
 
-    if detail_state is None:
+    _detail_base = f"{key_suffix}_master_metric_detail"
+    _payload_k = f"{_detail_base}_payload"
+    _open_k = f"{_detail_base}_open"
+    _last_sig_k = f"{_detail_base}_last_sig"
+
+    if detail_state is not None:
+        sel = getattr(detail_state, "selection", None)
+        rows = list(getattr(sel, "rows", []) or []) if sel else []
+        cols = list(getattr(sel, "columns", []) or []) if sel else []
+        if rows and cols:
+            rix = int(rows[0])
+            col_name = str(cols[0])
+            if 0 <= rix < len(gm) and col_name in metrics:
+                row = gm.reset_index(drop=True).iloc[rix]
+                month_label = _month_label_short(row.get("month")) or str(row.get("month") or "Selected period")
+                market_label = str(row.get("Market") or "Selected market")
+                value_fn = fmt_map.get(col_name, lambda x: str(x))
+                try:
+                    value_text = str(value_fn(row.get(col_name)))
+                except Exception:
+                    value_text = str(row.get(col_name))
+                sig = f"{month_label}|{market_label}|{col_name}|{rix}"
+                if st.session_state.get(_last_sig_k) != sig:
+                    st.session_state[_last_sig_k] = sig
+                    st.session_state[_open_k] = True
+                    st.session_state[_payload_k] = {
+                        "metric_name": col_name,
+                        "month_label": month_label,
+                        "market_label": market_label,
+                        "value_text": value_text,
+                        "spend": float(pd.to_numeric(row.get("spend", 0), errors="coerce") or 0),
+                        "cw": int(pd.to_numeric(row.get("cw", 0), errors="coerce") or 0),
+                        "leads": int(pd.to_numeric(row.get("leads", 0), errors="coerce") or 0),
+                        "tcv": float(pd.to_numeric(row.get("tcv", 0), errors="coerce") or 0),
+                        "lf": float(pd.to_numeric(row.get("lf", 0), errors="coerce") or 0),
+                    }
+
+    payload = st.session_state.get(_payload_k)
+    is_open = bool(st.session_state.get(_open_k)) and isinstance(payload, dict)
+    if not is_open:
         return
-    sel = getattr(detail_state, "selection", None)
-    if not sel:
-        return
-    rows = list(getattr(sel, "rows", []) or [])
-    cols = list(getattr(sel, "columns", []) or [])
-    if not rows or not cols:
-        return
-    rix = int(rows[0])
-    col_name = str(cols[0])
-    if rix < 0 or rix >= len(gm):
-        return
-    if col_name not in metrics:
-        return
-    row = gm.reset_index(drop=True).iloc[rix]
-    month_label = _month_label_short(row.get("month")) or str(row.get("month") or "Selected period")
-    market_label = str(row.get("Market") or "Selected market")
-    value_fn = fmt_map.get(col_name, lambda x: str(x))
-    try:
-        value_text = str(value_fn(row.get(col_name)))
-    except Exception:
-        value_text = str(row.get(col_name))
-    _render_mpo_master_metric_detail_card(
-        row=row,
-        metric_name=col_name,
-        month_label=month_label,
-        market_label=market_label,
-        value_text=value_text,
+
+    payload_row = pd.Series(
+        {
+            "spend": payload.get("spend", 0),
+            "cw": payload.get("cw", 0),
+            "leads": payload.get("leads", 0),
+            "tcv": payload.get("tcv", 0),
+            "lf": payload.get("lf", 0),
+        }
     )
+    _dialog = getattr(st, "dialog", None)
+    if callable(_dialog):
+        @_dialog("Calculation Details", width="large")
+        def _show_master_metric_dialog() -> None:
+            _render_mpo_master_metric_detail_card(
+                row=payload_row,
+                metric_name=str(payload.get("metric_name") or "Metric"),
+                month_label=str(payload.get("month_label") or "Selected period"),
+                market_label=str(payload.get("market_label") or "Selected market"),
+                value_text=str(payload.get("value_text") or "—"),
+            )
+            if st.button("Close", key=f"{_detail_base}_dlg_close"):
+                st.session_state[_open_k] = False
+                st.rerun()
+
+        _show_master_metric_dialog()
+    else:
+        _render_mpo_master_metric_detail_card(
+            row=payload_row,
+            metric_name=str(payload.get("metric_name") or "Metric"),
+            month_label=str(payload.get("month_label") or "Selected period"),
+            market_label=str(payload.get("market_label") or "Selected market"),
+            value_text=str(payload.get("value_text") or "—"),
+        )
 
 
 def render_page_marketing_performance(
