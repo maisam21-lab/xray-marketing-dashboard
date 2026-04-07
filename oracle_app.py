@@ -4822,6 +4822,91 @@ def _mpo_metric_source_rows_for_metric(
     return out if out else source_rows
 
 
+def _mpo_df_slice_month_market(
+    df: Optional[pd.DataFrame],
+    month_key: str,
+    market_label: str,
+) -> pd.DataFrame:
+    """Rows from a source tab filtered to normalized month key and display market (same slice as master drill-down)."""
+    if df is None or df.empty or not month_key:
+        return pd.DataFrame()
+    x = _normalize_master_merge_frame(df.copy())
+    if "month" not in x.columns or "country" not in x.columns:
+        return pd.DataFrame()
+    x["_mk"] = x["month"].map(_month_norm_key)
+    x["_ml"] = x["country"].map(_market_display_from_join_key).astype(str).str.strip()
+    m = x["_mk"].eq(month_key) & x["_ml"].eq(str(market_label).strip())
+    return x.loc[m].copy()
+
+
+def _mpo_month_period_range_caption(month_key: str) -> str:
+    try:
+        p = pd.Period(str(month_key), freq="M")
+        start = p.to_timestamp().strftime("%B %d, %Y")
+        end = (p + 1).to_timestamp().strftime("%B %d, %Y")
+        return f"{start} - {end}"
+    except Exception:
+        return ""
+
+
+def _mpo_build_spend_drilldown_table(sp: pd.DataFrame) -> pd.DataFrame:
+    """Campaign / line-item style pivot for spend rows (matches reference Marketing Performance table)."""
+    if sp.empty or "cost" not in sp.columns:
+        return pd.DataFrame(
+            columns=["Campaign name", "Total spend", "Platform", "Countries", "Records"]
+        )
+    sp = sp.copy()
+    sp["_cost"] = pd.to_numeric(sp["cost"], errors="coerce").fillna(0.0)
+    group_col: Optional[str] = None
+    for c in ("campaign_name", "campaign", "utm_campaign", "channel", "utm_source", "source_tab"):
+        if c in sp.columns and sp[c].notna().any():
+            group_col = c
+            break
+    out_rows: list[dict[str, Any]] = []
+    if group_col is None:
+        plat = "—"
+        if "platform" in sp.columns and sp["platform"].notna().any():
+            plat = str(sp["platform"].dropna().iloc[0])
+        ctry = "—"
+        if "country" in sp.columns:
+            ctry = ", ".join(sp["country"].dropna().astype(str).str.strip().unique().tolist()[:12])
+        out_rows.append(
+            {
+                "Campaign name": "All spend rows (no campaign column)",
+                "Total spend": float(sp["_cost"].sum()),
+                "Platform": plat,
+                "Countries": ctry,
+                "Records": int(len(sp)),
+            }
+        )
+    else:
+        for key, sub in sp.groupby(group_col, dropna=False):
+            nm = str(key).strip()
+            if not nm or nm.lower() in ("nan", "none"):
+                nm = "(blank)"
+            if len(nm) > 72:
+                nm = nm[:69] + "..."
+            plat = "—"
+            if "platform" in sub.columns and sub["platform"].notna().any():
+                plat = str(sub["platform"].dropna().iloc[0])
+            ctry = "—"
+            if "country" in sub.columns:
+                ctry = ", ".join(sorted(set(sub["country"].dropna().astype(str).str.strip().unique().tolist()))[:12])
+            out_rows.append(
+                {
+                    "Campaign name": nm,
+                    "Total spend": float(pd.to_numeric(sub["cost"], errors="coerce").fillna(0).sum()),
+                    "Platform": plat,
+                    "Countries": ctry,
+                    "Records": int(len(sub)),
+                }
+            )
+    tab = pd.DataFrame(out_rows)
+    if not tab.empty:
+        tab["Total spend"] = tab["Total spend"].map(lambda v: f"${v:,.2f}" if pd.notna(v) else "—")
+    return tab
+
+
 def _mpo_source_pivot_rows(
     *,
     month_key: str,
@@ -4832,15 +4917,7 @@ def _mpo_source_pivot_rows(
         return []
 
     def _slice(df: Optional[pd.DataFrame]) -> pd.DataFrame:
-        if df is None or df.empty:
-            return pd.DataFrame()
-        x = _normalize_master_merge_frame(df.copy())
-        if "month" not in x.columns or "country" not in x.columns:
-            return pd.DataFrame()
-        x["_mk"] = x["month"].map(_month_norm_key)
-        x["_ml"] = x["country"].map(_market_display_from_join_key).astype(str).str.strip()
-        m = x["_mk"].eq(month_key) & x["_ml"].eq(str(market_label).strip())
-        return x.loc[m].copy()
+        return _mpo_df_slice_month_market(df, month_key, market_label)
 
     rows: list[dict[str, str]] = []
 
@@ -4897,9 +4974,106 @@ def _render_mpo_master_metric_detail_card(
     market_label: str,
     value_text: str,
     source_rows: Optional[list[dict[str, str]]] = None,
+    detail_sources: Optional[dict[str, pd.DataFrame]] = None,
+    month_key: str = "",
+    impr: int = 0,
+    clk: int = 0,
 ) -> None:
-    st.subheader("Calculation details")
-    st.markdown(f"**{metric_name}** · {market_label} · {month_label}")
+    period_caption = _mpo_month_period_range_caption(month_key) if month_key else ""
+
+    if metric_name == "Spend":
+        sp = _mpo_df_slice_month_market(detail_sources.get("spend") if detail_sources else None, month_key, market_label)
+        spend_sum = float(pd.to_numeric(sp.get("cost", 0), errors="coerce").fillna(0).sum()) if not sp.empty else float(
+            pd.to_numeric(row.get("spend", 0), errors="coerce") or 0
+        )
+        n_rows = int(len(sp)) if not sp.empty else 0
+        if not sp.empty:
+            impr_v = int(pd.to_numeric(sp.get("impressions", 0), errors="coerce").fillna(0).sum())
+            clk_v = int(pd.to_numeric(sp.get("clicks", 0), errors="coerce").fillna(0).sum())
+        else:
+            impr_v, clk_v = int(impr), int(clk)
+        ctr_v = (clk_v / impr_v * 100.0) if impr_v else 0.0
+        drill = _mpo_build_spend_drilldown_table(sp)
+
+        st.markdown(
+            f'<div class="mpo-modal-hero">'
+            f'<div class="mpo-modal-hero-title">Spend Details for {html.escape(month_label)}</div>'
+            f'<div class="mpo-modal-hero-sub">{html.escape(period_caption)}</div>'
+            f'<div class="mpo-modal-hero-market">{html.escape(market_label)}</div>'
+            "</div>",
+            unsafe_allow_html=True,
+        )
+        k1, k2, k3 = st.columns(3)
+        with k1:
+            st.markdown(
+                f'<div class="mpo-modal-card mpo-modal-card--primary">'
+                f'<div class="mpo-modal-card-label">Spend</div>'
+                f'<div class="mpo-modal-card-value">{html.escape(_format_spend_k(spend_sum))}</div>'
+                "</div>",
+                unsafe_allow_html=True,
+            )
+        with k2:
+            st.markdown(
+                f'<div class="mpo-modal-card">'
+                f'<div class="mpo-modal-card-label">Period</div>'
+                f'<div class="mpo-modal-card-value-sm">{html.escape(month_label)}</div>'
+                "</div>",
+                unsafe_allow_html=True,
+            )
+        with k3:
+            st.markdown(
+                f'<div class="mpo-modal-card">'
+                f'<div class="mpo-modal-card-label">Count</div>'
+                f'<div class="mpo-modal-card-value-sm">{n_rows:,} rows</div>'
+                "</div>",
+                unsafe_allow_html=True,
+            )
+        st.markdown('<p class="mpo-modal-related-title">Related metrics</p>', unsafe_allow_html=True)
+        r1, r2, r3 = st.columns(3)
+        with r1:
+            st.markdown(
+                f'<div class="mpo-modal-related-tile">'
+                f'<div class="mpo-modal-related-lbl">Impressions</div>'
+                f'<div class="mpo-modal-related-val">{impr_v:,}</div></div>',
+                unsafe_allow_html=True,
+            )
+        with r2:
+            st.markdown(
+                f'<div class="mpo-modal-related-tile">'
+                f'<div class="mpo-modal-related-lbl">Clicks</div>'
+                f'<div class="mpo-modal-related-val">{clk_v:,}</div></div>',
+                unsafe_allow_html=True,
+            )
+        with r3:
+            st.markdown(
+                f'<div class="mpo-modal-related-tile">'
+                f'<div class="mpo-modal-related-lbl">CTR</div>'
+                f'<div class="mpo-modal-related-val">{ctr_v:.1f}%</div></div>',
+                unsafe_allow_html=True,
+            )
+        st.caption(f"Master sheet cell (formatted): {value_text}")
+        st.markdown(f"##### Marketing Performance ({len(drill)})")
+        if drill.empty:
+            st.info("No granular spend rows matched this month and market in the spend extract.")
+        else:
+            st.dataframe(
+                drill,
+                use_container_width=True,
+                hide_index=True,
+                key=f"mpo_spend_drill_{month_key}_{market_label}",
+            )
+        with st.expander("Metric definition & formula", expanded=False):
+            st.write(_mpo_metric_definition(metric_name))
+        return
+
+    st.markdown(
+        f'<div class="mpo-modal-hero">'
+        f'<div class="mpo-modal-hero-title">{html.escape(metric_name)} details for {html.escape(month_label)}</div>'
+        f'<div class="mpo-modal-hero-sub">{html.escape(period_caption)}</div>'
+        f'<div class="mpo-modal-hero-market">{html.escape(market_label)}</div>'
+        "</div>",
+        unsafe_allow_html=True,
+    )
     st.caption(f"Master sheet cell value: {value_text}")
     st.markdown("##### What this metric means")
     st.write(_mpo_metric_definition(metric_name))
@@ -5212,12 +5386,15 @@ def _master_performance_table(
                     "metric_name": col_name,
                     "month_label": month_label,
                     "market_label": market_label,
+                    "month_key": month_key,
                     "value_text": value_text,
                     "spend": float(pd.to_numeric(row.get("spend", 0), errors="coerce") or 0),
                     "cw": int(pd.to_numeric(row.get("cw", 0), errors="coerce") or 0),
                     "leads": int(pd.to_numeric(row.get("leads", 0), errors="coerce") or 0),
                     "tcv": float(pd.to_numeric(row.get("tcv", 0), errors="coerce") or 0),
                     "lf": float(pd.to_numeric(row.get("lf", 0), errors="coerce") or 0),
+                    "impr": int(float(pd.to_numeric(row.get("impressions", 0), errors="coerce") or 0)),
+                    "clk": int(float(pd.to_numeric(row.get("clicks", 0), errors="coerce") or 0)),
                     "source_rows": _mpo_source_pivot_rows(
                         month_key=month_key,
                         market_label=market_label,
@@ -5254,7 +5431,7 @@ def _master_performance_table(
     )
     _dialog = getattr(st, "dialog", None)
     if callable(_dialog):
-        @_dialog("Calculation Details", width="large")
+        @_dialog("Details", width="large")
         def _show_master_metric_dialog() -> None:
             _render_mpo_master_metric_detail_card(
                 row=payload_row,
@@ -5263,6 +5440,10 @@ def _master_performance_table(
                 market_label=str(payload.get("market_label") or "Selected market"),
                 value_text=str(payload.get("value_text") or "—"),
                 source_rows=payload.get("source_rows"),
+                detail_sources=detail_sources,
+                month_key=str(payload.get("month_key") or ""),
+                impr=int(payload.get("impr") or 0),
+                clk=int(payload.get("clk") or 0),
             )
             if st.button("Close", key=f"{_detail_base}_dlg_close"):
                 st.session_state[_open_k] = False
@@ -5277,6 +5458,10 @@ def _master_performance_table(
             market_label=str(payload.get("market_label") or "Selected market"),
             value_text=str(payload.get("value_text") or "—"),
             source_rows=payload.get("source_rows"),
+            detail_sources=detail_sources,
+            month_key=str(payload.get("month_key") or ""),
+            impr=int(payload.get("impr") or 0),
+            clk=int(payload.get("clk") or 0),
         )
 
 
@@ -6955,6 +7140,88 @@ def main() -> None:
         border: 1px solid rgba(15, 23, 42, 0.08);
         background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
         box-shadow: 0 2px 10px rgba(15, 23, 42, 0.04);
+    }
+    .mpo-modal-hero {
+        margin: 0 0 14px 0;
+        padding-bottom: 12px;
+        border-bottom: 1px solid #e2e8f0;
+    }
+    .mpo-modal-hero-title {
+        font-size: 1.2rem;
+        font-weight: 800;
+        letter-spacing: -0.03em;
+        color: #0f172a;
+        margin: 0 0 4px 0;
+    }
+    .mpo-modal-hero-sub {
+        font-size: 0.8125rem;
+        color: #64748b;
+        font-weight: 500;
+        margin: 0 0 4px 0;
+    }
+    .mpo-modal-hero-market {
+        font-size: 0.75rem;
+        font-weight: 600;
+        color: #0f766e;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+    }
+    .mpo-modal-card {
+        border: 1px solid #e2e8f0;
+        border-radius: 12px;
+        padding: 12px 14px;
+        background: #fafafa;
+        min-height: 88px;
+    }
+    .mpo-modal-card--primary {
+        background: linear-gradient(165deg, #eff6ff 0%, #dbeafe 55%, #f8fafc 100%);
+        border-color: #bfdbfe;
+        box-shadow: 0 4px 14px rgba(37, 99, 235, 0.08);
+    }
+    .mpo-modal-card-label {
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #64748b;
+        margin-bottom: 6px;
+    }
+    .mpo-modal-card-value {
+        font-size: 1.45rem;
+        font-weight: 800;
+        color: #0f172a;
+        font-variant-numeric: tabular-nums;
+    }
+    .mpo-modal-card-value-sm {
+        font-size: 1.05rem;
+        font-weight: 700;
+        color: #0f172a;
+    }
+    .mpo-modal-related-title {
+        font-size: 0.9rem;
+        font-weight: 700;
+        color: #334155;
+        margin: 16px 0 8px 0;
+    }
+    .mpo-modal-related-tile {
+        border: 1px solid #e2e8f0;
+        border-radius: 10px;
+        padding: 10px 12px;
+        background: #ffffff;
+    }
+    .mpo-modal-related-lbl {
+        font-size: 10px;
+        font-weight: 600;
+        color: #64748b;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        margin-bottom: 4px;
+    }
+    .mpo-modal-related-val {
+        font-size: 1.1rem;
+        font-weight: 700;
+        color: #0f172a;
+        font-variant-numeric: tabular-nums;
     }
     .mpo-detail-card {
         margin: 12px 0 4px 0;
