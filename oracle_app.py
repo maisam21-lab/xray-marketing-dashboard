@@ -28,6 +28,10 @@ import streamlit as st
 DASHBOARD_BUILD = "2026-04-05-mpo-ui-polish"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
+# Optional workbook: set Streamlit secret ``XRAY_SHEET_ID`` to the id or full URL below, then set
+# XRAY_TRUTH_GID / XRAY_SPEND_GID / XRAY_LEADS_GID / XRAY_POST_QUAL_GID / XRAY_RAW_CW_GID to each tab’s
+# ``gid`` from the URL when that tab is open (example tab gid=279936880):
+# https://docs.google.com/spreadsheets/d/1tcjVk7UD-4LG3DG-73ELTNCfzD2XnwnEYqdS8NoH71I/edit?gid=279936880
 DEFAULT_SOURCE_TRUTH_GID = 8109573
 DEFAULT_LEADS_WORKSHEET_GID = 743065354
 # Default empty on Streamlit Cloud; set `XRAY_EXCEL_PATH` in secrets or `XRAY_EXCEL_PATH_DEFAULT` locally.
@@ -40,11 +44,13 @@ DEFAULT_LOGO_PATH = (
 
 
 def _default_sheet_id_from_secrets() -> str:
-    """Optional Streamlit secret XRAY_SHEET_ID overrides default workbook."""
+    """Optional Streamlit secret XRAY_SHEET_ID overrides default workbook (id or full Sheets URL)."""
     try:
         s = st.secrets
         v = (s.get("XRAY_SHEET_ID") or s.get("xray_sheet_id") or "").strip()
-        return v if v else DEFAULT_SHEET_ID
+        if v:
+            return _extract_sheet_id(v)
+        return DEFAULT_SHEET_ID
     except Exception:
         return DEFAULT_SHEET_ID
 
@@ -1372,6 +1378,11 @@ _NORM_TO_FIELD: dict[str, str] = {
     "adspend": "cost",
     "clicks_gp": "clicks",
     "clicks": "clicks",
+    "link_clicks": "clicks",
+    "inline_link_clicks": "clicks",
+    "unique_link_clicks": "clicks",
+    "outbound_clicks": "clicks",
+    "all_clicks": "clicks",
     "impressions_gp": "impressions",
     "impressions": "impressions",
     "impr": "impressions",
@@ -3782,6 +3793,117 @@ def _mpo_spend_activity_for_month(spend_df: pd.DataFrame, month_key: Optional[st
     return cost, impr, clicks
 
 
+def _mpo_rows_paid_media_from_combined(df_loaded: pd.DataFrame) -> pd.DataFrame:
+    """Rows from spend / paid-media tabs (one tab per platform is OK); excludes CRM / leads / post / CW tabs."""
+    if df_loaded.empty or "source_tab" not in df_loaded.columns:
+        return pd.DataFrame()
+    stl = df_loaded["source_tab"].astype(str).str.lower()
+    is_excl = stl.str.contains(
+        r"raw\s*leads?|post\s*qual|raw\s*cw|pipeline|crm|opportunity|deal\s*stage",
+        na=False,
+        regex=True,
+    )
+    is_media = stl.str.contains(
+        r"spend|media|ppc|paid|facebook|meta|google|ads|linkedin|tiktok|snap|programmatic|dv360|sa360|youtube|twitter|pinterest|reddit|bing",
+        na=False,
+        regex=True,
+    ) | df_loaded["source_tab"].astype(str).str.match(r"^gid:\d+_spend$", na=False)
+    sub = df_loaded.loc[~is_excl & is_media].copy()
+    if sub.empty:
+        return sub
+    c = pd.to_numeric(sub.get("cost", 0), errors="coerce").fillna(0)
+    cl = pd.to_numeric(sub.get("clicks", 0), errors="coerce").fillna(0)
+    im = pd.to_numeric(sub.get("impressions", 0), errors="coerce").fillna(0)
+    mask = (c.abs() + cl.abs() + im.abs()) > 1e-9
+    return sub.loc[mask]
+
+
+def _mpo_merge_pool_clicks_impressions_onto_spend(spend_master: pd.DataFrame, df_loaded: pd.DataFrame) -> pd.DataFrame:
+    """If the canonical spend tab has no clicks/impressions, roll them up from other paid-media tabs (per month × country)."""
+    if spend_master.empty:
+        return spend_master
+    c0 = int(pd.to_numeric(spend_master.get("clicks", 0), errors="coerce").fillna(0).sum())
+    i0 = int(pd.to_numeric(spend_master.get("impressions", 0), errors="coerce").fillna(0).sum())
+    if i0 > 0 or c0 > 0:
+        return spend_master
+    pool = _mpo_rows_paid_media_from_combined(df_loaded)
+    if pool.empty:
+        return spend_master
+    pn = _normalize_master_merge_frame(pool.copy())
+    if pn.empty or "month" not in pn.columns or "country" not in pn.columns:
+        return spend_master
+    g = pn.groupby(["month", "country"], as_index=False).agg(
+        clicks=("clicks", "sum"),
+        impressions=("impressions", "sum"),
+    )
+    out = _normalize_master_merge_frame(spend_master.copy())
+    for col in ("clicks", "impressions"):
+        if col not in out.columns:
+            out[col] = 0
+    out = out.merge(g, on=["month", "country"], how="left", suffixes=("", "_p"))
+    for col in ("clicks", "impressions"):
+        cp = f"{col}_p"
+        if cp in out.columns:
+            base = pd.to_numeric(out[col], errors="coerce").fillna(0)
+            add = pd.to_numeric(out[cp], errors="coerce").fillna(0)
+            out[col] = base + add
+            out = out.drop(columns=[cp], errors="ignore")
+    return out
+
+
+def _mpo_render_paid_media_by_platform_summary(df_loaded: pd.DataFrame, *, key_suffix: str) -> None:
+    """Table: spend, clicks, impressions, CTR, CPC by workbook tab / platform (from combined load)."""
+    pool = _mpo_rows_paid_media_from_combined(df_loaded)
+    if pool.empty or "source_tab" not in pool.columns:
+        return
+    rows: list[dict[str, Any]] = []
+    for tab, sub in pool.groupby("source_tab", dropna=False):
+        sp = float(pd.to_numeric(sub.get("cost", 0), errors="coerce").fillna(0).sum())
+        cl = int(pd.to_numeric(sub.get("clicks", 0), errors="coerce").fillna(0).sum())
+        im = int(pd.to_numeric(sub.get("impressions", 0), errors="coerce").fillna(0).sum())
+        plat = "—"
+        if "platform" in sub.columns:
+            u = sub["platform"].dropna().astype(str).str.strip()
+            u = u[u.ne("") & u.ne("Unknown") & u.ne("nan")]
+            if not u.empty:
+                plat = str(u.iloc[0])
+        ctr = (cl / im * 100.0) if im else None
+        cpc = (sp / cl) if cl else None
+        rows.append(
+            {
+                "Tab": str(tab),
+                "Platform": plat,
+                "Spend": sp,
+                "Impressions": im,
+                "Clicks": cl,
+                "CTR %": ctr,
+                "CPC": cpc,
+            }
+        )
+    tab_df = pd.DataFrame(rows)
+    if tab_df.empty:
+        return
+    tab_df = tab_df.sort_values("Spend", ascending=False)
+    tab_df["Spend"] = tab_df["Spend"].map(
+        lambda v: _format_spend_k(float(v)) if v is not None and pd.notna(v) else "—"
+    )
+    tab_df["CTR %"] = tab_df["CTR %"].map(lambda v: f"{v:.2f}" if v is not None and pd.notna(v) else "—")
+    tab_df["CPC"] = tab_df["CPC"].map(
+        lambda v: f"${v:,.2f}" if v is not None and pd.notna(v) and abs(float(v)) != float("inf") else "—"
+    )
+    with st.expander("Paid media KPIs by tab / platform (from workbook)", expanded=False):
+        st.caption(
+            "Sums **Spend**, **Impressions**, and **Clicks** across paid-media tabs in the combined workbook. "
+            "If the main Spend tab has no clicks/impressions, headline totals also pull them from these tabs."
+        )
+        st.dataframe(
+            tab_df,
+            use_container_width=True,
+            hide_index=True,
+            key=f"{key_suffix}_df_platform_kpi",
+        )
+
+
 def _mpo_master_month_sums(master_df: pd.DataFrame, month_key: Optional[str]) -> dict[str, float]:
     out = {"cost": 0.0, "leads": 0.0, "qualified": 0.0, "closed_won": 0.0, "tcv": 0.0, "first_month_lf": 0.0}
     if master_df.empty or not month_key:
@@ -4887,6 +5009,176 @@ def _mpo_df_slice_month_market_fallback_month_only(
     return x.loc[x["_mk"].eq(month_key)].copy()
 
 
+def _mpo_country_section_label(ckey: Any) -> str:
+    """Stable label for a spend row ``country`` group key (groupby key)."""
+    try:
+        if ckey is None or (isinstance(ckey, float) and pd.isna(ckey)):
+            return "(blank country)"
+        s = str(ckey).strip()
+        if not s or s.lower() in ("nan", "none", "<na>"):
+            return "(blank country)"
+        return _market_display_from_join_key(s)
+    except Exception:
+        return "Unknown"
+
+
+def _mpo_spend_records_display_table(
+    sp: pd.DataFrame,
+    *,
+    include_market_column: bool = True,
+    max_rows: int = 500,
+) -> pd.DataFrame:
+    """Line-level spend rows for the modal (readable column order, capped row count)."""
+    if sp.empty:
+        return pd.DataFrame()
+    d = sp.copy()
+    drop_internal = [c for c in d.columns if str(c).startswith("_")]
+    d = d.drop(columns=[c for c in drop_internal if c in d.columns], errors="ignore")
+    pref = [
+        "cost",
+        "country",
+        "month",
+        "date",
+        "campaign_name",
+        "campaign",
+        "utm_campaign",
+        "channel",
+        "platform",
+        "utm_source",
+        "clicks",
+        "impressions",
+        "source_tab",
+    ]
+    cols = [c for c in pref if c in d.columns]
+    if not cols:
+        cols = [c for c in d.columns if c not in ("_mk", "_ml")][:18]
+    out = d[cols].head(max_rows).copy()
+    if "cost" in out.columns:
+        out = out.rename(columns={"cost": "Spend"})
+        out["Spend"] = pd.to_numeric(out["Spend"], errors="coerce")
+    if "country" in out.columns:
+        if include_market_column:
+            out["Market"] = out["country"].map(_market_display_from_join_key).fillna(out["country"].astype(str))
+        out = out.drop(columns=["country"])
+    if "month" in out.columns:
+        out["Month"] = out["month"].astype(str)
+        out = out.drop(columns=["month"])
+    first = [c for c in ("Spend", "Market", "Month", "date") if c in out.columns]
+    rest = [c for c in out.columns if c not in first]
+    return out[first + rest]
+
+
+def _mpo_iter_spend_record_tables_by_country(
+    sp: pd.DataFrame,
+    *,
+    max_total_rows: int = 500,
+) -> list[tuple[str, float, int, pd.DataFrame]]:
+    """Split spend rows into sorted per-country tables; caps total rows across sections."""
+    if sp.empty:
+        return []
+    if "country" not in sp.columns:
+        tbl = _mpo_spend_records_display_table(
+            sp,
+            include_market_column=False,
+            max_rows=max_total_rows,
+        )
+        if tbl.empty:
+            return []
+        subtotal = float(pd.to_numeric(tbl.get("Spend", 0), errors="coerce").fillna(0).sum())
+        return [("All rows (no country column)", subtotal, len(tbl), tbl)]
+
+    remaining = max_total_rows
+    sections: list[tuple[str, float, int, pd.DataFrame]] = []
+    grouped = sorted(
+        sp.groupby("country", dropna=False),
+        key=lambda kv: _mpo_country_section_label(kv[0]).lower(),
+    )
+    for ckey, sub in grouped:
+        if remaining <= 0:
+            break
+        label = _mpo_country_section_label(ckey)
+        tbl = _mpo_spend_records_display_table(
+            sub,
+            include_market_column=False,
+            max_rows=remaining,
+        )
+        if tbl.empty:
+            continue
+        subtotal = float(pd.to_numeric(tbl["Spend"], errors="coerce").fillna(0).sum()) if "Spend" in tbl.columns else 0.0
+        n = int(len(tbl))
+        sections.append((label, subtotal, n, tbl))
+        remaining -= n
+    return sections
+
+
+def _mpo_dataframe_for_export(df: Optional[pd.DataFrame]) -> pd.DataFrame:
+    """Drop internal join columns; safe for CSV / preview."""
+    if df is None or df.empty:
+        return pd.DataFrame()
+    out = df.copy()
+    drop = [c for c in out.columns if str(c).startswith("_")]
+    out = out.drop(columns=[c for c in drop if c in out.columns], errors="ignore")
+    return out
+
+
+def _mpo_df_to_csv_bytes(df: pd.DataFrame) -> bytes:
+    buf = io.BytesIO()
+    _mpo_dataframe_for_export(df).to_csv(buf, index=False, encoding="utf-8-sig")
+    return buf.getvalue()
+
+
+def _mpo_render_row_level_data_exports(
+    *,
+    key_suffix: str,
+    start_date: date,
+    end_date: date,
+    spend_rows: pd.DataFrame,
+    leads_rows: pd.DataFrame,
+    post_rows: pd.DataFrame,
+    cw_rows: pd.DataFrame,
+) -> None:
+    """Preview + CSV download for line-level spend, leads, pipeline, RAW CW (Marketing Performance scope)."""
+    with st.expander("Row-level source data (preview & CSV)", expanded=False):
+        st.caption(
+            "Line-level workbook rows behind the KPIs: **Spend** uses the dashboard + date filters; "
+            "**Leads**, **Post qualification**, and **RAW CW** match the same sources as the master view."
+        )
+        ds = start_date.isoformat()
+        de = end_date.isoformat()
+
+        def _block(title: str, df: pd.DataFrame, file_prefix: str, kid: str) -> None:
+            st.markdown(f"##### {title}")
+            if df is None or df.empty:
+                st.caption("0 rows")
+                st.info("No rows in the current scope.")
+                return
+            ex = _mpo_dataframe_for_export(df)
+            st.caption(f"{len(ex):,} rows · {len(ex.columns)} columns (preview up to 500 rows)")
+            b1, b2 = st.columns([1, 2])
+            with b1:
+                st.download_button(
+                    label="Download CSV",
+                    data=_mpo_df_to_csv_bytes(df),
+                    file_name=f"{file_prefix}_{ds}_{de}.csv",
+                    mime="text/csv",
+                    key=f"{key_suffix}_dl_{kid}",
+                )
+            with b2:
+                st.caption("Opens in Excel with UTF-8.")
+            st.dataframe(
+                ex.head(500),
+                use_container_width=True,
+                hide_index=True,
+                height=280,
+                key=f"{key_suffix}_prev_{kid}",
+            )
+
+        _block("Spend (media cost rows)", spend_rows, "marketing_spend_rows", "spend")
+        _block("Leads", leads_rows, "marketing_leads_rows", "leads")
+        _block("Post qualification (pipeline)", post_rows, "marketing_post_qual_rows", "post")
+        _block("RAW CW (TCV / LF)", cw_rows, "marketing_raw_cw_rows", "cw")
+
+
 def _mpo_month_period_range_caption(month_key: str) -> str:
     try:
         p = pd.Period(str(month_key), freq="M")
@@ -5042,12 +5334,6 @@ def _render_mpo_master_metric_detail_card(
             pd.to_numeric(row.get("spend", 0), errors="coerce") or 0
         )
         n_rows = int(len(sp)) if not sp.empty else 0
-        if not sp.empty:
-            impr_v = int(pd.to_numeric(sp.get("impressions", 0), errors="coerce").fillna(0).sum())
-            clk_v = int(pd.to_numeric(sp.get("clicks", 0), errors="coerce").fillna(0).sum())
-        else:
-            impr_v, clk_v = int(impr), int(clk)
-        ctr_v = (clk_v / impr_v * 100.0) if impr_v else 0.0
         drill = _mpo_build_spend_drilldown_table(sp)
 
         st.markdown(
@@ -5088,36 +5374,38 @@ def _render_mpo_master_metric_detail_card(
                 "</div>",
                 unsafe_allow_html=True,
             )
-        st.markdown('<p class="mpo-modal-related-title">Related metrics</p>', unsafe_allow_html=True)
-        r1, r2, r3 = st.columns(3)
-        with r1:
-            st.markdown(
-                f'<div class="mpo-modal-related-tile">'
-                f'<div class="mpo-modal-related-lbl">Impressions</div>'
-                f'<div class="mpo-modal-related-val">{impr_v:,}</div></div>',
-                unsafe_allow_html=True,
-            )
-        with r2:
-            st.markdown(
-                f'<div class="mpo-modal-related-tile">'
-                f'<div class="mpo-modal-related-lbl">Clicks</div>'
-                f'<div class="mpo-modal-related-val">{clk_v:,}</div></div>',
-                unsafe_allow_html=True,
-            )
-        with r3:
-            st.markdown(
-                f'<div class="mpo-modal-related-tile">'
-                f'<div class="mpo-modal-related-lbl">CTR</div>'
-                f'<div class="mpo-modal-related-val">{ctr_v:.1f}%</div></div>',
-                unsafe_allow_html=True,
-            )
         st.caption(f"Master sheet cell (formatted): {value_text}")
-        st.markdown(f"##### Marketing Performance ({len(drill)})")
-        if drill.empty:
+        sp_by_country = _mpo_iter_spend_record_tables_by_country(sp)
+        st.markdown("##### Spend records (by country)")
+        if not sp_by_country:
             st.info(
-                "No spend rows in the extract matched this month (and market). "
+                "No line-level spend rows in the extract matched this month (and market). "
                 "The master cell can still show spend from **merged / allocated** totals. "
                 "Check that the Spend tab has **month** and **country** populated for detail rows."
+            )
+        else:
+            shown = sum(len(t[3]) for t in sp_by_country)
+            st.caption(
+                f"Showing {shown:,} line-level row(s) across {len(sp_by_country)} country group(s) "
+                f"(matched slice {n_rows:,} rows; up to 500 lines total per view)."
+            )
+            for _ci, (_clabel, _csub, _cn, sp_rec) in enumerate(sp_by_country):
+                if _ci:
+                    st.divider()
+                st.markdown(
+                    f"**{html.escape(_clabel)}** — {_format_spend_k(_csub)} · {_cn:,} row(s)"
+                )
+                st.dataframe(
+                    sp_rec,
+                    use_container_width=True,
+                    hide_index=True,
+                    height=min(420, max(140, 56 + _cn * 28)),
+                    key=f"mpo_spend_rec_{month_key}_{market_label}_{_ci}",
+                )
+        st.markdown(f"##### By campaign ({len(drill)})")
+        if drill.empty:
+            st.info(
+                "No campaign-level roll-up could be built from the matched rows (missing campaign column or zero cost)."
             )
         else:
             st.dataframe(
@@ -5197,7 +5485,6 @@ def _master_performance_table(
     df = _master_view_impute_month_for_spend_rows(df)
     if section_title:
         st.markdown(f'<div class="looker-table-title">{section_title}</div>', unsafe_allow_html=True)
-    _tbl_col, _quick_col = st.columns([3, 1], gap="small")
     agg: dict[str, tuple[str, str]] = {
         "spend": ("cost", "sum"),
         "cw": ("closed_won", "sum"),
@@ -5356,18 +5643,17 @@ def _master_performance_table(
             subset=[col],
         )
     detail_state = None
-    with _tbl_col:
-        try:
-            detail_state = st.dataframe(
-                styler,
-                use_container_width=True,
-                hide_index=True,
-                key=f"{key_suffix}_df_master_pivot",
-                on_select="rerun",
-                selection_mode="single-cell",
-            )
-        except TypeError:
-            st.dataframe(styler, use_container_width=True, hide_index=True, key=f"{key_suffix}_df_master_pivot")
+    try:
+        detail_state = st.dataframe(
+            styler,
+            use_container_width=True,
+            hide_index=True,
+            key=f"{key_suffix}_df_master_pivot",
+            on_select="rerun",
+            selection_mode="single-cell",
+        )
+    except TypeError:
+        st.dataframe(styler, use_container_width=True, hide_index=True, key=f"{key_suffix}_df_master_pivot")
 
     _detail_base = f"{key_suffix}_master_metric_detail"
     _payload_k = f"{_detail_base}_payload"
@@ -5467,18 +5753,6 @@ def _master_performance_table(
                 }
 
     payload = st.session_state.get(_payload_k)
-    with _quick_col:
-        st.markdown('<div class="mpo-quick-panel">', unsafe_allow_html=True)
-        if isinstance(payload, dict):
-            _mn = str(payload.get("metric_name") or "")
-            st.markdown(f"**{_mn}**")
-            st.caption(f"{payload.get('market_label')} · {payload.get('month_label')}")
-            st.caption(f"Master cell: **{payload.get('value_text')}**")
-            _def = _mpo_metric_definition(_mn)
-            st.caption(_def[:400] + ("…" if len(_def) > 400 else ""))
-        else:
-            st.caption("Click a metric cell. This panel shows a quick definition; the dialog shows the full calculation trail.")
-        st.markdown("</div>", unsafe_allow_html=True)
 
     is_open = bool(st.session_state.get(_open_k)) and isinstance(payload, dict)
     if not is_open:
@@ -5509,9 +5783,18 @@ def _master_performance_table(
                 impr=int(payload.get("impr") or 0),
                 clk=int(payload.get("clk") or 0),
             )
-            if st.button("Close", key=f"{_detail_base}_dlg_close"):
-                st.session_state[_open_k] = False
-                st.rerun()
+            st.markdown('<div class="mpo-dialog-close-row">', unsafe_allow_html=True)
+            _dc1, _dc2 = st.columns([1, 1])
+            with _dc2:
+                if st.button(
+                    "Close",
+                    key=f"{_detail_base}_dlg_close",
+                    type="primary",
+                    use_container_width=True,
+                ):
+                    st.session_state[_open_k] = False
+                    st.rerun()
+            st.markdown("</div>", unsafe_allow_html=True)
 
         _show_master_metric_dialog()
     else:
@@ -5588,7 +5871,8 @@ def render_page_marketing_performance(
             if _normalized_spend_cost_sum(spend_sheet_master) < 1e-9:
                 spend_sheet_master = spend_pool_full.copy()
 
-    spend_df = _spend_slice_for_dashboard_filters(spend_sheet_master, df)
+    spend_sheet_for_kpis = _mpo_merge_pool_clicks_impressions_onto_spend(spend_sheet_master, df_date)
+    spend_df = _spend_slice_for_dashboard_filters(spend_sheet_for_kpis, df)
 
     def _tab_subset(frame: pd.DataFrame, tab_keywords: list[str]) -> pd.DataFrame:
         if "source_tab" not in frame.columns:
@@ -5908,7 +6192,7 @@ def render_page_marketing_performance(
         _spend_for_master_ui = _spend_sheet_pivot_by_month_country(spend_pool_full)
 
     df_mkt = _mpo_apply_market_only(df_date, key_suffix)
-    spend_cmp = _spend_slice_for_dashboard_filters(spend_sheet_master, df_mkt)
+    spend_cmp = _spend_slice_for_dashboard_filters(spend_sheet_for_kpis, df_mkt)
     cw_cmp = _cw_dataframe_for_kpis(_resolve_cw_tcv_dataframe(df_loaded, df_mkt), df_mkt)
     ck, rk, cmp_kind = _mpo_compare_month_keys(master_df, key_suffix=key_suffix, table_df=df)
 
@@ -6001,16 +6285,28 @@ def render_page_marketing_performance(
         prior=_kpi_prior,
     )
 
+    _mpo_render_paid_media_by_platform_summary(df_date, key_suffix=key_suffix)
+
     _master_performance_table(
         master_df,
         key_suffix=key_suffix,
         spend_grid=_spend_for_master_ui,
         detail_sources={
-            "spend": spend_sheet_master,
+            "spend": spend_sheet_for_kpis,
             "leads": leads_df,
             "post": post_df_kpi,
             "cw": cw_kpi,
         },
+    )
+
+    _mpo_render_row_level_data_exports(
+        key_suffix=key_suffix,
+        start_date=start_date,
+        end_date=end_date,
+        spend_rows=spend_df,
+        leads_rows=leads_df,
+        post_rows=post_df_kpi,
+        cw_rows=cw_kpi,
     )
 
     _render_mpo_trend_charts(
@@ -7197,14 +7493,6 @@ def main() -> None:
         box-shadow: 0 2px 8px rgba(15, 23, 42, 0.05);
         border: 1px solid rgba(15, 23, 42, 0.08);
     }
-    .mpo-quick-panel {
-        min-height: 140px;
-        padding: 10px 12px;
-        border-radius: 12px;
-        border: 1px solid rgba(15, 23, 42, 0.08);
-        background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
-        box-shadow: 0 2px 10px rgba(15, 23, 42, 0.04);
-    }
     .mpo-modal-hero {
         margin: 0 0 14px 0;
         padding-bottom: 12px;
@@ -7286,6 +7574,47 @@ def main() -> None:
         font-weight: 700;
         color: #0f172a;
         font-variant-numeric: tabular-nums;
+    }
+    /* Footer Close: wide column + nowrap so label is never forced into a tiny circle. */
+    [data-testid="stDialog"] .mpo-dialog-close-row {
+        width: 100%;
+    }
+    [data-testid="stDialog"] .mpo-dialog-close-row [data-testid="column"]:last-child [data-testid="stButton"] {
+        width: 100% !important;
+        max-width: 100% !important;
+        min-width: 0 !important;
+    }
+    [data-testid="stDialog"] .mpo-dialog-close-row [data-testid="stButton"],
+    [data-testid="stDialog"] .mpo-dialog-close-row [data-testid="stButton"] > div,
+    [data-testid="stDialog"] .mpo-dialog-close-row [data-baseweb="button"],
+    [data-testid="stDialog"] .mpo-dialog-close-row button {
+        border-radius: 8px !important;
+        min-height: 44px !important;
+        width: 100% !important;
+        max-width: 100% !important;
+        padding-left: 16px !important;
+        padding-right: 16px !important;
+        font-size: 15px !important;
+        font-weight: 600 !important;
+        letter-spacing: 0.02em !important;
+        white-space: nowrap !important;
+        line-height: 1.25 !important;
+        overflow: visible !important;
+    }
+    [data-testid="stDialog"] .mpo-dialog-close-row button p,
+    [data-testid="stDialog"] .mpo-dialog-close-row button span,
+    [data-testid="stDialog"] .mpo-dialog-close-row [data-baseweb="button"] p,
+    [data-testid="stDialog"] .mpo-dialog-close-row [data-baseweb="button"] span {
+        white-space: nowrap !important;
+        overflow: visible !important;
+        text-overflow: clip !important;
+    }
+    /* Dialog chrome dismiss (X) — header only, not footer primary "Close" (same aria-label). */
+    [data-testid="stDialog"] [data-testid="stHeader"] button[aria-label="Close"],
+    [data-testid="stDialog"] [data-testid="stHeader"] button {
+        min-width: 44px !important;
+        min-height: 44px !important;
+        border-radius: 999px !important;
     }
     .mpo-detail-card {
         margin: 12px 0 4px 0;
