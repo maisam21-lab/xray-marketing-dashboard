@@ -25,7 +25,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 # Bump when you ship UI/logic changes — shown on Marketing Performance so you know which file Streamlit loaded.
-DASHBOARD_BUILD = "2026-04-05-mpo-mom-yoy"
+DASHBOARD_BUILD = "2026-04-05-mpo-sum-compare-pickers"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 DEFAULT_SOURCE_TRUTH_GID = 8109573
@@ -3230,12 +3230,20 @@ def _apply_sheet_filters(
 
 
 # Marketing Performance: one multiselect token per dimension = full data (no slice on that dimension).
-_MPO_ALL_GEO_SENTINEL = "All data"
+_MPO_ALL_GEO_SENTINEL = "All markets"
 _MPO_ALL_GEO_LEGACY: frozenset[str] = frozenset(
-    {"All Markets", "All Countries", "All markets & countries", _MPO_ALL_GEO_SENTINEL}
+    {
+        "All Markets",
+        "All Countries",
+        "All markets & countries",
+        "All data",
+        _MPO_ALL_GEO_SENTINEL,
+    }
 )
-_MPO_ALL_MONTHS_SENTINEL = "All data"
-_MPO_ALL_MONTHS_LEGACY: frozenset[str] = frozenset({"All Months", "All months", _MPO_ALL_MONTHS_SENTINEL})
+_MPO_ALL_MONTHS_SENTINEL = "All months"
+_MPO_ALL_MONTHS_LEGACY: frozenset[str] = frozenset(
+    {"All Months", "All months", "All data", _MPO_ALL_MONTHS_SENTINEL}
+)
 
 
 def _mpo_normalize_market_multiselect_state(key_suffix: str) -> None:
@@ -3293,10 +3301,10 @@ def _mpo_market_scope_note(key_suffix: str) -> str:
     """Short label for which markets apply (scorecard + table)."""
     sm = st.session_state.get(f"{key_suffix}_market", [_MPO_ALL_GEO_SENTINEL])
     if _mpo_market_scope_is_all(sm):
-        return "All data"
+        return "All markets"
     picks = _mpo_market_scope_countries_only(sm)
     if not picks:
-        return "All data"
+        return "All markets"
     if len(picks) <= 2:
         return ", ".join(html.escape(p) for p in picks)
     return f"{html.escape(picks[0])}, {html.escape(picks[1])} +{len(picks) - 2} more"
@@ -3367,6 +3375,21 @@ def _mpo_scorecard_compare_label(opt: str) -> str:
     }.get(str(opt), str(opt))
 
 
+def _mpo_sorted_month_key_list(months_raw: list[Any]) -> list[str]:
+    """Sorted unique ``YYYY-MM`` keys from raw month values (filters + compare pickers)."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for m in months_raw:
+        k = _month_norm_key(m)
+        sk = str(k).strip() if k is not None else ""
+        if not sk or sk.lower() in ("nan", "nat", "none"):
+            continue
+        if sk not in seen:
+            seen.add(sk)
+            out.append(sk)
+    return sorted(out, key=_mpo_month_ts_for_sort)
+
+
 def _mpo_ensure_scorecard_compare_session(key_suffix: str) -> str:
     """Session key ``{suffix}_scorecard_compare``: ``mom`` | ``yoy`` (default **mom**)."""
     k = f"{key_suffix}_scorecard_compare"
@@ -3420,7 +3443,7 @@ def _apply_marketing_performance_filters(
                 [_MPO_ALL_GEO_SENTINEL] + market_opts,
                 default=[_MPO_ALL_GEO_SENTINEL],
                 key=f"{key_suffix}_market",
-                help="Default is all data (every market). Remove “All data” and pick countries to narrow.",
+                help="Default: **All markets**. Remove it and pick countries to narrow the table and scorecard.",
             )
         with _c_mo:
             st.multiselect(
@@ -3428,39 +3451,96 @@ def _apply_marketing_performance_filters(
                 [_MPO_ALL_MONTHS_SENTINEL] + month_opts,
                 default=[_MPO_ALL_MONTHS_SENTINEL],
                 key=f"{key_suffix}_month",
-                help="Default is all data (every month in range). The scorecard still highlights the latest table month unless you narrow months.",
+                help="Default: **All months** in range — headline KPIs **sum** across those months. Narrow to specific months if needed.",
             )
 
+        _mko = _mpo_sorted_month_key_list(month_opts)
+        _years = sorted({pd.Period(str(x), freq="M").year for x in _mko}) if _mko else [date.today().year]
+        _k_mom_cur = f"{key_suffix}_cmp_mom_cur"
+        _k_mom_ref = f"{key_suffix}_cmp_mom_ref"
+        _k_y1 = f"{key_suffix}_cmp_yoy_y1"
+        _k_y2 = f"{key_suffix}_cmp_yoy_y2"
+        _k_ym = f"{key_suffix}_cmp_yoy_month"
+        if _mko:
+            if _k_mom_cur not in st.session_state:
+                st.session_state[_k_mom_cur] = _mko[-1]
+            if _k_mom_ref not in st.session_state:
+                st.session_state[_k_mom_ref] = _mko[-2] if len(_mko) >= 2 else _mko[-1]
+        if _k_y1 not in st.session_state:
+            st.session_state[_k_y1] = int(_years[-1])
+        if _k_y2 not in st.session_state:
+            st.session_state[_k_y2] = int(_years[-2]) if len(_years) >= 2 else int(_years[-1])
+        if _k_ym not in st.session_state:
+            st.session_state[_k_ym] = int(pd.Period(str(_mko[-1]), freq="M").month) if _mko else 1
+
         try:
-            _cmp_exp = st.expander("Scorecard comparison", expanded=False)
+            _cmp_exp = st.expander("Scorecard comparison", expanded=True)
         except TypeError:
             _cmp_exp = st.expander("Scorecard comparison")
         with _cmp_exp:
             st.markdown(
                 '<div class="mpo-cmp-panel-intro">'
-                "<strong>Month</strong> above defaults to <strong>all months in range</strong> (full data). "
-                "The scorecard highlights the <strong>latest</strong> month in the table; pick how to compare it."
+                "Headline numbers use the months you selected above (default: <strong>all months</strong>, summed). "
+                "Below, choose which two periods to use for <strong>% change</strong> on the scorecard."
                 "</div>",
                 unsafe_allow_html=True,
             )
             _seg = getattr(st, "segmented_control", None)
             if callable(_seg):
                 _seg(
-                    "Compare latest month to",
+                    "Compare periods",
                     options=["mom", "yoy"],
                     format_func=_mpo_scorecard_compare_label,
                     key=f"{key_suffix}_scorecard_compare",
-                    help="Month vs month = previous calendar month. Year vs year = same month last year.",
+                    help="Month vs month: pick any two months. Year vs year: same calendar month in two years.",
                 )
             else:
                 st.radio(
-                    "Compare latest month to",
+                    "Compare periods",
                     options=["mom", "yoy"],
                     format_func=_mpo_scorecard_compare_label,
                     key=f"{key_suffix}_scorecard_compare",
                     horizontal=True,
-                    help="Month vs month = previous calendar month. Year vs year = same month last year.",
+                    help="Month vs month: pick any two months. Year vs year: same calendar month in two years.",
                 )
+            _cmp_mode = str(st.session_state.get(f"{key_suffix}_scorecard_compare", "mom") or "mom")
+            if _mko and _cmp_mode == "mom":
+                _r1, _r2 = st.columns(2)
+                with _r1:
+                    st.selectbox(
+                        "Month (current)",
+                        options=_mko,
+                        format_func=_month_label_short,
+                        key=_k_mom_cur,
+                    )
+                with _r2:
+                    st.selectbox(
+                        "Month (compare to)",
+                        options=_mko,
+                        format_func=_month_label_short,
+                        key=_k_mom_ref,
+                    )
+            elif _cmp_mode == "yoy":
+                _y1c, _y2c, _ymc = st.columns(3)
+                with _y1c:
+                    st.selectbox(
+                        "Year (current)",
+                        options=_years,
+                        key=_k_y1,
+                    )
+                with _y2c:
+                    st.selectbox(
+                        "Year (compare to)",
+                        options=_years,
+                        key=_k_y2,
+                    )
+                with _ymc:
+                    st.selectbox(
+                        "Calendar month",
+                        options=list(range(1, 13)),
+                        format_func=lambda m: pd.Timestamp(2020, int(m), 1).strftime("%B"),
+                        key=_k_ym,
+                    )
 
     selected_markets = st.session_state.get(f"{key_suffix}_market", [_MPO_ALL_GEO_SENTINEL])
     selected_months = st.session_state.get(f"{key_suffix}_month", [_MPO_ALL_MONTHS_SENTINEL])
@@ -3531,31 +3611,31 @@ def _mpo_month_keys_sorted_master(master_df: pd.DataFrame) -> list[str]:
     return sorted({str(x) for x in raw.unique()}, key=_mpo_month_ts_for_sort)
 
 
-def _mpo_scorecard_current_month_mom_style(
-    keys_sorted: list[str],
-    keys_table: list[str],
-    months_sel: Any,
-) -> Optional[str]:
-    """Latest table month (or master) vs month multiselect — same rules as **Prior month** compare current."""
-    if not keys_sorted:
-        return None
-    if not isinstance(months_sel, list):
-        months_sel = [_MPO_ALL_MONTHS_SENTINEL]
-    all_months = _mpo_month_multiselect_is_all(months_sel)
-    picked = _mpo_month_multiselect_explicit(months_sel)
-    norm_pick: list[str] = []
-    for m in picked:
+def _mpo_headline_month_keys_for_scope(
+    master_df: pd.DataFrame,
+    table_df: Optional[pd.DataFrame],
+    key_suffix: str,
+) -> list[str]:
+    """Month keys to **sum** for headline KPIs: all months in the filtered table, or only months explicitly chosen."""
+    months_sel = st.session_state.get(f"{key_suffix}_month", [_MPO_ALL_MONTHS_SENTINEL])
+    base = (
+        table_df
+        if table_df is not None and not table_df.empty and "month" in table_df.columns
+        else master_df
+    )
+    if base.empty or "month" not in base.columns:
+        return []
+    keys = _mpo_month_keys_sorted_master(base)
+    if _mpo_month_multiselect_is_all(months_sel):
+        return keys
+    ex = _mpo_month_multiselect_explicit(months_sel)
+    out: list[str] = []
+    for m in ex:
         k = _month_norm_key(m)
-        if k and str(k).strip().lower() not in ("", "nan", "nat"):
-            norm_pick.append(str(k).strip())
-
-    if all_months:
-        return keys_table[-1] if keys_table else keys_sorted[-1]
-    if not picked:
-        return keys_table[-1] if keys_table else keys_sorted[-1]
-    if not norm_pick:
-        return keys_table[-1] if keys_table else keys_sorted[-1]
-    return max(norm_pick, key=_mpo_month_ts_for_sort)
+        sk = str(k).strip() if k is not None else ""
+        if sk and sk.lower() not in ("", "nan", "nat"):
+            out.append(sk)
+    return sorted(set(out), key=_mpo_month_ts_for_sort)
 
 
 def _mpo_compare_month_keys(
@@ -3564,32 +3644,32 @@ def _mpo_compare_month_keys(
     key_suffix: str,
     table_df: Optional[pd.DataFrame] = None,
 ) -> tuple[Optional[str], Optional[str], str]:
-    """(current_month_key, reference_month_key, ``mom`` | ``yoy``).
-
-    **Current** month: latest among **Month** filter choices, or—if **All data**—latest in ``table_df`` / ``master_df``.
-
-    **mom:** reference = prior calendar month. **yoy:** reference = same month one year earlier.
-    """
+    """(compare_current_month_key, compare_reference_month_key, ``mom`` | ``yoy``) from expander pickers only."""
     keys_sorted = _mpo_month_keys_sorted_master(master_df)
-    keys_table: list[str] = []
-    if table_df is not None and not table_df.empty and "month" in table_df.columns:
-        keys_table = _mpo_month_keys_sorted_master(table_df)
-    months_sel = st.session_state.get(f"{key_suffix}_month", [_MPO_ALL_MONTHS_SENTINEL])
-
     _cmp = str(st.session_state.get(f"{key_suffix}_scorecard_compare", "mom") or "mom")
     if _cmp not in ("mom", "yoy"):
         _cmp = "mom"
-
     if not keys_sorted:
         return None, None, _cmp
 
-    cur = _mpo_scorecard_current_month_mom_style(keys_sorted, keys_table, months_sel)
-    if not cur:
-        return None, None, _cmp
+    if _cmp == "yoy":
+        y1 = int(st.session_state.get(f"{key_suffix}_cmp_yoy_y1") or 0)
+        y2 = int(st.session_state.get(f"{key_suffix}_cmp_yoy_y2") or 0)
+        mnum = int(st.session_state.get(f"{key_suffix}_cmp_yoy_month") or 1)
+        mnum = max(1, min(12, mnum))
+        if y1 <= 0 or y2 <= 0:
+            return None, None, "yoy"
+        return f"{y1}-{mnum:02d}", f"{y2}-{mnum:02d}", "yoy"
 
-    _delta = -12 if _cmp == "yoy" else -1
-    ref = _mpo_shift_month_key(cur, _delta)
-    return cur, ref, _cmp
+    _cur = st.session_state.get(f"{key_suffix}_cmp_mom_cur")
+    _ref = st.session_state.get(f"{key_suffix}_cmp_mom_ref")
+    cur_k = str(_month_norm_key(_cur)).strip() if _cur is not None else ""
+    ref_k = str(_month_norm_key(_ref)).strip() if _ref is not None else ""
+    if not cur_k or cur_k.lower() in ("nan", "nat", "none"):
+        cur_k = keys_sorted[-1]
+    if not ref_k or ref_k.lower() in ("nan", "nat", "none"):
+        ref_k = keys_sorted[-2] if len(keys_sorted) >= 2 else keys_sorted[-1]
+    return cur_k, ref_k, "mom"
 
 
 def _mpo_rows_for_norm_month(df: pd.DataFrame, month_key: Optional[str]) -> pd.DataFrame:
@@ -3805,6 +3885,81 @@ def _mpo_scorecard_headline_totals_for_month(
         "cpl": float(cpl),
         "cpsql": float(cpsql),
         "total_new_working": int(_new_working_count_from_leads(ld_c)),
+        "total_pitching": int(pipe_c["pitching"]),
+        "total_negotiation": int(pipe_c["negotiation"]),
+        "total_commitment": int(pipe_c["commitment"]),
+        "total_qualifying": int(pipe_c["qualifying"]),
+        "total_total_live": int(pipe_c["total_live"]),
+        "total_closed_lost": int(pipe_c["closed_lost"]),
+        "cw_for_qwin": int(cw_q) if cw_q else None,
+        "qual_for_qwin": int(qual_q) if qual_q else None,
+    }
+
+
+def _mpo_scorecard_headline_totals_for_months(
+    month_keys: list[str],
+    *,
+    spend_df: pd.DataFrame,
+    leads_df: pd.DataFrame,
+    post_df_kpi: pd.DataFrame,
+    cw_kpi: pd.DataFrame,
+) -> Optional[dict[str, Any]]:
+    """Big KPI numbers summed across **multiple** months (all months in range, or a multi-month pick)."""
+    if not month_keys:
+        return None
+    ts, ti, tc = 0.0, 0, 0
+    for mk in month_keys:
+        sc, ic, cc = _mpo_spend_activity_for_month(spend_df, mk)
+        ts += float(sc)
+        ti += int(ic)
+        tc += int(cc)
+    total_leads = 0
+    total_qualified = 0
+    total_new_working = 0
+    for mk in month_keys:
+        ld = _mpo_leads_for_norm_month(leads_df, mk)
+        total_leads += int(len(ld))
+        total_qualified += int(_qualified_count_from_leads(ld))
+        total_new_working += int(_new_working_count_from_leads(ld))
+    ctr = (tc / ti * 100.0) if ti else 0.0
+    cpc = (ts / tc) if tc else 0.0
+    cpl = (ts / total_leads) if total_leads else 0.0
+    cpsql = (ts / total_qualified) if total_qualified else 0.0
+    post_frames: list[pd.DataFrame] = []
+    for mk in month_keys:
+        post_frames.append(_mpo_rows_for_norm_month(post_df_kpi, mk))
+    post_all = pd.concat(post_frames, ignore_index=True) if post_frames else pd.DataFrame()
+    post_all = _dedupe_post_lead_rows(post_all)
+    pipe_c = _mpo_pipeline_month_totals(post_all)
+    cw_parts: list[pd.DataFrame] = []
+    for mk in month_keys:
+        cw_parts.append(_mpo_rows_for_norm_month(cw_kpi, mk))
+    cw_sub = pd.concat(cw_parts, ignore_index=True) if cw_parts else pd.DataFrame()
+    total_tcv = (
+        float(pd.to_numeric(cw_sub["tcv"], errors="coerce").fillna(0).sum())
+        if not cw_sub.empty and "tcv" in cw_sub.columns
+        else 0.0
+    )
+    total_first_month_lf = (
+        float(pd.to_numeric(cw_sub["first_month_lf"], errors="coerce").fillna(0).sum())
+        if not cw_sub.empty and "first_month_lf" in cw_sub.columns
+        else 0.0
+    )
+    cw_q, qual_q = _q_win_rate_inputs(post_all, leads_df)
+    return {
+        "total_spend": float(ts),
+        "total_impr": int(ti),
+        "total_clicks": int(tc),
+        "ctr": float(ctr),
+        "total_leads": int(total_leads),
+        "total_qualified": int(total_qualified),
+        "total_cw": int(pipe_c["cw"]),
+        "total_tcv": float(total_tcv),
+        "total_first_month_lf": float(total_first_month_lf),
+        "cpc": float(cpc),
+        "cpl": float(cpl),
+        "cpsql": float(cpsql),
+        "total_new_working": int(total_new_working),
         "total_pitching": int(pipe_c["pitching"]),
         "total_negotiation": int(pipe_c["negotiation"]),
         "total_commitment": int(pipe_c["commitment"]),
@@ -5029,17 +5184,25 @@ def render_page_marketing_performance(
         cw_kpi=cw_cmp,
     )
     if cmp_kind == "yoy":
-        _kpi_prior["_delta_label"] = "same month last year"
+        _kpi_prior["_delta_label"] = "the compare year (same calendar month)"
     else:
-        _kpi_prior["_delta_label"] = "prior month"
+        _kpi_prior["_delta_label"] = "the compare month"
 
-    # Headline KPIs: **current compare month** (not sum of all rows in the table).
-    _hm = _mpo_scorecard_headline_totals_for_month(
-        ck,
-        spend_df=spend_cmp,
-        leads_df=leads_df,
-        post_df_kpi=post_df_kpi,
-        cw_kpi=cw_cmp,
+    # Headline KPIs: **sum** across months in scope (All months = everything in the table).
+    _headline_keys = _mpo_headline_month_keys_for_scope(master_df, df, key_suffix)
+    if not _headline_keys:
+        _fb = _mpo_month_keys_sorted_master(master_df)
+        _headline_keys = _fb[-1:] if _fb else []
+    _hm = (
+        _mpo_scorecard_headline_totals_for_months(
+            _headline_keys,
+            spend_df=spend_cmp,
+            leads_df=leads_df,
+            post_df_kpi=post_df_kpi,
+            cw_kpi=cw_cmp,
+        )
+        if _headline_keys
+        else None
     )
     if _hm:
         total_spend = float(_hm["total_spend"])
