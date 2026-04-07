@@ -25,7 +25,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 # Bump when you ship UI/logic changes — shown on Marketing Performance so you know which file Streamlit loaded.
-DASHBOARD_BUILD = "2026-04-08-single-page-no-tabs"
+DASHBOARD_BUILD = "2026-04-08-strip-scorecard-compare-ui"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 # Optional workbook: set Streamlit secret ``XRAY_SHEET_ID`` to the id or full URL below, then set
@@ -3630,7 +3630,7 @@ def _mpo_kpi_section_head_html() -> str:
         '<div class="mpo-sec-head-body">'
         '<h2 class="mpo-sec-head-title">KPI scorecard</h2>'
         '<p class="mpo-sec-head-desc">Large numbers are <strong>period totals</strong> for the scope above. '
-        "Row-level % changes compare against the period you set in <em>Scorecard comparison</em>.</p>"
+        "Row-level % changes use the latest two months in the table (month vs month).</p>"
         "</div></div>"
     )
 
@@ -3681,7 +3681,7 @@ def _apply_marketing_performance_filters(
     *,
     key_suffix: str,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Performance-tab filters: market × month, plus **Scorecard comparison** (MoM vs YoY) in an expander."""
+    """Performance-tab filters: market × month. MoM % deltas use last two data months (no compare expander)."""
 
     mk_raw = [x for x in df_date["country"].dropna().unique().tolist() if x and x != "Unknown"]
     if "cost" in df_date.columns and mk_raw:
@@ -3748,80 +3748,6 @@ def _apply_marketing_performance_filters(
         if _k_ym not in st.session_state:
             st.session_state[_k_ym] = int(pd.Period(str(_mko[-1]), freq="M").month) if _mko else 1
 
-        st.markdown(
-            '<div class="mpo-expander-anchor">'
-            '<span class="mpo-expander-anchor-line"></span>'
-            '<span class="mpo-expander-anchor-txt">% change comparison controls</span>'
-            '<span class="mpo-expander-anchor-line"></span>'
-            "</div>",
-            unsafe_allow_html=True,
-        )
-        try:
-            _cmp_panel = st.expander("Scorecard comparison", expanded=False)
-        except TypeError:
-            _cmp_panel = st.expander("Scorecard comparison")
-        with _cmp_panel:
-            st.markdown(
-                '<div class="mpo-cmp-panel-intro">'
-                "Headline values stay summed by your scope above. "
-                "Use these controls only for <strong>% change</strong> on the scorecard."
-                "</div>",
-                unsafe_allow_html=True,
-            )
-            _seg = getattr(st, "segmented_control", None)
-            if callable(_seg):
-                _seg(
-                    "Compare periods",
-                    options=["mom", "yoy"],
-                    format_func=_mpo_scorecard_compare_label,
-                    key=f"{key_suffix}_scorecard_compare",
-                )
-            else:
-                st.radio(
-                    "Compare periods",
-                    options=["mom", "yoy"],
-                    format_func=_mpo_scorecard_compare_label,
-                    key=f"{key_suffix}_scorecard_compare",
-                    horizontal=True,
-                )
-            _cmp_mode = str(st.session_state.get(f"{key_suffix}_scorecard_compare", "mom") or "mom")
-            if _mko and _cmp_mode == "mom":
-                _r1, _r2 = st.columns(2)
-                with _r1:
-                    st.selectbox(
-                        "Month (current)",
-                        options=_mko,
-                        format_func=_month_label_short,
-                        key=_k_mom_cur,
-                    )
-                with _r2:
-                    st.selectbox(
-                        "Month (compare to)",
-                        options=_mko,
-                        format_func=_month_label_short,
-                        key=_k_mom_ref,
-                    )
-            elif _cmp_mode == "yoy":
-                _y1c, _y2c, _ymc = st.columns(3)
-                with _y1c:
-                    st.selectbox(
-                        "Year (current)",
-                        options=_years,
-                        key=_k_y1,
-                    )
-                with _y2c:
-                    st.selectbox(
-                        "Year (compare to)",
-                        options=_years,
-                        key=_k_y2,
-                    )
-                with _ymc:
-                    st.selectbox(
-                        "Calendar month",
-                        options=list(range(1, 13)),
-                        format_func=lambda m: pd.Timestamp(2020, int(m), 1).strftime("%B"),
-                        key=_k_ym,
-                    )
         st.markdown("</div>", unsafe_allow_html=True)
 
     selected_markets = st.session_state.get(f"{key_suffix}_market", [_MPO_ALL_GEO_SENTINEL])
@@ -6488,16 +6414,6 @@ def render_page_marketing_performance(
     if not _headline_keys:
         _fb = _mpo_month_keys_sorted_master(master_df)
         _headline_keys = _fb[-1:] if _fb else []
-
-    st.markdown(
-        _mpo_comparison_strip_html(
-            key_suffix=key_suffix,
-            cur_k=ck,
-            ref_k=rk,
-            kind=str(cmp_kind),
-        ),
-        unsafe_allow_html=True,
-    )
 
     _kpi_prior = _kpi_two_month_compare_dict(
         ck,
