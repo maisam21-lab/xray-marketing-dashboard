@@ -25,7 +25,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 # Bump when you ship UI/logic changes — shown in the hero so you know which code the app loaded.
-DASHBOARD_BUILD = "2026-04-07-pool-clicks-impr-ui"
+DASHBOARD_BUILD = "2026-04-07-xray-spend-supermetrics-ci"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 # Optional workbook: set Streamlit secret ``XRAY_SHEET_ID`` to the id or full URL below, then set
@@ -129,6 +129,19 @@ def _dataframe_with_spreadsheet_id(df: pd.DataFrame, spreadsheet_id: str) -> pd.
     out = df.copy()
     out["spreadsheet_id"] = str(_extract_sheet_id(spreadsheet_id))
     return out
+
+
+def _rows_for_workbook_id(df: pd.DataFrame, spreadsheet_id: str) -> pd.DataFrame:
+    """Restrict stacked rows to one workbook (``spreadsheet_id``). If the column is missing, returns ``df`` unchanged."""
+    if df.empty or not (spreadsheet_id or "").strip():
+        return df
+    sid = str(_extract_sheet_id(spreadsheet_id))
+    if "spreadsheet_id" not in df.columns:
+        return df
+    m = df["spreadsheet_id"].astype(str) == sid
+    if not bool(m.any()):
+        return df.iloc[0:0].copy()
+    return df.loc[m].copy()
 
 
 def _default_truth_gid_from_secrets() -> int:
@@ -2467,8 +2480,18 @@ def _mpo_platform_label_from_source_tab(title: str) -> str:
     return _mpo_tab_title_to_platform_label(t)
 
 
-def _best_spend_pool_from_df_loaded(df_loaded: pd.DataFrame) -> pd.DataFrame:
-    """Use spend rows already in the combined workbook load (often non-empty when gid=0 reload is empty)."""
+def _best_spend_pool_from_df_loaded(
+    df_loaded: pd.DataFrame,
+    primary_sheet_id: Optional[str] = None,
+) -> pd.DataFrame:
+    """Use spend rows already in the combined workbook load (often non-empty when gid=0 reload is empty).
+
+    When ``primary_sheet_id`` is set, only rows tagged with that workbook are considered (**ME X-Ray spend**).
+    """
+    if primary_sheet_id is not None and "spreadsheet_id" in df_loaded.columns:
+        df_loaded = _rows_for_workbook_id(df_loaded, primary_sheet_id)
+        if df_loaded.empty:
+            return pd.DataFrame()
     if df_loaded.empty or "cost" not in df_loaded.columns:
         return pd.DataFrame()
     best = pd.DataFrame()
@@ -3992,28 +4015,25 @@ def _mpo_rows_paid_media_from_combined(df_loaded: pd.DataFrame) -> pd.DataFrame:
     return sub.loc[mask]
 
 
-def _mpo_paid_media_pool_for_metrics_merge(df_loaded: pd.DataFrame, *, primary_sheet_id: str) -> pd.DataFrame:
-    """Prefer the **second workbook** (Supermetrics) for clicks/impressions when it is loaded and has signal.
+def _mpo_supermetrics_pool_for_clicks_impressions(
+    df_loaded: pd.DataFrame,
+    *,
+    primary_sheet_id: str,
+) -> pd.DataFrame:
+    """Paid-media rows from the **Supermetrics workbook only** — used for clicks & impressions (not spend).
 
-    Avoids X-Ray spend tabs with wrong/mapped non-zero clicks/impressions blocking the real connector totals.
+    Returns empty if there is no second workbook, ids match the primary, or there are no connector rows.
     """
-    pool = _mpo_rows_paid_media_from_combined(df_loaded)
-    if pool.empty:
-        return pool
     ads = (_optional_paid_media_sheet_id_from_secrets() or "").strip()
     prim = str(_extract_sheet_id(primary_sheet_id))
     if not ads or str(_extract_sheet_id(ads)) == prim:
-        return pool
-    if "spreadsheet_id" not in pool.columns:
-        return pool
-    ads_only = pool.loc[pool["spreadsheet_id"].astype(str) == str(_extract_sheet_id(ads))].copy()
+        return pd.DataFrame()
+    if "spreadsheet_id" not in df_loaded.columns:
+        return pd.DataFrame()
+    ads_only = df_loaded.loc[df_loaded["spreadsheet_id"].astype(str) == str(_extract_sheet_id(ads))].copy()
     if ads_only.empty:
-        return pool
-    csum = float(pd.to_numeric(ads_only.get("clicks", 0), errors="coerce").fillna(0).abs().sum())
-    isum = float(pd.to_numeric(ads_only.get("impressions", 0), errors="coerce").fillna(0).abs().sum())
-    if csum + isum > 1e-9:
         return ads_only
-    return pool
+    return _mpo_rows_paid_media_from_combined(ads_only)
 
 
 def _mpo_blend_paid_media_for_master_df(df: pd.DataFrame) -> pd.DataFrame:
@@ -4077,12 +4097,12 @@ def _mpo_merge_pool_clicks_impressions_onto_spend(
     *,
     primary_sheet_id: Optional[str] = None,
 ) -> pd.DataFrame:
-    """Roll paid-media tab clicks/impressions onto spend rows (Supermetrics preferred when configured).
+    """Attach **Supermetrics-only** clicks/impressions to **X-Ray spend** rows.
 
-    Tries **month × country** first, then **month-only** allocation by cost weight (Supermetrics / no country).
+    Spend amounts always come from the primary workbook slice passed in; any clicks/impressions on those rows
+    (from X-Ray column mapping) are cleared, then values are merged from the connector workbook.
 
-    If the spend slice already has clicks/impressions but the **connector pool** is materially larger, those
-    values are treated as unreliable (common when X-Ray maps the wrong column) and are replaced from the pool.
+    Tries **month × country** first, then **month-only** allocation by **X-Ray cost** weight within each month.
     """
     if spend_master.empty:
         return spend_master
@@ -4090,31 +4110,19 @@ def _mpo_merge_pool_clicks_impressions_onto_spend(
         primary_sheet_id, _ = _workbook_id_resolution()
     prim = str(_extract_sheet_id(str(primary_sheet_id)))
 
-    c0 = int(pd.to_numeric(spend_master.get("clicks", 0), errors="coerce").fillna(0).sum())
-    i0 = int(pd.to_numeric(spend_master.get("impressions", 0), errors="coerce").fillna(0).sum())
-
-    pool = _mpo_paid_media_pool_for_metrics_merge(df_loaded, primary_sheet_id=prim)
+    pool = _mpo_supermetrics_pool_for_clicks_impressions(df_loaded, primary_sheet_id=prim)
+    out = _normalize_master_merge_frame(spend_master.copy())
+    for col in ("clicks", "impressions"):
+        out[col] = 0
     if pool.empty:
-        return spend_master
+        return out
     pn = _normalize_master_merge_frame(pool.copy())
     if pn.empty or "month" not in pn.columns:
-        return spend_master
+        return out
     pool_clicks = float(pd.to_numeric(pn.get("clicks", 0), errors="coerce").fillna(0).sum())
     pool_impr = float(pd.to_numeric(pn.get("impressions", 0), errors="coerce").fillna(0).sum())
     if pool_clicks < 1e-9 and pool_impr < 1e-9:
-        return spend_master
-
-    master_sig = float(c0 + i0)
-    pool_sig = float(pool_clicks + pool_impr)
-    if master_sig > 1e-9 and pool_sig > master_sig * 1.08 + 25.0:
-        spend_master = spend_master.copy()
-        spend_master["clicks"] = 0
-        spend_master["impressions"] = 0
-        c0, i0 = 0, 0
-    elif master_sig > 1e-9:
-        return spend_master
-
-    out = _normalize_master_merge_frame(spend_master.copy())
+        return out
     for col in ("clicks", "impressions"):
         if col not in out.columns:
             out[col] = 0
@@ -4152,12 +4160,10 @@ def _mpo_render_paid_media_by_platform_summary(
     key_suffix: str,
     primary_sheet_id: Optional[str] = None,
 ) -> None:
-    """Table: spend, clicks, impressions, CTR, CPC by platform (Supermetrics workbook preferred when loaded)."""
+    """Per-platform table from the **Supermetrics** workbook (connector spend + CI on each network tab)."""
     if primary_sheet_id is None:
         primary_sheet_id, _ = _workbook_id_resolution()
-    pool = _mpo_paid_media_pool_for_metrics_merge(df_loaded, primary_sheet_id=str(primary_sheet_id))
-    if pool.empty:
-        pool = _mpo_rows_paid_media_from_combined(df_loaded)
+    pool = _mpo_supermetrics_pool_for_clicks_impressions(df_loaded, primary_sheet_id=str(primary_sheet_id))
     if pool.empty or "source_tab" not in pool.columns:
         return
     rows: list[dict[str, Any]] = []
@@ -4189,10 +4195,10 @@ def _mpo_render_paid_media_by_platform_summary(
     tab_df["CPC"] = tab_df["CPC"].map(
         lambda v: f"${v:,.2f}" if v is not None and pd.notna(v) and abs(float(v)) != float("inf") else "—"
     )
-    with st.expander("Paid media KPIs by platform", expanded=False):
+    with st.expander("Paid media KPIs by platform (Supermetrics)", expanded=False):
         st.caption(
-            "Sums **Spend**, **Impressions**, and **Clicks** from the paid-media workbook (Supermetrics when configured). "
-            "Headline totals use the same merge rules."
+            "Breakdown from the **Supermetrics** connector. **Headline Spend** on the scorecard uses **ME X-Ray** only; "
+            "headline **Impressions / Clicks** use Supermetrics totals merged onto X-Ray spend."
         )
         st.dataframe(
             tab_df,
@@ -6127,13 +6133,15 @@ def render_page_marketing_performance(
 
     sheet_id, _ = _workbook_id_resolution()
     _fp_mpo = _secret_fingerprint(_service_account_from_streamlit_secrets())
-    # Spend: **blend all non-CRM tabs** from the combined workbook (each tab name = platform when columns are blank).
-    # Falls back to canonical gid=0 / named Spend when the blend has no rows.
-    spend_blended = _mpo_blend_paid_media_for_master_df(df_date)
+    # **Spend** = ME X-Ray workbook only. **Clicks / impressions** merged later from Supermetrics (see merge helper).
+    df_spend_scope = _rows_for_workbook_id(df_date, sheet_id)
+    spend_blended = _mpo_blend_paid_media_for_master_df(df_spend_scope)
     if spend_blended.empty and not df_loaded.empty:
-        spend_blended = _mpo_blend_paid_media_for_master_df(df_loaded)
-        if not spend_blended.empty:
-            spend_blended = _filter_by_date_range(spend_blended, start_date, end_date)
+        _dl = _rows_for_workbook_id(df_loaded, sheet_id)
+        if not _dl.empty:
+            spend_blended = _mpo_blend_paid_media_for_master_df(_dl)
+            if not spend_blended.empty:
+                spend_blended = _filter_by_date_range(spend_blended, start_date, end_date)
     if not spend_blended.empty:
         spend_sheet_master = _filter_spend_for_dashboard(spend_blended, start_date, end_date)
         if spend_sheet_master.empty:
@@ -6169,7 +6177,7 @@ def render_page_marketing_performance(
                 spend_sheet_master = fb_f
 
         if _normalized_spend_cost_sum(spend_pool_full) < 1e-9:
-            _rec_loaded = _best_spend_pool_from_df_loaded(df_loaded)
+            _rec_loaded = _best_spend_pool_from_df_loaded(df_loaded, primary_sheet_id=sheet_id)
             if not _rec_loaded.empty:
                 spend_pool_full = _rec_loaded.copy()
             else:
