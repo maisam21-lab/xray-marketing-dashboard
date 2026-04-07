@@ -25,7 +25,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 # Bump when you ship UI/logic changes — shown on Marketing Performance so you know which file Streamlit loaded.
-DASHBOARD_BUILD = "2026-04-05-mpo-default-off"
+DASHBOARD_BUILD = "2026-04-05-mpo-mom-yoy"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 DEFAULT_SOURCE_TRUTH_GID = 8109573
@@ -3315,14 +3315,14 @@ def _mpo_comparison_strip_html(
     if cur_k:
         _ck = html.escape(_month_label_short(cur_k))
         _sk = str(kind)
-        if _sk == "off" or not ref_k:
-            _pill = '<span class="mpo-cmp-pill mpo-cmp-pill--snapshot">Snapshot</span>'
+        if not ref_k:
+            _pill = '<span class="mpo-cmp-pill mpo-cmp-pill--mom">Month vs month</span>'
             return (
                 '<div class="mpo-cmp-wrap">'
                 '<div class="mpo-cmp-bar">'
                 '<span class="mpo-cmp-dates">'
                 f"<strong>{_ck}</strong>"
-                '<span class="mpo-cmp-vs mpo-cmp-vs--muted">— current period only</span>'
+                '<span class="mpo-cmp-vs mpo-cmp-vs--muted">— add data to compare</span>'
                 "</span>"
                 '<span class="mpo-cmp-trail">'
                 f"{_pill}"
@@ -3332,10 +3332,10 @@ def _mpo_comparison_strip_html(
                 "</div>"
             )
         _rk = html.escape(_month_label_short(ref_k))
-        if _sk == "custom":
-            _pill = '<span class="mpo-cmp-pill mpo-cmp-pill--custom">Custom</span>'
+        if _sk == "yoy":
+            _pill = '<span class="mpo-cmp-pill mpo-cmp-pill--yoy">Year vs year</span>'
         else:
-            _pill = '<span class="mpo-cmp-pill mpo-cmp-pill--mom">Prior month</span>'
+            _pill = '<span class="mpo-cmp-pill mpo-cmp-pill--mom">Month vs month</span>'
         return (
             '<div class="mpo-cmp-wrap">'
             '<div class="mpo-cmp-bar">'
@@ -3360,71 +3360,29 @@ def _mpo_comparison_strip_html(
 
 
 def _mpo_scorecard_compare_label(opt: str) -> str:
-    """Human labels for the unified scorecard comparison selectbox."""
+    """Labels for scorecard comparison: MoM vs YoY only."""
     return {
-        "mom": "vs prior calendar month (automatic)",
-        "custom": "Custom — choose current month & comparison month",
-        "off": "Off — this period only (no comparison or % deltas)",
+        "mom": "Month vs month",
+        "yoy": "Year vs year",
     }.get(str(opt), str(opt))
 
 
 def _mpo_ensure_scorecard_compare_session(key_suffix: str) -> str:
-    """Single session key ``{suffix}_scorecard_compare``: ``off`` | ``mom`` | ``custom``; migrate legacy widgets."""
+    """Session key ``{suffix}_scorecard_compare``: ``mom`` | ``yoy`` (default **mom**)."""
     k = f"{key_suffix}_scorecard_compare"
-    _mig_off = f"{key_suffix}_scorecard_compare_migrated_default_off_v2"
-    if _mig_off not in st.session_state:
-        # One-time per session: default to **off** (all-data snapshot, no % deltas). Also migrates old ``mom`` sessions.
-        st.session_state[k] = "off"
-        st.session_state[_mig_off] = True
+    _mig = f"{key_suffix}_scorecard_compare_v3_mom_yoy"
+    if _mig not in st.session_state:
+        raw = str(st.session_state.get(k, "mom") or "mom")
+        st.session_state[k] = "yoy" if raw == "yoy" else "mom"
+        st.session_state[_mig] = True
     elif k not in st.session_state:
-        st.session_state[k] = "off"
-    v = str(st.session_state.get(k) or "off")
-    if v not in ("off", "mom", "custom"):
-        st.session_state[k] = "off"
-        v = "off"
+        st.session_state[k] = "mom"
+    v = str(st.session_state.get(k) or "mom")
+    if v not in ("mom", "yoy"):
+        st.session_state[k] = "mom"
+        v = "mom"
     st.session_state[f"{key_suffix}_scorecard_basis"] = "filtered"
     return v
-
-
-def _mpo_compare_custom_month_options(months_raw: list[Any]) -> list[str]:
-    """Sorted unique normalized month keys (``YYYY-MM`` strings) for custom compare dropdowns."""
-    seen: set[str] = set()
-    out: list[str] = []
-    for m in months_raw:
-        k = _month_norm_key(m)
-        sk = str(k).strip() if k is not None else ""
-        if not sk or sk.lower() in ("nan", "nat", "none"):
-            continue
-        if sk not in seen:
-            seen.add(sk)
-            out.append(sk)
-    return sorted(out, key=_mpo_month_ts_for_sort)
-
-
-def _mpo_seed_custom_month_selects(
-    key_suffix: str,
-    month_key_opts: list[str],
-    *,
-    legacy_cur_dt: str,
-    legacy_ref_dt: str,
-) -> None:
-    """Default custom Current / Compare from legacy date widgets or last two months in data."""
-    _k_cur = f"{key_suffix}_compare_custom_cur_m"
-    _k_ref = f"{key_suffix}_compare_custom_ref_m"
-    if not month_key_opts:
-        return
-    if _k_cur not in st.session_state and legacy_cur_dt in st.session_state:
-        _mk = _mpo_date_to_month_key(st.session_state[legacy_cur_dt])
-        if _mk and _mk in month_key_opts:
-            st.session_state[_k_cur] = _mk
-    if _k_ref not in st.session_state and legacy_ref_dt in st.session_state:
-        _mr = _mpo_date_to_month_key(st.session_state[legacy_ref_dt])
-        if _mr and _mr in month_key_opts:
-            st.session_state[_k_ref] = _mr
-    if _k_cur not in st.session_state:
-        st.session_state[_k_cur] = month_key_opts[-1]
-    if _k_ref not in st.session_state:
-        st.session_state[_k_ref] = month_key_opts[-2] if len(month_key_opts) >= 2 else month_key_opts[-1]
 
 
 def _apply_marketing_performance_filters(
@@ -3432,7 +3390,7 @@ def _apply_marketing_performance_filters(
     *,
     key_suffix: str,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Performance-tab filters: market × month, plus an optional **Compare scorecard** expander."""
+    """Performance-tab filters: market × month, plus **Scorecard comparison** (MoM vs YoY) in an expander."""
 
     mk_raw = [x for x in df_date["country"].dropna().unique().tolist() if x and x != "Unknown"]
     if "cost" in df_date.columns and mk_raw:
@@ -3446,10 +3404,6 @@ def _apply_marketing_performance_filters(
     else:
         market_opts = sorted(mk_raw)
     month_opts = sorted([x for x in df_date["month"].dropna().unique().tolist() if x and x != "NaT"])
-    _cust = sorted(
-        [x for x in df_date["month"].dropna().unique().tolist() if x and str(x) != "NaT"],
-        key=_mpo_month_ts_for_sort,
-    )
 
     _mpo_ensure_scorecard_compare_session(key_suffix)
     _mpo_normalize_market_multiselect_state(key_suffix)
@@ -3478,50 +3432,35 @@ def _apply_marketing_performance_filters(
             )
 
         try:
-            _cmp_exp = st.expander("Compare scorecard (optional)", expanded=False)
+            _cmp_exp = st.expander("Scorecard comparison", expanded=False)
         except TypeError:
-            _cmp_exp = st.expander("Compare scorecard (optional)")
+            _cmp_exp = st.expander("Scorecard comparison")
         with _cmp_exp:
-            st.caption(
-                "Expand to change how the scorecard compares periods. Your last choice stays in effect when this is collapsed."
+            st.markdown(
+                '<div class="mpo-cmp-panel-intro">'
+                "<strong>Month</strong> above defaults to <strong>all months in range</strong> (full data). "
+                "The scorecard highlights the <strong>latest</strong> month in the table; pick how to compare it."
+                "</div>",
+                unsafe_allow_html=True,
             )
-            st.selectbox(
-                "Scorecard comparison",
-                options=["off", "mom", "custom"],
-                format_func=_mpo_scorecard_compare_label,
-                key=f"{key_suffix}_scorecard_compare",
-                help="Default is all-data snapshot (off). Turn on prior-month or custom to see comparison deltas.",
-            )
-            _mode_now = str(st.session_state.get(f"{key_suffix}_scorecard_compare", "mom") or "mom")
-
-            if _mode_now == "custom" and _cust:
-                _mko = _mpo_compare_custom_month_options(_cust)
-                if _mko:
-                    _cur_dt = f"{key_suffix}_compare_custom_cur_dt"
-                    _ref_dt = f"{key_suffix}_compare_custom_ref_dt"
-                    _mpo_seed_custom_month_selects(
-                        key_suffix,
-                        _mko,
-                        legacy_cur_dt=_cur_dt,
-                        legacy_ref_dt=_ref_dt,
-                    )
-                    _k_cur = f"{key_suffix}_compare_custom_cur_m"
-                    _k_ref = f"{key_suffix}_compare_custom_ref_m"
-                    _cc, _cr = st.columns(2, gap="small")
-                    with _cc:
-                        st.selectbox(
-                            "Scorecard month (current)",
-                            options=_mko,
-                            format_func=_month_label_short,
-                            key=_k_cur,
-                        )
-                    with _cr:
-                        st.selectbox(
-                            "Compare to month",
-                            options=_mko,
-                            format_func=_month_label_short,
-                            key=_k_ref,
-                        )
+            _seg = getattr(st, "segmented_control", None)
+            if callable(_seg):
+                _seg(
+                    "Compare latest month to",
+                    options=["mom", "yoy"],
+                    format_func=_mpo_scorecard_compare_label,
+                    key=f"{key_suffix}_scorecard_compare",
+                    help="Month vs month = previous calendar month. Year vs year = same month last year.",
+                )
+            else:
+                st.radio(
+                    "Compare latest month to",
+                    options=["mom", "yoy"],
+                    format_func=_mpo_scorecard_compare_label,
+                    key=f"{key_suffix}_scorecard_compare",
+                    horizontal=True,
+                    help="Month vs month = previous calendar month. Year vs year = same month last year.",
+                )
 
     selected_markets = st.session_state.get(f"{key_suffix}_market", [_MPO_ALL_GEO_SENTINEL])
     selected_months = st.session_state.get(f"{key_suffix}_month", [_MPO_ALL_MONTHS_SENTINEL])
@@ -3592,23 +3531,6 @@ def _mpo_month_keys_sorted_master(master_df: pd.DataFrame) -> list[str]:
     return sorted({str(x) for x in raw.unique()}, key=_mpo_month_ts_for_sort)
 
 
-def _mpo_infer_compare_label(cur_k: Optional[str], ref_k: Optional[str]) -> tuple[str, str]:
-    """Delta copy for **custom** pairs: match MoM/YoY wording when the reference aligns, else generic."""
-    if not cur_k or not ref_k:
-        return "reference month", "Custom comparison"
-    cn = str(_month_norm_key(cur_k)).strip()
-    rn = str(_month_norm_key(ref_k)).strip()
-    if not cn or not rn or cn.lower() in ("nan", "nat") or rn.lower() in ("nan", "nat"):
-        return "reference month", "Custom comparison"
-    mom = _mpo_shift_month_key(cn, -1)
-    yoy = _mpo_shift_month_key(cn, -12)
-    if mom and str(_month_norm_key(mom)).strip() == rn:
-        return "prior month", "Month-over-month (MoM)"
-    if yoy and str(_month_norm_key(yoy)).strip() == rn:
-        return "same month last year", "Year-over-year (YoY)"
-    return "reference month", "Custom comparison"
-
-
 def _mpo_scorecard_current_month_mom_style(
     keys_sorted: list[str],
     keys_table: list[str],
@@ -3642,19 +3564,11 @@ def _mpo_compare_month_keys(
     key_suffix: str,
     table_df: Optional[pd.DataFrame] = None,
 ) -> tuple[Optional[str], Optional[str], str]:
-    """(current_month_key, reference_month_key, ``mom`` | ``custom`` | ``off``).
+    """(current_month_key, reference_month_key, ``mom`` | ``yoy``).
 
-    **Current** month:
-    - **Custom** mode: from the two date pickers.
-    - **Prior month** mode: latest month among your **Month** filter choices, or—if **All months**—the
-      latest month present in ``table_df`` when provided (the **table** after Market × Month), else
-      ``master_df``. This keeps the scorecard aligned with what the grid shows.
+    **Current** month: latest among **Month** filter choices, or—if **All data**—latest in ``table_df`` / ``master_df``.
 
-    **mom:** reference = calendar month before **current** (may not appear in the table).
-
-    **off:** user disabled scorecard comparison — current month only (same ``cur`` as MoM style, no ``ref``).
-
-    ``master_df`` must include the same month keys used for KPI math (merged month × market grid).
+    **mom:** reference = prior calendar month. **yoy:** reference = same month one year earlier.
     """
     keys_sorted = _mpo_month_keys_sorted_master(master_df)
     keys_table: list[str] = []
@@ -3662,49 +3576,20 @@ def _mpo_compare_month_keys(
         keys_table = _mpo_month_keys_sorted_master(table_df)
     months_sel = st.session_state.get(f"{key_suffix}_month", [_MPO_ALL_MONTHS_SENTINEL])
 
-    _cmp = str(st.session_state.get(f"{key_suffix}_scorecard_compare", "off") or "off")
-    if _cmp not in ("off", "mom", "custom"):
-        _cmp = "off"
-    if _cmp == "off":
-        cur_off = _mpo_scorecard_current_month_mom_style(keys_sorted, keys_table, months_sel)
-        return cur_off, None, "off"
-
-    mode = _cmp
-
-    if mode == "custom":
-        def _norm_mkey(v: Any) -> Optional[str]:
-            if v is None or (isinstance(v, str) and not str(v).strip()):
-                return None
-            k = _month_norm_key(v)
-            sk = str(k).strip() if k is not None else ""
-            if not sk or sk.lower() in ("nan", "nat", "none"):
-                return None
-            return sk
-
-        cur = _norm_mkey(st.session_state.get(f"{key_suffix}_compare_custom_cur_m"))
-        ref = _norm_mkey(st.session_state.get(f"{key_suffix}_compare_custom_ref_m"))
-        if not cur:
-            cur = _mpo_date_to_month_key(st.session_state.get(f"{key_suffix}_compare_custom_cur_dt"))
-        if not ref:
-            ref = _mpo_date_to_month_key(st.session_state.get(f"{key_suffix}_compare_custom_ref_dt"))
-        if not cur:
-            cur_n = _month_norm_key(st.session_state.get(f"{key_suffix}_compare_custom_cur"))
-            ref_n = _month_norm_key(st.session_state.get(f"{key_suffix}_compare_custom_ref"))
-            cur = str(cur_n).strip() if cur_n and str(cur_n).strip().lower() not in ("", "nan", "nat") else None
-            ref = str(ref_n).strip() if ref_n and str(ref_n).strip().lower() not in ("", "nan", "nat") else None
-        if not cur:
-            return None, None, "custom"
-        return cur, ref, "custom"
+    _cmp = str(st.session_state.get(f"{key_suffix}_scorecard_compare", "mom") or "mom")
+    if _cmp not in ("mom", "yoy"):
+        _cmp = "mom"
 
     if not keys_sorted:
-        return None, None, "mom"
+        return None, None, _cmp
 
     cur = _mpo_scorecard_current_month_mom_style(keys_sorted, keys_table, months_sel)
     if not cur:
-        return None, None, "mom"
+        return None, None, _cmp
 
-    ref = _mpo_shift_month_key(cur, -1)
-    return cur, ref, "mom"
+    _delta = -12 if _cmp == "yoy" else -1
+    ref = _mpo_shift_month_key(cur, _delta)
+    return cur, ref, _cmp
 
 
 def _mpo_rows_for_norm_month(df: pd.DataFrame, month_key: Optional[str]) -> pd.DataFrame:
@@ -5143,12 +5028,8 @@ def render_page_marketing_performance(
         post_df_kpi=post_df_kpi,
         cw_kpi=cw_cmp,
     )
-    if cmp_kind == "custom":
-        _dl, _ = _mpo_infer_compare_label(ck, rk)
-        _kpi_prior["_delta_label"] = _dl
-    elif cmp_kind == "off":
-        _kpi_prior["_comparison_off"] = True
-        _kpi_prior["_delta_label"] = ""
+    if cmp_kind == "yoy":
+        _kpi_prior["_delta_label"] = "same month last year"
     else:
         _kpi_prior["_delta_label"] = "prior month"
 
@@ -5762,8 +5643,17 @@ def main() -> None:
         text-transform: uppercase;
     }
     .mpo-cmp-pill--mom { background: #ecfdf5; color: #0f766e; border: 1px solid #99f6e4; }
-    .mpo-cmp-pill--custom { background: #f1f5f9; color: #475569; border: 1px solid #e2e8f0; }
-    .mpo-cmp-pill--snapshot { background: #fffbeb; color: #a16207; border: 1px solid #fde68a; }
+    .mpo-cmp-pill--yoy { background: #ede9fe; color: #5b21b6; border: 1px solid #c4b5fd; }
+    .mpo-cmp-panel-intro {
+        font-size: 13px;
+        color: #475569;
+        line-height: 1.45;
+        margin: 0 0 12px 0;
+        padding: 10px 12px;
+        background: #f8fafc;
+        border-radius: 10px;
+        border: 1px solid #e2e8f0;
+    }
     .mpo-cmp-vs--muted { font-size: 0.75rem; font-weight: 500; color: #94a3b8; text-transform: none; margin-left: 6px; }
     .mpo-cmp-mkt { font-size: 11px; font-weight: 500; color: #94a3b8; }
     .mpo-cmp-empty {
