@@ -25,7 +25,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 # Bump when you ship UI/logic changes — shown on Marketing Performance so you know which file Streamlit loaded.
-DASHBOARD_BUILD = "2026-04-05-mpo-expander-all-data"
+DASHBOARD_BUILD = "2026-04-05-mpo-default-off"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 DEFAULT_SOURCE_TRUTH_GID = 8109573
@@ -3371,16 +3371,13 @@ def _mpo_scorecard_compare_label(opt: str) -> str:
 def _mpo_ensure_scorecard_compare_session(key_suffix: str) -> str:
     """Single session key ``{suffix}_scorecard_compare``: ``off`` | ``mom`` | ``custom``; migrate legacy widgets."""
     k = f"{key_suffix}_scorecard_compare"
-    if k not in st.session_state:
-        leg_on = f"{key_suffix}_scorecard_compare_on"
-        leg_mode = f"{key_suffix}_compare_mode"
-        if leg_on in st.session_state and not bool(st.session_state[leg_on]):
-            st.session_state[k] = "off"
-        elif leg_mode in st.session_state:
-            m = str(st.session_state.get(leg_mode) or "mom")
-            st.session_state[k] = m if m in ("mom", "custom") else "mom"
-        else:
-            st.session_state[k] = "off"
+    _mig_off = f"{key_suffix}_scorecard_compare_migrated_default_off_v2"
+    if _mig_off not in st.session_state:
+        # One-time per session: default to **off** (all-data snapshot, no % deltas). Also migrates old ``mom`` sessions.
+        st.session_state[k] = "off"
+        st.session_state[_mig_off] = True
+    elif k not in st.session_state:
+        st.session_state[k] = "off"
     v = str(st.session_state.get(k) or "off")
     if v not in ("off", "mom", "custom"):
         st.session_state[k] = "off"
@@ -4757,11 +4754,7 @@ def render_page_marketing_performance(
         return
 
     st.markdown('<h1 class="looker-page-h1">Marketing Performance Overview</h1>', unsafe_allow_html=True)
-    st.caption(
-        f"**Build {DASHBOARD_BUILD}** — Filters should show **Markets & countries** / **Month** and a **Compare scorecard (optional)** "
-        "expander. If you still see old controls (e.g. “COMPARE SCORECARD TO” or only “Market”), stop Streamlit and run "
-        "`streamlit run oracle_app.py` from the **xray-marketing-dashboard-git** folder (this file), not another copy."
-    )
+    st.caption(f"Build **{DASHBOARD_BUILD}**")
     df, _ = _apply_marketing_performance_filters(df_date, key_suffix=key_suffix)
 
     sheet_id, _ = _workbook_id_resolution()
