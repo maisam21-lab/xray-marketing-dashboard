@@ -1,8 +1,8 @@
 """
 Oracle-style ME dashboard scaffold backed by Google Sheets.
 
-Run:
-    streamlit run oracle_app.py
+Run (Windows: use ``py -m`` if ``streamlit`` is not on PATH):
+    py -m streamlit run oracle_app.py
 """
 
 from __future__ import annotations
@@ -21,11 +21,10 @@ from typing import Any, Optional, Union
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import streamlit as st
 
 # Bump when you ship UI/logic changes — shown in the hero so you know which code the app loaded.
-DASHBOARD_BUILD = "2026-04-08-no-row-export-dialog-footer"
+DASHBOARD_BUILD = "2026-04-08-cloud-tabs-nav"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 # Optional workbook: set Streamlit secret ``XRAY_SHEET_ID`` to the id or full URL below, then set
@@ -1022,6 +1021,25 @@ def _spend_slice_for_dashboard_filters(spend_master: pd.DataFrame, df_ref: pd.Da
     filt_sum = float(pd.to_numeric(out["cost"], errors="coerce").fillna(0).sum())
     if filt_sum == 0.0 and full_sum > 0.0:
         return spend_master.copy()
+    return out
+
+
+def _mpo_slice_by_dashboard_ref(frame: pd.DataFrame, df_ref: pd.DataFrame) -> pd.DataFrame:
+    """Apply Market/Month filters from ``df_ref`` (same keys as spend KPI slice, without spend-sum fallback)."""
+    if frame.empty or df_ref.empty:
+        return frame.copy()
+    out = frame.copy()
+    if "country" in out.columns and "country" in df_ref.columns:
+        allow_c = {
+            x for x in df_ref["country"].map(_country_join_key).unique().tolist() if x and x not in ("unknown", "nan", "")
+        }
+        if allow_c:
+            out = out[out["country"].map(_country_join_key).isin(allow_c)]
+    if "month" in out.columns and "month" in df_ref.columns:
+        allow_m = {x for x in df_ref["month"].map(_month_norm_key).unique().tolist() if x}
+        if allow_m:
+            km = out["month"].map(_month_norm_key)
+            out = out[km.isin(allow_m) | (km == "")]
     return out
 
 
@@ -3544,49 +3562,6 @@ def _mpo_market_scope_note(key_suffix: str) -> str:
     return f"{html.escape(picks[0])}, {html.escape(picks[1])} +{len(picks) - 2} more"
 
 
-def _mpo_comparison_strip_html(
-    *,
-    key_suffix: str,
-    cur_k: Optional[str],
-    ref_k: Optional[str],
-    kind: str,
-) -> str:
-    """One compact row: current vs compare month only (mode/market pills removed — use Scorecard comparison expander)."""
-    _ = (key_suffix, kind)  # stable API; expander holds MoM/YoY + market scope
-
-    if cur_k:
-        _ck = html.escape(_month_label_short(cur_k))
-        if not ref_k:
-            return (
-                '<div class="mpo-cmp-wrap">'
-                '<div class="mpo-cmp-bar mpo-cmp-bar--surface">'
-                '<span class="mpo-cmp-dates">'
-                f"<strong>{_ck}</strong>"
-                '<span class="mpo-cmp-vs mpo-cmp-vs--muted">— add data to compare</span>'
-                "</span>"
-                "</div>"
-                "</div>"
-            )
-        _rk = html.escape(_month_label_short(ref_k))
-        return (
-            '<div class="mpo-cmp-wrap">'
-            '<div class="mpo-cmp-bar mpo-cmp-bar--surface">'
-            '<span class="mpo-cmp-dates">'
-            f"<strong>{_ck}</strong>"
-            '<span class="mpo-cmp-vs">vs</span>'
-            f"<strong>{_rk}</strong>"
-            "</span>"
-            "</div>"
-            "</div>"
-        )
-
-    return (
-        '<div class="mpo-cmp-wrap">'
-        '<div class="mpo-cmp-empty">Pick months in the filters above or widen the app date range.</div>'
-        "</div>"
-    )
-
-
 def _mpo_marketing_performance_hero_html() -> str:
     """Page hero: title, short explainer, build id (confirms deploy picked up latest ``oracle_app.py``)."""
     _b = html.escape(str(DASHBOARD_BUILD))
@@ -3630,18 +3605,6 @@ def _mpo_headline_scope_html(key_suffix: str, headline_month_keys: list[str]) ->
         '<span class="mpo-scope-label">Headline scope</span>'
         f'<span class="mpo-scope-pill mpo-scope-pill--geo">{mkt}</span>'
         f'<span class="mpo-scope-pill mpo-scope-pill--time">{mo_chip}</span>'
-        "</div></div>"
-    )
-
-
-def _mpo_kpi_section_head_html() -> str:
-    return (
-        '<div class="mpo-sec-head">'
-        '<div class="mpo-sec-head-accent" aria-hidden="true"></div>'
-        '<div class="mpo-sec-head-body">'
-        '<h2 class="mpo-sec-head-title">KPI scorecard</h2>'
-        '<p class="mpo-sec-head-desc">Large numbers are <strong>period totals</strong> for the scope above. '
-        "Row-level % changes compare against the period you set in <em>Scorecard comparison</em>.</p>"
         "</div></div>"
     )
 
@@ -4495,6 +4458,51 @@ def _kpi_funnel_delta_html(
     return f'<div class="kpi-funnel-delta {cls}">{arr} {pct:+.1f}% vs {esc}</div>'
 
 
+def _kpi_funnel_delta_pill_html(
+    cur: Optional[float],
+    prev: Optional[float],
+    *,
+    vs_label: str = "prior month",
+    disabled: bool = False,
+) -> str:
+    """Pill badge for % change + grey ``vs …`` label (traffic hero scorecards)."""
+    if disabled:
+        return '<div class="kpi-funnel-delta kpi-funnel-delta--pill-wrap kpi-funnel-delta--off" aria-hidden="true"></div>'
+    esc = html.escape(vs_label, quote=True)
+    if cur is None or prev is None:
+        return (
+            f'<div class="kpi-funnel-delta kpi-funnel-delta--pill-wrap kpi-funnel-delta--na">'
+            f'<span class="kpi-funnel-delta-vs">— vs {esc}</span></div>'
+        )
+    if prev == 0.0:
+        if cur == 0.0:
+            return (
+                f'<div class="kpi-funnel-delta kpi-funnel-delta--pill-wrap">'
+                f'<span class="kpi-funnel-delta-pill kpi-funnel-delta-pill--flat">→ 0%</span>'
+                f'<span class="kpi-funnel-delta-vs">vs {esc}</span></div>'
+            )
+        return (
+            f'<div class="kpi-funnel-delta kpi-funnel-delta--pill-wrap">'
+            f'<span class="kpi-funnel-delta-pill kpi-funnel-delta-pill--up">↑ new</span>'
+            f'<span class="kpi-funnel-delta-vs">vs {esc}</span></div>'
+        )
+    pct = (cur - prev) / prev * 100.0
+    if pct > 0.05:
+        cls = "kpi-funnel-delta-pill--up"
+        arr = "↑"
+    elif pct < -0.05:
+        cls = "kpi-funnel-delta-pill--down"
+        arr = "↓"
+    else:
+        cls = "kpi-funnel-delta-pill--flat"
+        arr = "→"
+    return (
+        f'<div class="kpi-funnel-delta kpi-funnel-delta--pill-wrap">'
+        f'<span class="kpi-funnel-delta-pill {cls}">{arr} {pct:+.1f}%</span>'
+        f'<span class="kpi-funnel-delta-vs">vs {esc}</span></div>'
+    )
+
+
 def _kpi_funnel_sub_row(label: str, value: str) -> str:
     return (
         f'<div class="kpi-funnel-sub-row" title="{html.escape(label, quote=True)}">'
@@ -4550,10 +4558,13 @@ def _kpi_block(
         delay: float,
         *,
         hue: str = "cw",
+        extra_class: str = "",
     ) -> str:
         h = html.escape(hue, quote=True)
+        xc = html.escape(extra_class.strip(), quote=True) if extra_class.strip() else ""
+        xcls = f" {xc}" if xc else ""
         return (
-            f'<div class="kpi-funnel-card kpi-funnel-card--pastel kpi-funnel-card--pastel-{h}" '
+            f'<div class="kpi-funnel-card kpi-funnel-card--pastel kpi-funnel-card--pastel-{h}{xcls}" '
             f'style="animation-delay:{delay:.2f}s">'
             f'<span class="kpi-funnel-icon" aria-hidden="true">{icon}</span>'
             f'<div class="kpi-funnel-title">{html.escape(title)}</div>'
@@ -4577,15 +4588,44 @@ def _kpi_block(
         d += 0.035
         return d
 
+    sub_hero = '<div class="kpi-funnel-sub kpi-funnel-sub--hero"></div>'
+    spend_sub = _kpi_funnel_sub_row("CPM", f"${(total_spend / total_impr * 1000):,.2f}" if total_impr else "—")
+    _vs_traffic = "previous period"
+
+    card_tot_impr = _card(
+        "👁",
+        "Total Impressions",
+        f"{total_impr:,}",
+        _kpi_funnel_delta_pill_html(pv.get("mom_impr_c"), pv.get("mom_impr_p"), vs_label=_vs_traffic, disabled=_no_delta),
+        sub_hero,
+        _d(),
+        hue="leads",
+        extra_class="kpi-funnel-card--hero",
+    )
+    card_tot_clicks = _card(
+        "🖱",
+        "Total Clicks",
+        f"{total_clicks:,}",
+        _kpi_funnel_delta_pill_html(pv.get("mom_clicks_c"), pv.get("mom_clicks_p"), vs_label=_vs_traffic, disabled=_no_delta),
+        sub_hero,
+        _d(),
+        hue="leads",
+        extra_class="kpi-funnel-card--hero",
+    )
+    card_tot_ctr = _card(
+        "%",
+        "Click-Through Rate",
+        f"{ctr:.2f}%",
+        _kpi_funnel_delta_pill_html(pv.get("mom_ctr_c"), pv.get("mom_ctr_p"), vs_label=_vs_traffic, disabled=_no_delta),
+        sub_hero,
+        _d(),
+        hue="leads",
+        extra_class="kpi-funnel-card--hero",
+    )
+
     cpcw_s = f"${cpcw:,.2f}" if total_cw and cpcw == cpcw else "—"
     tcv_s = _format_currency(total_tcv) if total_tcv else "—"
     cpcwlf_s = f"{cpcw_lf:.2f}" if total_first_month_lf else "—"
-    spend_sub = (
-        _kpi_funnel_sub_row("Impressions", f"{total_impr:,}")
-        + _kpi_funnel_sub_row("Clicks", f"{total_clicks:,}")
-        + _kpi_funnel_sub_row("CTR", f"{ctr:.2f}%")
-        + _kpi_funnel_sub_row("CPM", f"${(total_spend / total_impr * 1000):,.2f}" if total_impr else "—")
-    )
     cw_sub = _kpi_funnel_sub_row("CPCW", cpcw_s) + _kpi_funnel_sub_row("Spend (same window)", _format_spend_k(total_spend) if total_spend else "$0")
     cpcw_sub = _kpi_funnel_sub_row("Closed won (same window)", f"{total_cw:,}") + _kpi_funnel_sub_row("Spend", _format_spend_k(total_spend) if total_spend else "$0")
     tcv_sub = _kpi_funnel_sub_row("CpCW:LF", cpcwlf_s) + _kpi_funnel_sub_row("Cost / TCV %", f"{spend_tcv_pct:.2f}%" if total_tcv else "—")
@@ -4602,7 +4642,7 @@ def _kpi_block(
     )
     card_spend = _card(
         "💲",
-        "Spend",
+        "Total Spend",
         _format_spend_k(total_spend) if total_spend else "$0",
         _kpi_funnel_delta_html(pv.get("mom_spend_c"), pv.get("mom_spend_p"), vs_label=_vs, disabled=_no_delta),
         spend_sub,
@@ -4765,6 +4805,13 @@ def _kpi_block(
         hue="pipe",
     )
 
+    sec_traffic_hero = (
+        f'<div class="kpi-funnel-section kpi-funnel-section--traffic-hero">'
+        f'<div class="kpi-funnel-grid kpi-funnel-grid--hero-3">'
+        f"{card_tot_impr}{card_tot_clicks}{card_tot_ctr}"
+        f"</div></div>"
+    )
+
     sec_cw = _section(
         "Closed won",
         "cw",
@@ -4782,7 +4829,8 @@ def _kpi_block(
     )
 
     st.markdown(
-        f'<div class="kpi-funnel-wrap kpi-funnel-wrap--pastel-scorecard mpo-kpi-shell">{sec_cw}{sec_leads}{sec_pipe}</div>',
+        f'<div class="kpi-funnel-wrap kpi-funnel-wrap--pastel-scorecard mpo-kpi-shell">'
+        f"{sec_traffic_hero}{sec_cw}{sec_leads}{sec_pipe}</div>",
         unsafe_allow_html=True,
     )
 
@@ -4883,102 +4931,290 @@ def _mpo_monthly_rollup_from_master(master_df: pd.DataFrame) -> pd.DataFrame:
     return agg
 
 
+def _mpo_monthly_metric_series_from_spend(spend_df: pd.DataFrame) -> pd.DataFrame:
+    """Month-level **cost / clicks / impressions** from the merged spend frame (Supermetrics CI on X-Ray spend)."""
+    if spend_df.empty or "month" not in spend_df.columns:
+        return pd.DataFrame()
+    x = spend_df.copy()
+    x["month"] = x["month"].map(_month_norm_key)
+    x = x.loc[x["month"].astype(str).str.strip().ne("")]
+    if x.empty:
+        return pd.DataFrame()
+    g = x.groupby("month", as_index=False).agg(
+        cost=("cost", "sum"),
+        clicks=("clicks", "sum"),
+        impressions=("impressions", "sum"),
+    )
+    for c in ("cost", "clicks", "impressions"):
+        if c not in g.columns:
+            g[c] = 0.0
+        else:
+            g[c] = pd.to_numeric(g[c], errors="coerce").fillna(0.0)
+    g["_ts"] = g["month"].map(_mpo_month_ts_for_sort)
+    g = g.sort_values("_ts").dropna(subset=["_ts"])
+    if g.empty:
+        return g
+    g["Month"] = g["month"].map(_month_label_short)
+    g = g[g["Month"].astype(str).str.len() > 0]
+    return g
+
+
+def _mpo_segmented_or_radio(label: str, options: list[str], *, key: str) -> str:
+    """Prefer ``st.segmented_control`` when the running Streamlit build supports it."""
+    seg = getattr(st, "segmented_control", None)
+    if callable(seg):
+        try:
+            return str(
+                seg(
+                    label,
+                    options,
+                    key=key,
+                    label_visibility="collapsed",
+                )
+            )
+        except TypeError:
+            pass
+    return str(st.radio(label, options, horizontal=True, key=key, label_visibility="collapsed"))
+
+
+def _mpo_monthly_trend_fallback_from_master(master_df: pd.DataFrame) -> pd.DataFrame:
+    """When spend rows are empty, still show **Cost** from the master grid rollup."""
+    agg = _mpo_monthly_rollup_from_master(master_df)
+    if agg.empty:
+        return pd.DataFrame()
+    out = pd.DataFrame(
+        {
+            "month": agg["month"],
+            "Month": agg["Month"],
+            "cost": pd.to_numeric(agg["spend"], errors="coerce").fillna(0.0),
+            "clicks": 0.0,
+            "impressions": 0.0,
+        }
+    )
+    return out
+
+
+def _mpo_traffic_platform_breakdown(
+    df_loaded: pd.DataFrame,
+    sheet_id: str,
+    df_ref: pd.DataFrame,
+    spend_fallback: pd.DataFrame,
+) -> tuple[list[str], list[float], str]:
+    """Returns (labels, values, value_label) for a donut — prefers Supermetrics **impressions** by platform."""
+    pool = _mpo_supermetrics_pool_for_clicks_impressions(df_loaded, primary_sheet_id=sheet_id)
+    if not pool.empty:
+        p = pool.copy()
+        if "platform" not in p.columns or p["platform"].astype(str).str.strip().eq("").all():
+            if "source_tab" in p.columns:
+                p["platform"] = p["source_tab"].astype(str).map(_mpo_platform_label_from_source_tab)
+            else:
+                p["platform"] = "Other"
+        p = _mpo_slice_by_dashboard_ref(p, df_ref)
+        p["impressions"] = pd.to_numeric(p.get("impressions", 0), errors="coerce").fillna(0)
+        p["clicks"] = pd.to_numeric(p.get("clicks", 0), errors="coerce").fillna(0)
+        g = p.groupby(p["platform"].astype(str).str.strip(), as_index=False).agg(
+            impressions=("impressions", "sum"),
+            clicks=("clicks", "sum"),
+        )
+        g = g.loc[g["platform"].astype(str).str.len() > 0]
+        use = "impressions"
+        if float(g["impressions"].sum()) < 1.0 and float(g["clicks"].sum()) > 0.0:
+            use = "clicks"
+        g = g.sort_values(use, ascending=False)
+        labels = g["platform"].tolist()
+        values = pd.to_numeric(g[use], errors="coerce").fillna(0.0).tolist()
+        return labels, values, "Impressions" if use == "impressions" else "Clicks"
+
+    if spend_fallback.empty or "platform" not in spend_fallback.columns:
+        return [], [], "Impressions"
+    s = spend_fallback.copy()
+    s = _mpo_slice_by_dashboard_ref(s, df_ref)
+    s["platform"] = s["platform"].astype(str).str.strip()
+    s["impressions"] = pd.to_numeric(s.get("impressions", 0), errors="coerce").fillna(0)
+    s["clicks"] = pd.to_numeric(s.get("clicks", 0), errors="coerce").fillna(0)
+    g = s.groupby("platform", as_index=False).agg(impressions=("impressions", "sum"), clicks=("clicks", "sum"))
+    g = g[g["platform"].astype(str).str.len() > 0]
+    use = "impressions"
+    if float(g["impressions"].sum()) < 1.0 and float(g["clicks"].sum()) > 0.0:
+        use = "clicks"
+    g = g.sort_values(use, ascending=False)
+    return g["platform"].tolist(), pd.to_numeric(g[use], errors="coerce").fillna(0.0).tolist(), (
+        "Impressions" if use == "impressions" else "Clicks"
+    )
+
+
+def _mpo_leads_conversion_slices(leads_sliced: pd.DataFrame) -> tuple[list[str], list[float]]:
+    tq = int(_qualified_count_from_leads(leads_sliced))
+    tl = int(_lead_rows_count(leads_sliced))
+    rest = max(0, tl - tq)
+    if tl <= 0 and tq <= 0 and rest <= 0:
+        return [], []
+    return ["Qualified", "Not qualified"], [float(tq), float(rest)]
+
+
+def _mpo_funnel_stage_slices(post_sliced: pd.DataFrame) -> tuple[list[str], list[float]]:
+    cols = ["qualifying", "pitching", "negotiation", "commitment"]
+    present = [c for c in cols if c in post_sliced.columns]
+    if not present or post_sliced.empty:
+        return [], []
+    labels: list[str] = []
+    values: list[float] = []
+    for c in present:
+        v = float(pd.to_numeric(post_sliced[c], errors="coerce").fillna(0).sum())
+        if v > 1e-9:
+            labels.append(c.replace("_", " ").title())
+            values.append(v)
+    return labels, values
+
+
 def _render_mpo_trend_charts(
     *,
     start_date: date,
     end_date: date,
     master_df: pd.DataFrame,
     key_suffix: str,
+    spend_for_charts: pd.DataFrame,
+    df_loaded: pd.DataFrame,
+    sheet_id: str,
+    leads_df: pd.DataFrame,
+    post_df_kpi: pd.DataFrame,
+    df_ref_for_scope: pd.DataFrame,
 ) -> None:
-    """Charts after the performance grid: time-series and cross-market rollups the table does not surface as trends."""
-    st.markdown('<div class="looker-table-title">Charts (from the grid above)</div>', unsafe_allow_html=True)
-    st.caption(
-        "Same filters as the scorecard and **market × month** table. Omitted: volume and rate charts that duplicate "
-        "what you already see in the grid and KPI cards."
-    )
+    """Two cards: **Performance Trends** (Clicks / Impressions / Cost vs prior month) and **Performance Breakdown** donut."""
     st.markdown(
-        f"**Reporting period:** {start_date:%d %b %Y} → {end_date:%d %b %Y} "
-        f"(Market / Month slicers above apply.)"
+        '<div class="mpo-perf-charts-wrap">'
+        '<div class="looker-table-title mpo-perf-charts-page-title">Performance charts</div>'
+        '<p class="mpo-perf-charts-sub">Same filters as the scorecard and grid. '
+        f"Reporting period: <strong>{start_date:%d %b %Y}</strong> → <strong>{end_date:%d %b %Y}</strong>."
+        "</p></div>",
+        unsafe_allow_html=True,
     )
 
-    agg = _mpo_monthly_rollup_from_master(master_df)
-    if agg.empty or len(agg["Month"]) == 0:
-        st.info("Not enough monthly data in the grid to chart trends — widen the date range or relax filters.")
-        return
+    g = _mpo_monthly_metric_series_from_spend(spend_for_charts)
+    if g.empty and not master_df.empty:
+        g = _mpo_monthly_trend_fallback_from_master(master_df)
 
-    _layout_kw = dict(plot_bgcolor="white", paper_bgcolor="white", margin=dict(l=8, r=8, t=45, b=8))
+    leads_sliced = _mpo_slice_by_dashboard_ref(leads_df, df_ref_for_scope)
+    post_sliced = _mpo_slice_by_dashboard_ref(post_df_kpi, df_ref_for_scope)
 
-    r1c1, r1c2 = st.columns(2)
-    with r1c1:
-        fig_sl = make_subplots(specs=[[{"secondary_y": True}]])
-        fig_sl.add_trace(
-            go.Bar(x=agg["Month"], y=agg["spend"], name="Spend", marker_color="#4f8483"),
-            secondary_y=False,
-        )
-        fig_sl.add_trace(
-            go.Scatter(
-                x=agg["Month"],
-                y=agg["leads"],
-                name="Leads",
-                mode="lines+markers",
-                line=dict(color="#c45c3e", width=2),
-            ),
-            secondary_y=True,
-        )
-        fig_sl.update_yaxes(title_text="Spend", secondary_y=False)
-        fig_sl.update_yaxes(title_text="Leads", secondary_y=True)
-        fig_sl.update_layout(
-            title="Spend vs leads by month (totals across filtered markets)",
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-            **_layout_kw,
-        )
-        st.plotly_chart(fig_sl, use_container_width=True, key=f"{key_suffix}_pl_mpo_spend_leads")
+    _layout_kw = dict(
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        margin=dict(l=8, r=8, t=28, b=72),
+        height=380,
+    )
 
-    with r1c2:
-        fig_eff = go.Figure()
-        fig_eff.add_trace(
-            go.Scatter(
-                x=agg["Month"],
-                y=agg["cpl"],
-                name="CPL",
-                mode="lines+markers",
-                line=dict(color="#4f8483", width=2),
-                connectgaps=False,
-            )
-        )
-        fig_eff.add_trace(
-            go.Scatter(
-                x=agg["Month"],
-                y=agg["cpsql"],
-                name="CPSQL",
-                mode="lines+markers",
-                line=dict(color="#7a5fa0", width=2),
-                connectgaps=False,
-            )
-        )
-        fig_eff.update_layout(title="CPL and CPSQL by month", **_layout_kw)
-        st.plotly_chart(fig_eff, use_container_width=True, key=f"{key_suffix}_pl_mpo_cpl_cpsql")
+    col_left, col_right = st.columns(2, gap="large")
 
-    if "country" in master_df.columns and not master_df.empty:
-        mk = master_df.copy()
-        if "cost" not in mk.columns:
-            mk["cost"] = 0.0
-        else:
-            mk["cost"] = pd.to_numeric(mk["cost"], errors="coerce").fillna(0.0)
-        mk["Market"] = mk["country"].astype(str).map(_market_display_from_join_key)
-        topm = mk.groupby("Market", as_index=False).agg(spend=("cost", "sum"))
-        topm = topm.sort_values("spend", ascending=False).head(12)
-        if float(topm["spend"].sum()) > 1e-6:
-            fig_mk = px.bar(
-                topm,
-                x="spend",
-                y="Market",
-                orientation="h",
-                title="Spend by market (full-period total, top 12)",
-                color_discrete_sequence=["#4f8483"],
-            )
-            fig_mk.update_layout(**_layout_kw)
-            st.plotly_chart(fig_mk, use_container_width=True, key=f"{key_suffix}_pl_mpo_markets_spend")
+    with col_left:
+        with st.container(border=True):
+            h1, h2 = st.columns([5, 7])
+            with h1:
+                st.markdown('<p class="mpo-perf-chart-title">Performance Trends</p>', unsafe_allow_html=True)
+            with h2:
+                trend_metric = _mpo_segmented_or_radio(
+                    "trend_metric",
+                    ["Clicks", "Impressions", "Cost"],
+                    key=f"{key_suffix}_mpo_trend_metric",
+                )
+
+            col_map = {"Clicks": "clicks", "Impressions": "impressions", "Cost": "cost"}
+            ycol = col_map.get(str(trend_metric), "clicks")
+
+            if g.empty or len(g["Month"]) == 0:
+                st.caption("Not enough monthly data in scope for a trend — widen the date range or relax filters.")
+            else:
+                cur = pd.to_numeric(g[ycol], errors="coerce").fillna(0.0)
+                prev = cur.shift(1)
+                fig_t = go.Figure()
+                fig_t.add_trace(
+                    go.Scatter(
+                        x=g["Month"],
+                        y=cur,
+                        name="Current period",
+                        mode="lines+markers",
+                        line=dict(color="#2563eb", width=2.5),
+                        marker=dict(size=7, color="#2563eb"),
+                    )
+                )
+                fig_t.add_trace(
+                    go.Scatter(
+                        x=g["Month"],
+                        y=prev,
+                        name="Previous period",
+                        mode="lines+markers",
+                        line=dict(color="#94a3b8", width=2),
+                        marker=dict(size=6, color="#94a3b8"),
+                        connectgaps=False,
+                    )
+                )
+                fig_t.update_yaxes(tickformat=",.0f", title_text=str(trend_metric))
+                fig_t.update_xaxes(title_text="Month")
+                fig_t.update_layout(
+                    showlegend=True,
+                    legend=dict(orientation="h", yanchor="top", y=-0.28, xanchor="center", x=0.5),
+                    **_layout_kw,
+                )
+                if ycol in ("clicks", "impressions") and float(cur.sum()) < 1e-6:
+                    st.caption("No click or impression totals in scope — connect the Supermetrics workbook or widen filters.")
+                st.plotly_chart(fig_t, use_container_width=True, key=f"{key_suffix}_pl_mpo_perf_trends")
+
+    with col_right:
+        with st.container(border=True):
+            r1, r2 = st.columns([5, 9])
+            with r1:
+                st.markdown('<p class="mpo-perf-chart-title">Performance Breakdown</p>', unsafe_allow_html=True)
+            with r2:
+                brk = _mpo_segmented_or_radio(
+                    "breakdown",
+                    ["Traffic", "Leads Conversion", "Funnel Stages"],
+                    key=f"{key_suffix}_mpo_breakdown_kind",
+                )
+
+            labels: list[str] = []
+            values: list[float] = []
+            brk_caption = ""
+            if brk == "Traffic":
+                labels, values, _basis = _mpo_traffic_platform_breakdown(
+                    df_loaded, sheet_id, df_ref_for_scope, spend_for_charts
+                )
+                brk_caption = f"Share by platform ({str(_basis).lower()})."
+            elif brk == "Leads Conversion":
+                labels, values = _mpo_leads_conversion_slices(leads_sliced)
+                brk_caption = "Qualified vs remaining leads in scope."
+            else:
+                labels, values = _mpo_funnel_stage_slices(post_sliced)
+                brk_caption = "Post-qualification pipeline stages in scope."
+
+            if not labels or not values or float(sum(values)) < 1e-9:
+                st.caption(
+                    "No breakdown data for this view in the current scope — check filters or source worksheets."
+                )
+            else:
+                pal = ["#2563eb", "#ef4444", "#10b981", "#8b5cf6", "#f59e0b", "#64748b", "#0d9488"]
+                cols = [pal[i % len(pal)] for i in range(len(labels))]
+                fig_d = go.Figure(
+                    data=[
+                        go.Pie(
+                            labels=labels,
+                            values=values,
+                            hole=0.55,
+                            marker=dict(colors=cols, line=dict(color="#fff", width=1)),
+                            textinfo="label+percent",
+                            textposition="auto",
+                            sort=False,
+                        )
+                    ]
+                )
+                fig_d.update_layout(
+                    showlegend=True,
+                    legend=dict(orientation="h", yanchor="top", y=-0.22, xanchor="center", x=0.5),
+                    margin=dict(l=8, r=8, t=8, b=64),
+                    height=380,
+                    paper_bgcolor="white",
+                )
+                st.plotly_chart(fig_d, use_container_width=True, key=f"{key_suffix}_pl_mpo_perf_breakdown")
+                st.caption(brk_caption)
 
 
 def _master_view_spend_authoritative_from_grid(spend_grid: pd.DataFrame) -> pd.DataFrame:
@@ -6453,16 +6689,6 @@ def render_page_marketing_performance(
         _fb = _mpo_month_keys_sorted_master(master_df)
         _headline_keys = _fb[-1:] if _fb else []
 
-    st.markdown(
-        _mpo_comparison_strip_html(
-            key_suffix=key_suffix,
-            cur_k=ck,
-            ref_k=rk,
-            kind=str(cmp_kind),
-        ),
-        unsafe_allow_html=True,
-    )
-
     _kpi_prior = _kpi_two_month_compare_dict(
         ck,
         rk,
@@ -6511,7 +6737,6 @@ def render_page_marketing_performance(
         cw_for_qwin = _hm.get("cw_for_qwin")
         qual_for_qwin = _hm.get("qual_for_qwin")
 
-    st.markdown(_mpo_kpi_section_head_html(), unsafe_allow_html=True)
     _kpi_block(
         total_spend=total_spend,
         total_impr=total_impr,
@@ -6556,6 +6781,12 @@ def render_page_marketing_performance(
         end_date=end_date,
         master_df=master_df,
         key_suffix=key_suffix,
+        spend_for_charts=spend_df,
+        df_loaded=df_loaded,
+        sheet_id=sheet_id,
+        leads_df=leads_df,
+        post_df_kpi=post_df_kpi,
+        df_ref_for_scope=df,
     )
 
 
@@ -6710,11 +6941,21 @@ def _extras_skip_tabs_already_loaded(df_loaded: pd.DataFrame, extras: list[pd.Da
     return out
 
 
+_DASH_NAV_OPTIONS = [
+    "Marketing performance",
+    "Market MoM",
+    "Inbound channels",
+    "Performance marketing",
+]
+
+
 def render_main_dashboard(
     start_date: date,
     end_date: date,
 ) -> None:
     """Load Google Sheets workbook (all tabs), then route to report pages."""
+    load_error: Optional[str] = None
+    df_loaded = pd.DataFrame()
     sheet_id, _ = _workbook_id_resolution()
     _fp = _secret_fingerprint(_service_account_from_streamlit_secrets())
     try:
@@ -6783,15 +7024,28 @@ def render_main_dashboard(
                 else:
                     df_loaded = pd.concat([df_loaded, df_ads], ignore_index=True)
     except Exception as exc:
-        st.error(f"Failed to load spreadsheet: {exc}")
-        return
+        load_error = str(exc)
 
+    _no_data_msg = (
+        "No data rows were returned. Check tabs and column headers against the ME X-Ray template."
+    )
+
+    if load_error:
+        st.error(f"Failed to load spreadsheet: {load_error}")
+        return
     if df_loaded.empty:
-        st.warning("No data rows were returned. Check tabs and column headers against the ME X-Ray template.")
+        st.warning(_no_data_msg)
         return
 
-    # Single-page app: KPI scorecard + master view (no MoM / channel tab bar).
-    render_page_marketing_performance(df_loaded, start_date, end_date)
+    tab_mpo, tab_mom, tab_inb, tab_pmc = st.tabs(_DASH_NAV_OPTIONS)
+    with tab_mpo:
+        render_page_marketing_performance(df_loaded, start_date, end_date)
+    with tab_mom:
+        render_page_market_mom(df_loaded, start_date, end_date)
+    with tab_inb:
+        render_page_channels(df_loaded, start_date, end_date, inbound=True)
+    with tab_pmc:
+        render_page_channels(df_loaded, start_date, end_date, inbound=False)
 
 
 def main() -> None:
@@ -7329,6 +7583,26 @@ def main() -> None:
             0 1px 0 rgba(255, 255, 255, 0.9) inset,
             0 8px 24px -18px rgba(15, 23, 42, 0.2);
     }
+    .mpo-perf-charts-wrap {
+        margin: 10px 0 6px 0;
+    }
+    .mpo-perf-charts-page-title {
+        margin-bottom: 4px !important;
+    }
+    .mpo-perf-charts-sub {
+        margin: 0 0 12px 0;
+        font-size: 0.8125rem;
+        line-height: 1.5;
+        color: #64748b;
+        font-weight: 500;
+    }
+    .mpo-perf-chart-title {
+        margin: 0 0 6px 0;
+        font-size: 1rem;
+        font-weight: 800;
+        letter-spacing: -0.02em;
+        color: #0f172a;
+    }
     .streamlit-expanderHeader {
         border-radius: 10px !important;
         border-left: 3px solid #4f8483 !important;
@@ -7448,6 +7722,73 @@ def main() -> None:
     }
     /* Marketing funnel scorecards (Looker-style deltas + sub-metrics) */
     .kpi-funnel-wrap { display: flex; flex-direction: column; gap: 4px; }
+    .kpi-funnel-section--traffic-hero { margin-bottom: 10px; }
+    .kpi-funnel-grid--hero-3 {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 14px;
+        margin: 4px 0 4px 0;
+    }
+    @media (max-width: 900px) {
+        .kpi-funnel-grid--hero-3 { grid-template-columns: 1fr; }
+    }
+    .kpi-funnel-card--hero {
+        min-height: 128px;
+        background: linear-gradient(165deg, #ffffff 0%, #f8fafc 100%) !important;
+        border: 1px solid #e8edf2 !important;
+    }
+    .kpi-funnel-card--hero .kpi-funnel-title {
+        font-size: 11px;
+        font-weight: 600;
+        color: #334155 !important;
+        letter-spacing: 0.01em;
+        margin-right: 40px;
+    }
+    .kpi-funnel-card--hero .kpi-funnel-icon {
+        opacity: 1 !important;
+        top: 14px;
+        right: 14px;
+        width: 36px;
+        height: 36px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        border-radius: 999px;
+        background: #e8f0fe;
+        color: #1a73e8;
+        font-size: 1rem;
+        line-height: 1;
+    }
+    .kpi-funnel-delta--pill-wrap {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px 10px;
+        margin-bottom: 6px;
+    }
+    .kpi-funnel-delta-pill {
+        display: inline-block;
+        font-size: 12px;
+        font-weight: 700;
+        padding: 4px 10px;
+        border-radius: 999px;
+        line-height: 1.35;
+        font-variant-numeric: tabular-nums;
+    }
+    .kpi-funnel-delta-pill--up { color: #137333; background: #e6f4ea; }
+    .kpi-funnel-delta-pill--down { color: #c5221f; background: #fce8e6; }
+    .kpi-funnel-delta-pill--flat { color: #64748b; background: #f1f5f9; }
+    .kpi-funnel-delta-vs {
+        font-size: 11px;
+        font-weight: 500;
+        color: #94a3b8;
+    }
+    .kpi-funnel-sub--hero {
+        border-top: none !important;
+        padding-top: 0 !important;
+        margin-top: 0 !important;
+        min-height: 0;
+    }
     .kpi-funnel-section { margin-bottom: 6px; }
     .kpi-funnel-section-title {
         font-size: 0.92rem;
@@ -7659,7 +8000,9 @@ def main() -> None:
     .metric-value { font-size: 28px; font-weight: 700; line-height: 1.1; color: #111827; }
     .block-title { font-size: 18px; font-weight: 700; color: #0f172a; margin: 8px 0 4px 0; }
     .block-subtitle { font-size: 12px; color: #64748b; margin-bottom: 12px; }
-    .stTabs [data-baseweb="tab-list"] {
+    /* Tab strip: baseweb (older Streamlit) + native tablist (newer builds / cloud) */
+    .stTabs [data-baseweb="tab-list"],
+    [data-testid="stTabs"] [role="tablist"] {
         gap: 6px;
         background: rgba(255, 255, 255, 0.72);
         backdrop-filter: blur(10px);
@@ -7672,7 +8015,12 @@ def main() -> None:
         overflow-y: hidden !important;
         flex-wrap: nowrap !important;
     }
-    .stTabs [data-baseweb="tab"] {
+    [data-testid="stTabs"] {
+        margin-top: 4px;
+        margin-bottom: 8px;
+    }
+    .stTabs [data-baseweb="tab"],
+    [data-testid="stTabs"] button[role="tab"] {
         padding: 9px 18px;
         border-radius: 999px;
         font-weight: 600;
@@ -7681,7 +8029,8 @@ def main() -> None:
         flex-shrink: 0;
         letter-spacing: -0.01em;
     }
-    .stTabs [aria-selected="true"] {
+    .stTabs [aria-selected="true"],
+    [data-testid="stTabs"] button[role="tab"][aria-selected="true"] {
         background: linear-gradient(135deg, #0d9488 0%, #0f766e 100%) !important;
         color: white !important;
         box-shadow: 0 2px 10px rgba(13, 148, 136, 0.35);

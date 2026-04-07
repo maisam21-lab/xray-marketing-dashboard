@@ -1,0 +1,7 @@
+# https://docs.streamlit.io/develop/api-reference/configuration/config.toml
+
+[server]
+headless = true
+
+[browser]
+gatherUsageStats = false
