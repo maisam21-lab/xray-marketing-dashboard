@@ -3369,18 +3369,13 @@ def _mpo_comparison_strip_html(
 
 def _mpo_marketing_performance_hero_html() -> str:
     """Page hero: title, short explainer, build id."""
-    b = html.escape(DASHBOARD_BUILD)
     return (
         '<div class="mpo-hero">'
         '<div class="mpo-hero-bg" aria-hidden="true"></div>'
         '<div class="mpo-hero-main">'
         '<p class="mpo-hero-kicker">Marketing · RevOps</p>'
         '<h1 class="mpo-hero-title">Performance overview</h1>'
-        '<p class="mpo-hero-lead">Spend, pipeline, and funnel KPIs for the selected date range. '
-        "Filters define the <strong>summed headline</strong>; comparison pickers drive "
-        "<strong>% change</strong> only.</p>"
         "</div>"
-        f'<div class="mpo-hero-badge" title="Deployed build id">Build <span class="mpo-hero-build">{b}</span></div>'
         "</div>"
     )
 
