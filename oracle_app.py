@@ -25,13 +25,18 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 # Bump when you ship UI/logic changes — shown on Marketing Performance so you know which file Streamlit loaded.
-DASHBOARD_BUILD = "2026-04-05-mpo-ui-polish"
+DASHBOARD_BUILD = "2026-04-07-paid-media-second-workbook"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 # Optional workbook: set Streamlit secret ``XRAY_SHEET_ID`` to the id or full URL below, then set
 # XRAY_TRUTH_GID / XRAY_SPEND_GID / XRAY_LEADS_GID / XRAY_POST_QUAL_GID / XRAY_RAW_CW_GID to each tab’s
 # ``gid`` from the URL when that tab is open (example tab gid=279936880):
 # https://docs.google.com/spreadsheets/d/1tcjVk7UD-4LG3DG-73ELTNCfzD2XnwnEYqdS8NoH71I/edit?gid=279936880
+#
+# Optional **second** workbook (e.g. Supermetrics: "Kitchen park | Supermetrics Connector"): set
+# ``PAID_MEDIA_SHEET_ID`` (or ``SUPERMETRICS_SHEET_ID`` / ``XRAY_ADS_SHEET_ID``) to that spreadsheet’s
+# id or full URL. Its tabs are stacked after the primary workbook so Google/Meta/Snapchat/LinkedIn Ads Data
+# sheets blend with ME X-Ray CRM tabs without replacing ``XRAY_SHEET_ID``.
 DEFAULT_SOURCE_TRUTH_GID = 8109573
 DEFAULT_LEADS_WORKSHEET_GID = 743065354
 # Default empty on Streamlit Cloud; set `XRAY_EXCEL_PATH` in secrets or `XRAY_EXCEL_PATH_DEFAULT` locally.
@@ -65,6 +70,44 @@ def _workbook_id_resolution() -> tuple[str, str]:
     except Exception:
         pass
     return DEFAULT_SHEET_ID, "DEFAULT_SHEET_ID in code (ME X-Ray workbook)"
+
+
+def _optional_paid_media_sheet_id_from_secrets() -> str:
+    """Second spreadsheet: per-platform paid media / Supermetrics exports (optional).
+
+    Accepts id or full URL from Streamlit secrets or env:
+    ``PAID_MEDIA_SHEET_ID``, ``SUPERMETRICS_SHEET_ID``, ``XRAY_ADS_SHEET_ID`` (and lowercase variants).
+    """
+    keys = (
+        "PAID_MEDIA_SHEET_ID",
+        "paid_media_sheet_id",
+        "SUPERMETRICS_SHEET_ID",
+        "supermetrics_sheet_id",
+        "XRAY_ADS_SHEET_ID",
+        "xray_ads_sheet_id",
+    )
+    try:
+        s = st.secrets
+        for k in keys:
+            v = (s.get(k) or "").strip()
+            if v:
+                return _extract_sheet_id(v)
+    except Exception:
+        pass
+    for k in ("PAID_MEDIA_SHEET_ID", "SUPERMETRICS_SHEET_ID", "XRAY_ADS_SHEET_ID"):
+        v = (os.environ.get(k) or "").strip()
+        if v:
+            return _extract_sheet_id(v)
+    return ""
+
+
+def _dataframe_with_spreadsheet_id(df: pd.DataFrame, spreadsheet_id: str) -> pd.DataFrame:
+    """Tag stacked rows so ``worksheet_gid`` slices stay unambiguous across merged workbooks."""
+    if df.empty or not (spreadsheet_id or "").strip():
+        return df
+    out = df.copy()
+    out["spreadsheet_id"] = str(_extract_sheet_id(spreadsheet_id))
+    return out
 
 
 def _default_truth_gid_from_secrets() -> int:
@@ -117,15 +160,26 @@ _MPO_LEAD_TAB_PATTERNS: list[str] = [
 ]
 
 
-def _rows_by_worksheet_id(frame: pd.DataFrame, gid: int) -> pd.DataFrame:
-    """Slice stacked workbook rows for worksheet id (``worksheet_gid`` or ``source_ws_gid``)."""
+def _rows_by_worksheet_id(
+    frame: pd.DataFrame,
+    gid: int,
+    spreadsheet_id: Optional[str] = None,
+) -> pd.DataFrame:
+    """Slice stacked workbook rows for worksheet id (``worksheet_gid`` or ``source_ws_gid``).
+
+    When ``spreadsheet_id`` is set and ``frame`` has a ``spreadsheet_id`` column, only rows from that
+    workbook are returned (avoids gid collisions when two spreadsheets are concatenated).
+    """
     if frame.empty or int(gid) <= 0:
         return frame.iloc[0:0].copy()
     for col in ("worksheet_gid", "source_ws_gid"):
         if col not in frame.columns:
             continue
         wg = pd.to_numeric(frame[col], errors="coerce")
-        sub = frame.loc[wg == int(gid)].copy()
+        mask = wg == int(gid)
+        if spreadsheet_id is not None and "spreadsheet_id" in frame.columns:
+            mask = mask & (frame["spreadsheet_id"].astype(str) == str(spreadsheet_id))
+        sub = frame.loc[mask].copy()
         if not sub.empty:
             return sub
     return frame.iloc[0:0].copy()
@@ -5894,6 +5948,8 @@ def render_page_marketing_performance(
         spend_sheet_master = _filter_spend_for_dashboard(spend_gid0_wks, start_date, end_date)
         if spend_sheet_master.empty and "worksheet_gid" in df_loaded.columns:
             _g0 = df_loaded.loc[pd.to_numeric(df_loaded["worksheet_gid"], errors="coerce") == 0].copy()
+            if "spreadsheet_id" in _g0.columns:
+                _g0 = _g0.loc[_g0["spreadsheet_id"].astype(str) == str(sheet_id)]
             if not _g0.empty:
                 spend_sheet_master = _filter_spend_for_dashboard(_g0, start_date, end_date)
         if _normalized_spend_cost_sum(spend_sheet_master) == 0.0:
@@ -5971,7 +6027,7 @@ def render_page_marketing_performance(
             leads_df = leads_by_gid
     except Exception:
         pass
-    by_gid = _rows_by_worksheet_id(df_loaded, int(leads_gid))
+    by_gid = _rows_by_worksheet_id(df_loaded, int(leads_gid), sheet_id)
     if not by_gid.empty:
         leads_df = by_gid
     # Tab title ``Leads`` (not only ``Raw Leads``): row count when gid/API slice is empty.
@@ -5997,6 +6053,8 @@ def render_page_marketing_performance(
     if pq_gid is not None and "worksheet_gid" in df_loaded.columns:
         wg = pd.to_numeric(df_loaded["worksheet_gid"], errors="coerce")
         by_pq = df_loaded.loc[wg == int(pq_gid)].copy()
+        if "spreadsheet_id" in by_pq.columns:
+            by_pq = by_pq.loc[by_pq["spreadsheet_id"].astype(str) == str(sheet_id)]
         if not by_pq.empty:
             post_df_kpi = by_pq
     elif pq_gid is not None:
@@ -6034,7 +6092,7 @@ def render_page_marketing_performance(
     total_leads = _lead_rows_count(leads_df)
     total_qualified = _qualified_count_from_leads(leads_df)
     if total_leads == 0:
-        by_g2 = _rows_by_worksheet_id(df_loaded, int(leads_gid))
+        by_g2 = _rows_by_worksheet_id(df_loaded, int(leads_gid), sheet_id)
         if not by_g2.empty:
             leads_df = by_g2
             total_leads = _lead_rows_count(leads_df)
@@ -6584,6 +6642,19 @@ def render_main_dashboard(
                 df_loaded = pd.concat(extras, ignore_index=True)
             else:
                 df_loaded = pd.concat([df_loaded] + extras, ignore_index=True)
+        # Primary workbook rows only (ME X-Ray / ``XRAY_SHEET_ID``).
+        if not df_loaded.empty:
+            df_loaded = _dataframe_with_spreadsheet_id(df_loaded, sheet_id)
+        # Optional second workbook: Supermetrics / per-platform ads tabs (``PAID_MEDIA_SHEET_ID``).
+        ads_id = _optional_paid_media_sheet_id_from_secrets()
+        if ads_id and ads_id != sheet_id:
+            df_ads = load_all_worksheets_combined(ads_id, _fp)
+            df_ads = _dataframe_with_spreadsheet_id(df_ads, ads_id)
+            if not df_ads.empty:
+                if df_loaded.empty:
+                    df_loaded = df_ads
+                else:
+                    df_loaded = pd.concat([df_loaded, df_ads], ignore_index=True)
     except Exception as exc:
         st.error(f"Failed to load spreadsheet: {exc}")
         return
