@@ -4822,21 +4822,69 @@ def _mpo_metric_source_rows_for_metric(
     return out if out else source_rows
 
 
+def _mpo_join_keys_for_market_label(market_label: str) -> set[str]:
+    """Join-key set for spend/CRM rows that roll up to this Master ``Market`` row (incl. Middle East = all ME countries)."""
+    ml = str(market_label).strip().lower()
+    if ml in _REGION_SUBTOTAL_NAMES_LOWER:
+        return set(_MIDDLE_EAST_MARKET_KEYS) | {"middle east"}
+    for k, v in _MARKET_DISPLAY_FROM_KEY.items():
+        if v.strip().lower() == ml:
+            return {k}
+    jk = _country_join_key(market_label)
+    if jk and jk not in ("unknown", "nan", "<na>", ""):
+        return {jk}
+    nk = _norm_market_key(market_label)
+    return {nk} if nk else set()
+
+
+def _mpo_prep_spend_extract_for_slice(df: pd.DataFrame) -> pd.DataFrame:
+    """Align month/country with the same path as spend pivots (date → month, country join keys)."""
+    if df.empty:
+        return df
+    x = df.copy()
+    if "cost" in x.columns:
+        x = _canonicalize_spend_month_column(x)
+    return _normalize_master_merge_frame(x)
+
+
 def _mpo_df_slice_month_market(
     df: Optional[pd.DataFrame],
     month_key: str,
     market_label: str,
 ) -> pd.DataFrame:
-    """Rows from a source tab filtered to normalized month key and display market (same slice as master drill-down)."""
+    """Rows from a source tab filtered to normalized month key and market (join-key aware; ME row = all ME countries)."""
     if df is None or df.empty or not month_key:
         return pd.DataFrame()
-    x = _normalize_master_merge_frame(df.copy())
+    x = _mpo_prep_spend_extract_for_slice(df.copy())
     if "month" not in x.columns or "country" not in x.columns:
         return pd.DataFrame()
     x["_mk"] = x["month"].map(_month_norm_key)
+    keys = _mpo_join_keys_for_market_label(market_label)
+    if not keys:
+        return pd.DataFrame()
+    jk_series = x["country"].map(_country_join_key)
+    m = x["_mk"].eq(month_key) & jk_series.isin(keys)
+    out = x.loc[m].copy()
+    if not out.empty:
+        return out
+    # Fallback: match by display label (legacy rows where join key differs)
     x["_ml"] = x["country"].map(_market_display_from_join_key).astype(str).str.strip()
-    m = x["_mk"].eq(month_key) & x["_ml"].eq(str(market_label).strip())
-    return x.loc[m].copy()
+    m2 = x["_mk"].eq(month_key) & x["_ml"].eq(str(market_label).strip())
+    return x.loc[m2].copy()
+
+
+def _mpo_df_slice_month_market_fallback_month_only(
+    df: Optional[pd.DataFrame],
+    month_key: str,
+) -> pd.DataFrame:
+    """All rows for this month (used when market slice is empty but master still shows spend)."""
+    if df is None or df.empty or not month_key:
+        return pd.DataFrame()
+    x = _mpo_prep_spend_extract_for_slice(df.copy())
+    if "month" not in x.columns:
+        return pd.DataFrame()
+    x["_mk"] = x["month"].map(_month_norm_key)
+    return x.loc[x["_mk"].eq(month_key)].copy()
 
 
 def _mpo_month_period_range_caption(month_key: str) -> str:
@@ -4982,7 +5030,14 @@ def _render_mpo_master_metric_detail_card(
     period_caption = _mpo_month_period_range_caption(month_key) if month_key else ""
 
     if metric_name == "Spend":
-        sp = _mpo_df_slice_month_market(detail_sources.get("spend") if detail_sources else None, month_key, market_label)
+        spend_src = detail_sources.get("spend") if detail_sources else None
+        sp = _mpo_df_slice_month_market(spend_src, month_key, market_label)
+        used_month_fallback = False
+        if sp.empty and month_key:
+            sp_fb = _mpo_df_slice_month_market_fallback_month_only(spend_src, month_key)
+            if not sp_fb.empty:
+                sp = sp_fb
+                used_month_fallback = True
         spend_sum = float(pd.to_numeric(sp.get("cost", 0), errors="coerce").fillna(0).sum()) if not sp.empty else float(
             pd.to_numeric(row.get("spend", 0), errors="coerce") or 0
         )
@@ -5003,6 +5058,11 @@ def _render_mpo_master_metric_detail_card(
             "</div>",
             unsafe_allow_html=True,
         )
+        if used_month_fallback:
+            st.warning(
+                "Spend rows could not be matched to this **market** using country keys (see Middle East / naming). "
+                "Showing **all spend rows for this month** in the extract so you still see line items."
+            )
         k1, k2, k3 = st.columns(3)
         with k1:
             st.markdown(
@@ -5054,7 +5114,11 @@ def _render_mpo_master_metric_detail_card(
         st.caption(f"Master sheet cell (formatted): {value_text}")
         st.markdown(f"##### Marketing Performance ({len(drill)})")
         if drill.empty:
-            st.info("No granular spend rows matched this month and market in the spend extract.")
+            st.info(
+                "No spend rows in the extract matched this month (and market). "
+                "The master cell can still show spend from **merged / allocated** totals. "
+                "Check that the Spend tab has **month** and **country** populated for detail rows."
+            )
         else:
             st.dataframe(
                 drill,
