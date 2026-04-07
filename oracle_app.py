@@ -24,8 +24,8 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import streamlit as st
 
-# Bump when you ship UI/logic changes — shown on Marketing Performance so you know which file Streamlit loaded.
-DASHBOARD_BUILD = "2026-04-08-cmp-strip-no-pills"
+# Bump when you ship UI/logic changes — shown in the hero so you know which code the app loaded.
+DASHBOARD_BUILD = "2026-04-08-visible-build-stamp"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 # Optional workbook: set Streamlit secret ``XRAY_SHEET_ID`` to the id or full URL below, then set
@@ -3565,13 +3565,15 @@ def _mpo_comparison_strip_html(
 
 
 def _mpo_marketing_performance_hero_html() -> str:
-    """Page hero: title, short explainer, build id."""
+    """Page hero: title, short explainer, build id (confirms deploy picked up latest ``oracle_app.py``)."""
+    _b = html.escape(str(DASHBOARD_BUILD))
     return (
         '<div class="mpo-hero">'
         '<div class="mpo-hero-bg" aria-hidden="true"></div>'
         '<div class="mpo-hero-main">'
         '<p class="mpo-hero-kicker">Marketing · RevOps</p>'
         '<h1 class="mpo-hero-title">Performance overview</h1>'
+        f'<p class="mpo-hero-build" title="oracle_app.py deployment stamp">Build {_b}</p>'
         "</div>"
         "</div>"
     )
@@ -7254,7 +7256,8 @@ def main() -> None:
         font-size: 10px;
         font-weight: 600;
         color: #0f766e;
-        margin-left: 4px;
+        margin: 8px 0 0 0;
+        letter-spacing: 0.02em;
     }
     .mpo-scope-row {
         margin: 0 0 16px 0;
