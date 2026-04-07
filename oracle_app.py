@@ -4935,11 +4935,30 @@ def _master_performance_table(
         cells = list(sel_dict.get("cells", []) or [])
         if cells:
             c0 = cells[0] or {}
-            try:
-                rix = int(c0.get("row"))
-            except Exception:
-                rix = None
-            col_raw = c0.get("column")
+            if isinstance(c0, dict):
+                try:
+                    rix = int(c0.get("row"))
+                except Exception:
+                    rix = None
+                col_raw = c0.get("column")
+            elif isinstance(c0, (list, tuple)):
+                # Some Streamlit builds return cells like (row_idx, col_idx_or_name).
+                try:
+                    if len(c0) >= 1:
+                        rix = int(c0[0])
+                except Exception:
+                    rix = None
+                try:
+                    if len(c0) >= 2:
+                        col_raw = c0[1]
+                except Exception:
+                    col_raw = None
+            else:
+                try:
+                    rix = int(getattr(c0, "row"))
+                except Exception:
+                    rix = None
+                col_raw = getattr(c0, "column", None)
         else:
             rows = list(getattr(sel, "rows", []) or sel_dict.get("rows", []) or []) if sel else []
             cols = list(getattr(sel, "columns", []) or sel_dict.get("columns", []) or []) if sel else []
