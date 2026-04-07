@@ -25,7 +25,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 # Bump when you ship UI/logic changes — shown on Marketing Performance so you know which file Streamlit loaded.
-DASHBOARD_BUILD = "2026-04-07-default-supermetrics-sheet"
+DASHBOARD_BUILD = "2026-04-08-single-page-no-tabs"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 # Optional workbook: set Streamlit secret ``XRAY_SHEET_ID`` to the id or full URL below, then set
@@ -3092,14 +3092,6 @@ def load_excel_all_sheets(_content_hash: str, xlsx_bytes: bytes) -> pd.DataFrame
         combined.attrs["fields_mapped"] = []
     combined.attrs["sheet_columns"] = list(combined.columns)
     return combined
-
-
-LOOKER_PAGES: tuple[str, ...] = (
-    "Marketing Performance Overview",
-    "Market MoM View",
-    "Performance Marketing Channels Overview",
-    "All Inbound Channels Overview",
-)
 
 
 def _format_currency(v: float) -> str:
@@ -6844,15 +6836,8 @@ def render_main_dashboard(
         st.warning("No data rows were returned. Check tabs and column headers against the ME X-Ray template.")
         return
 
-    tab_mpo, tab_mom, tab_pmc, tab_inbound = st.tabs(list(LOOKER_PAGES))
-    with tab_mpo:
-        render_page_marketing_performance(df_loaded, start_date, end_date)
-    with tab_mom:
-        render_page_market_mom(df_loaded, start_date, end_date)
-    with tab_pmc:
-        render_page_channels(df_loaded, start_date, end_date, inbound=False)
-    with tab_inbound:
-        render_page_channels(df_loaded, start_date, end_date, inbound=True)
+    # Single-page app: KPI scorecard + master view (no MoM / channel tab bar).
+    render_page_marketing_performance(df_loaded, start_date, end_date)
 
 
 def main() -> None:
