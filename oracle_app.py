@@ -681,6 +681,24 @@ def _first_best_metric_column_by_keyword(
     return best_c
 
 
+def _best_ctr_column_raw(df: pd.DataFrame) -> Optional[str]:
+    """Best CTR-like raw column for click recovery when explicit click fields are missing."""
+    best_c: Optional[str] = None
+    best_sum = -1.0
+    for c in df.columns:
+        nk = _norm_header_key(c)
+        if "ctr" not in nk and "click_through_rate" not in nk:
+            continue
+        if any(ex in nk for ex in ("cpc", "cpm", "cost", "conv", "quality", "rank", "position", "share")):
+            continue
+        s = _to_number_series(df[c]).abs()
+        sm = float(s.sum())
+        if sm > best_sum:
+            best_sum = sm
+            best_c = c
+    return best_c
+
+
 def _norm_header_key(name: str) -> str:
     """Lowercase; non-alphanumeric → underscores (matches ME X-Ray Excel headers like `CPCW:LF`, `Cost/TCV%`)."""
     s = str(name).strip().lower()
@@ -2182,6 +2200,15 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
             cand_i = _to_number_series(df[ii])
             if float(cand_i.abs().sum()) > float(pd.to_numeric(out.get("impressions", 0), errors="coerce").fillna(0).abs().sum()) + 1e-6:
                 out["impressions"] = cand_i
+    # Supermetrics variants may expose impressions + CTR only; recover clicks when click fields are absent.
+    if _metric_sum_zero("clicks") and not _metric_sum_zero("impressions"):
+        ctr_col = _best_ctr_column_raw(df)
+        if ctr_col is not None:
+            ctr_s = _to_number_series(df[ctr_col]).fillna(0.0)
+            q95 = float(ctr_s.abs().quantile(0.95)) if len(ctr_s) else 0.0
+            ctr_ratio = ctr_s if q95 <= 1.0 else (ctr_s / 100.0)
+            impr_s = pd.to_numeric(out.get("impressions", 0), errors="coerce").fillna(0.0)
+            out["clicks"] = (impr_s * ctr_ratio).clip(lower=0)
 
     for c in _NUM_FIELDS:
         if c in out.columns:
