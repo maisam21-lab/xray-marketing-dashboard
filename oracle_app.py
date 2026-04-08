@@ -1519,6 +1519,11 @@ _NORM_TO_FIELD: dict[str, str] = {
     "impr": "impressions",
     "post_impressions": "impressions",
     "paid_impressions": "impressions",
+    "ctr": "ctr",
+    "click_through_rate": "ctr",
+    "ctr_percent": "ctr",
+    "link_ctr": "ctr",
+    "all_ctr": "ctr",
     "leads": "leads",
     "qualified": "qualified",
     "pitching": "pitching",
@@ -1583,6 +1588,7 @@ _NUM_FIELDS = frozenset(
         "cost",
         "clicks",
         "impressions",
+        "ctr",
         "leads",
         "qualified",
         "pitching",
@@ -4096,6 +4102,16 @@ def _mpo_merge_pool_clicks_impressions_onto_spend(
     pn = _normalize_master_merge_frame(pool.copy())
     if pn.empty or "month" not in pn.columns:
         return out
+    # Some connector tabs expose CTR + impressions without a clicks column.
+    # Recover clicks so scorecards/charts do not stay at zero.
+    if "ctr" in pn.columns:
+        _cur_clicks = pd.to_numeric(pn.get("clicks", 0), errors="coerce").fillna(0)
+        _cur_impr = pd.to_numeric(pn.get("impressions", 0), errors="coerce").fillna(0)
+        if float(_cur_clicks.abs().sum()) < 1e-9 and float(_cur_impr.abs().sum()) > 1e-9:
+            _ctr = pd.to_numeric(pn["ctr"], errors="coerce").fillna(0.0)
+            _q95 = float(_ctr.abs().quantile(0.95)) if len(_ctr) else 0.0
+            _ctr_ratio = _ctr if _q95 <= 1.0 else (_ctr / 100.0)
+            pn["clicks"] = (_cur_impr * _ctr_ratio).clip(lower=0)
     pool_clicks = float(pd.to_numeric(pn.get("clicks", 0), errors="coerce").fillna(0).sum())
     pool_impr = float(pd.to_numeric(pn.get("impressions", 0), errors="coerce").fillna(0).sum())
     if pool_clicks < 1e-9 and pool_impr < 1e-9:
