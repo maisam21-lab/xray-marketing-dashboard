@@ -1528,6 +1528,12 @@ _NORM_TO_FIELD: dict[str, str] = {
     "unique_link_clicks": "clicks",
     "outbound_clicks": "clicks",
     "all_clicks": "clicks",
+    "clicks_all": "clicks",
+    "total_clicks": "clicks",
+    "swipe_ups": "clicks",
+    "swipe_up": "clicks",
+    "swipes": "clicks",
+    "landing_page_clicks": "clicks",
     "interactions": "clicks",
     "post_clicks": "clicks",
     "paid_clicks": "clicks",
@@ -2491,7 +2497,7 @@ def _tab_title_looks_like_ads_data_sheet(title: str) -> bool:
     """Per-platform export tabs, e.g. ``Google Ads Data``, ``Meta Ads Data``, ``Snapchat Ads Data``."""
     tl = str(title).strip().lower()
     return bool(
-        re.search(r"(google|meta|snapchat|linkedin|tiktok|bing|youtube|pinterest|reddit)\s*ads?\s*data", tl)
+        re.search(r"(google|meta|snapchat|linked\s*in|linkedin|tiktok|bing|youtube|pinterest|reddit)\s*ads?\s*(data)?", tl)
         or tl.endswith(" ads data")
     )
 
