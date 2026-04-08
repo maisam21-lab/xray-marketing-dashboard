@@ -594,6 +594,66 @@ def _dataframe_from_grid_header_at(grid: list[list[str]], header_idx: int) -> pd
     return pd.DataFrame(fixed_rows, columns=header)
 
 
+def _sheet_value_looks_like_metric_subheader(v: Any) -> bool:
+    nk = _norm_header_key(str(v))
+    if nk in {
+        "date",
+        "day",
+        "month",
+        "year",
+        "campaign",
+        "campaign_name",
+        "impressions",
+        "impr",
+        "clicks",
+        "cost",
+        "spend",
+        "total_spend",
+        "ctr",
+        "cpc",
+    }:
+        return True
+    return any(
+        k in nk
+        for k in (
+            "impression",
+            "click",
+            "spend",
+            "cost",
+            "ctr",
+            "date",
+            "campaign",
+        )
+    )
+
+
+def _coerce_two_row_sheet_headers(raw: pd.DataFrame) -> pd.DataFrame:
+    """Handle sheets where row1=group labels and row2=actual metric headers (e.g. campaign exports)."""
+    if raw.empty or len(raw.columns) < 2 or len(raw.index) < 1:
+        return raw
+    first_row = raw.iloc[0].tolist()
+    metric_hits = sum(1 for v in first_row if _sheet_value_looks_like_metric_subheader(v))
+    if metric_hits < max(2, int(0.12 * len(raw.columns))):
+        return raw
+
+    new_cols: list[str] = []
+    for col_name, sub in zip(raw.columns.tolist(), first_row):
+        top = str(col_name).strip()
+        sub_s = str(sub).strip()
+        if _sheet_value_looks_like_metric_subheader(sub_s):
+            # Prefer canonical metric/date labels from the 2nd header row.
+            name = sub_s
+        elif sub_s and sub_s.lower() not in ("nan", "none", "nat"):
+            name = f"{top}__{sub_s}" if top else sub_s
+        else:
+            name = top
+        new_cols.append(name if name else top)
+    new_cols = _make_unique_headers_row(new_cols)
+    out = raw.iloc[1:].copy()
+    out.columns = new_cols
+    return out.reset_index(drop=True)
+
+
 def _parse_european_money_scalar(val: Any) -> float:
     """Parse ``1.234,56`` / ``1234,56`` style amounts when US-style parsing yields nothing."""
     t = str(val).strip()
@@ -2669,6 +2729,7 @@ def load_all_worksheets_combined(sheet_id: str, _secret_fp: str) -> pd.DataFrame
             except Exception:
                 tab_stats.append((title, -1))
                 continue
+        raw = _coerce_two_row_sheet_headers(raw)
         raw = _preprocess_excel_sheet(raw, title)
         df = _normalize(raw)
         if df.empty:
@@ -2714,6 +2775,7 @@ def load_marketing_data(
         worksheet_name=None,
         worksheet_gid=int(worksheet_gid),
     )
+    raw = _coerce_two_row_sheet_headers(raw)
     return _normalize(raw)
 
 
@@ -2742,6 +2804,7 @@ def load_worksheet_by_gid_preprocessed(sheet_id: str, worksheet_gid: int, _secre
         worksheet_name=None,
         worksheet_gid=int(worksheet_gid),
     )
+    raw = _coerce_two_row_sheet_headers(raw)
     title = _tab_title_for_worksheet_gid(sheet_id, worksheet_gid, _secret_fp)
     raw = _preprocess_excel_sheet(raw, title)
     out = _normalize(raw)
