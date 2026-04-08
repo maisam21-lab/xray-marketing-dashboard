@@ -2310,6 +2310,22 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
             cand_i = _to_number_series(df[ii])
             if float(cand_i.abs().sum()) > float(pd.to_numeric(out.get("impressions", 0), errors="coerce").fillna(0).abs().sum()) + 1e-6:
                 out["impressions"] = cand_i
+    # Always compare against "sum all matching columns" for wide campaign exports.
+    _sum_clicks_all = _sum_metric_columns_by_keywords(
+        df,
+        include_keywords=("click",),
+        exclude_keywords=("ctr", "cpc", "cost", "rate", "conv", "position", "share", "quality", "rank"),
+    )
+    if float(_sum_clicks_all.abs().sum()) > float(pd.to_numeric(out.get("clicks", 0), errors="coerce").fillna(0).abs().sum()) + 1e-6:
+        out["clicks"] = _sum_clicks_all
+
+    _sum_impr_all = _sum_metric_columns_by_keywords(
+        df,
+        include_keywords=("impr", "impression"),
+        exclude_keywords=("ctr", "cpc", "cost", "rate", "share", "position", "frequency", "quality", "rank"),
+    )
+    if float(_sum_impr_all.abs().sum()) > float(pd.to_numeric(out.get("impressions", 0), errors="coerce").fillna(0).abs().sum()) + 1e-6:
+        out["impressions"] = _sum_impr_all
     # Supermetrics variants may expose impressions + CTR only; recover clicks when click fields are absent.
     if _metric_sum_zero("clicks") and not _metric_sum_zero("impressions"):
         ctr_col = _best_ctr_column_raw(df)
