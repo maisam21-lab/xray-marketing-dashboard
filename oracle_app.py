@@ -767,6 +767,28 @@ def _best_ctr_column_raw(df: pd.DataFrame) -> Optional[str]:
     return best_c
 
 
+def _sum_metric_columns_by_keywords(
+    df: pd.DataFrame,
+    *,
+    include_keywords: tuple[str, ...],
+    exclude_keywords: tuple[str, ...] = (),
+) -> pd.Series:
+    """Sum all raw columns whose normalized headers match metric keywords."""
+    if df.empty:
+        return pd.Series(dtype=float)
+    acc = pd.Series(0.0, index=df.index, dtype=float)
+    matched = False
+    for c in df.columns:
+        nk = _norm_header_key(str(c))
+        if not any(k in nk for k in include_keywords):
+            continue
+        if any(k in nk for k in exclude_keywords):
+            continue
+        acc = acc + _to_number_series(df[c]).fillna(0.0)
+        matched = True
+    return acc if matched else pd.Series(0.0, index=df.index, dtype=float)
+
+
 def _norm_header_key(name: str) -> str:
     """Lowercase; non-alphanumeric → underscores (matches ME X-Ray Excel headers like `CPCW:LF`, `Cost/TCV%`)."""
     s = str(name).strip().lower()
@@ -2234,6 +2256,13 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
             )
         if ic is not None:
             out["clicks"] = _to_number_series(df[ic])
+        # Wide campaign exports: many click columns (one per campaign) need summing, not one-column pick.
+        if _metric_sum_zero("clicks"):
+            out["clicks"] = _sum_metric_columns_by_keywords(
+                df,
+                include_keywords=("click",),
+                exclude_keywords=("ctr", "cpc", "cost", "rate", "conv", "position", "share", "quality", "rank"),
+            )
     else:
         ic = _first_best_metric_column_by_keyword(
             df,
@@ -2258,6 +2287,13 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
             )
         if ii is not None:
             out["impressions"] = _to_number_series(df[ii])
+        # Wide campaign exports: many impression columns (one per campaign) need summing.
+        if _metric_sum_zero("impressions"):
+            out["impressions"] = _sum_metric_columns_by_keywords(
+                df,
+                include_keywords=("impr", "impression"),
+                exclude_keywords=("ctr", "cpc", "cost", "rate", "share", "position", "frequency", "quality", "rank"),
+            )
     else:
         ii = _first_best_metric_column_by_keyword(
             df,
