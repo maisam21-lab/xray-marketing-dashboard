@@ -24,7 +24,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 # Bump when you ship UI/logic changes — shown in the hero so you know which code the app loaded.
-DASHBOARD_BUILD = "2026-04-08-cloud-tabs-nav"
+DASHBOARD_BUILD = "2026-04-08-supermetrics-debug-pane"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 # Optional workbook: set Streamlit secret ``XRAY_SHEET_ID`` to the id or full URL below, then set
@@ -4454,6 +4454,116 @@ def _mpo_render_paid_media_by_platform_summary(
         )
 
 
+def _debug_column_hints_for_metrics(df: pd.DataFrame) -> tuple[str, str]:
+    """Short strings listing raw column names that look like clicks vs impressions (for debug)."""
+    if df.empty or not len(df.columns):
+        return "(none)", "(none)"
+    click_cols: list[str] = []
+    impr_cols: list[str] = []
+    for c in df.columns:
+        nk = _norm_header_key(str(c))
+        if any(k in nk for k in ("click", "swipe")) and "ctr" not in nk:
+            click_cols.append(str(c))
+        if "impr" in nk or "impression" in nk:
+            impr_cols.append(str(c))
+
+    def _trunc(xs: list[str], n: int = 14) -> str:
+        if not xs:
+            return "(none detected)"
+        s = ", ".join(xs[:n])
+        return s + ("…" if len(xs) > n else "")
+
+    return _trunc(click_cols), _trunc(impr_cols)
+
+
+def _mpo_render_supermetrics_debug_pane(
+    df_loaded: pd.DataFrame,
+    *,
+    start_date: date,
+    end_date: date,
+    key_suffix: str,
+    primary_sheet_id: str,
+) -> None:
+    """Expandable diagnostics for Supermetrics gid tabs: parse totals vs merged frame, month coverage."""
+    ads_id = (_optional_paid_media_sheet_id_from_secrets() or "").strip()
+    if not ads_id or str(_extract_sheet_id(ads_id)) == str(_extract_sheet_id(primary_sheet_id)):
+        return
+    _fp = _secret_fingerprint(_service_account_from_streamlit_secrets())
+    gid_labels: dict[int, str] = {
+        0: "Google Ads",
+        1802364778: "Meta Ads",
+        1720904536: "Snapchat Ads",
+        279936880: "LinkedIn Ads",
+    }
+    sheet_url_base = f"https://docs.google.com/spreadsheets/d/{_extract_sheet_id(ads_id)}/edit"
+    with st.expander("Debug: Supermetrics paid-media (by gid)", expanded=False):
+        st.caption(
+            f"Reporting window: **{start_date:%Y-%m-%d}** → **{end_date:%Y-%m-%d}**. "
+            f"Paid workbook id: `{_extract_sheet_id(ads_id)}`. Build: `{DASHBOARD_BUILD}`."
+        )
+        rows_out: list[dict[str, Any]] = []
+        for gid in DEFAULT_PAID_MEDIA_PLATFORM_GIDS:
+            label = gid_labels.get(int(gid), f"gid {gid}")
+            tab_title = ""
+            try:
+                norm = load_worksheet_by_gid_preprocessed(ads_id, int(gid), _fp)
+            except Exception as exc:
+                norm = pd.DataFrame()
+                tab_title = f"load error: {exc}"
+            if norm is not None and not norm.empty:
+                tab_title = str(norm["source_tab"].iloc[0]) if "source_tab" in norm.columns else tab_title
+            n_norm = int(len(norm)) if norm is not None and not norm.empty else 0
+            sc = float(pd.to_numeric(norm.get("cost", 0), errors="coerce").fillna(0).sum()) if n_norm else 0.0
+            scl = int(pd.to_numeric(norm.get("clicks", 0), errors="coerce").fillna(0).sum()) if n_norm else 0
+            sim = int(pd.to_numeric(norm.get("impressions", 0), errors="coerce").fillna(0).sum()) if n_norm else 0
+            months_u: str = ""
+            if n_norm and "month" in norm.columns:
+                u = sorted(
+                    {str(_month_norm_key(x)) for x in norm["month"].tolist() if str(_month_norm_key(x)).strip()},
+                    key=_mpo_month_ts_for_sort,
+                )
+                months_u = ", ".join(u[-8:]) if len(u) > 8 else ", ".join(u)
+            ch_click, ch_impr = _debug_column_hints_for_metrics(norm if n_norm else pd.DataFrame())
+
+            n_merged = 0
+            sm_sc = sm_cl = sm_im = 0
+            if not df_loaded.empty and "spreadsheet_id" in df_loaded.columns and "worksheet_gid" in df_loaded.columns:
+                wg = pd.to_numeric(df_loaded["worksheet_gid"], errors="coerce")
+                m = (df_loaded["spreadsheet_id"].astype(str) == str(_extract_sheet_id(ads_id))) & (wg == int(gid))
+                sub = df_loaded.loc[m]
+                n_merged = int(len(sub))
+                if n_merged:
+                    sm_sc = float(pd.to_numeric(sub.get("cost", 0), errors="coerce").fillna(0).sum())
+                    sm_cl = int(pd.to_numeric(sub.get("clicks", 0), errors="coerce").fillna(0).sum())
+                    sm_im = int(pd.to_numeric(sub.get("impressions", 0), errors="coerce").fillna(0).sum())
+
+            rows_out.append(
+                {
+                    "Platform": label,
+                    "gid": int(gid),
+                    "Tab (normalized)": tab_title[:80] + ("…" if len(str(tab_title)) > 80 else ""),
+                    "rows (gid load)": n_norm,
+                    "rows (in df_loaded)": n_merged,
+                    "Σ cost (load)": round(sc, 2),
+                    "Σ clicks (load)": scl,
+                    "Σ impr (load)": sim,
+                    "Σ cost (merged)": round(sm_sc, 2),
+                    "Σ clicks (merged)": sm_cl,
+                    "Σ impr (merged)": sm_im,
+                    "months (sample)": months_u or "—",
+                    "cols ~clicks": ch_click[:120],
+                    "cols ~impr": ch_impr[:120],
+                    "open tab": f"{sheet_url_base}?gid={gid}",
+                }
+            )
+        dbg = pd.DataFrame(rows_out)
+        st.dataframe(dbg, use_container_width=True, hide_index=True, key=f"{key_suffix}_df_sm_debug")
+        st.caption(
+            "Compare **gid load** (fresh `load_worksheet_by_gid_preprocessed`) vs **merged** (rows in `df_loaded` after concat + date filter). "
+            "Large gaps usually mean date/month filtering dropped rows or duplicate header parsing differed between full-workbook load and gid reload."
+        )
+
+
 def _mpo_master_month_sums(master_df: pd.DataFrame, month_key: Optional[str]) -> dict[str, float]:
     out = {"cost": 0.0, "leads": 0.0, "qualified": 0.0, "closed_won": 0.0, "tcv": 0.0, "first_month_lf": 0.0}
     if master_df.empty or not month_key:
@@ -7046,6 +7156,14 @@ def render_page_marketing_performance(
     )
 
     _mpo_render_paid_media_by_platform_summary(df_date, key_suffix=key_suffix, primary_sheet_id=sheet_id)
+
+    _mpo_render_supermetrics_debug_pane(
+        df_loaded,
+        start_date=start_date,
+        end_date=end_date,
+        key_suffix=key_suffix,
+        primary_sheet_id=sheet_id,
+    )
 
     _master_performance_table(
         master_df,
