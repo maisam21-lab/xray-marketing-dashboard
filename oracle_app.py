@@ -2556,8 +2556,10 @@ def _tab_title_looks_like_spend_worksheet(title: str) -> bool:
 def _tab_title_looks_like_ads_data_sheet(title: str) -> bool:
     """Per-platform export tabs, e.g. ``Google Ads Data``, ``Meta Ads Data``, ``Snapchat Ads Data``."""
     tl = str(title).strip().lower()
+    platform_core = r"(google|meta|snapchat|linked\s*in|linkedin)"
     return bool(
-        re.search(r"(google|meta|snapchat|linked\s*in|linkedin|tiktok|bing|youtube|pinterest|reddit)\s*ads?\s*(data)?", tl)
+        re.search(platform_core + r"\s*ads?\s*(data)?", tl)
+        or re.search(platform_core + r"\b", tl)
         or tl.endswith(" ads data")
     )
 
@@ -2588,6 +2590,14 @@ def _mpo_platform_label_from_source_tab(title: str) -> str:
     """Stable platform / utm label from ``source_tab`` (overrides misleading sheet ``Platform`` cells)."""
     t = str(title).strip()
     tl = t.lower()
+    if re.search(r"\bgoogle\b", tl):
+        return "Google Ads"
+    if re.search(r"\bmeta\b|facebook|instagram", tl):
+        return "Meta Ads"
+    if re.search(r"\bsnap(chat)?\b", tl):
+        return "Snapchat Ads"
+    if re.search(r"linked\s*in|linkedin", tl):
+        return "LinkedIn Ads"
     if _tab_title_looks_like_ads_data_sheet(t):
         return _mpo_tab_title_to_platform_label(t)
     if re.match(r"^gid:\d+_spend$", tl):
@@ -4069,10 +4079,22 @@ def _mpo_rows_paid_media_from_combined(df_loaded: pd.DataFrame) -> pd.DataFrame:
     sub = df_loaded.loc[~is_excl & ~is_summary].copy()
     if sub.empty:
         return sub
+    # Keep the four primary paid-media platforms explicitly, even when tab naming is non-standard.
+    _tl = sub["source_tab"].astype(str).str.lower()
+    is_primary_four = (
+        _tl.str.contains(r"\bgoogle\b", na=False, regex=True)
+        | _tl.str.contains(r"\bmeta\b|facebook|instagram", na=False, regex=True)
+        | _tl.str.contains(r"\bsnap(chat)?\b", na=False, regex=True)
+        | _tl.str.contains(r"linked\s*in|linkedin", na=False, regex=True)
+    )
+    has_primary_four = bool(is_primary_four.any())
     st_tab = df_loaded["source_tab"].astype(str)
     has_any_ads_data_tab = bool(st_tab.map(lambda t: _tab_title_looks_like_ads_data_sheet(str(t))).any())
     if has_any_ads_data_tab:
         sub = sub.loc[~sub["source_tab"].astype(str).map(_tab_title_is_spend_rollup_tab)].copy()
+    if has_primary_four:
+        # When four-platform tabs exist, prioritize them for CI aggregation.
+        sub = sub.loc[is_primary_four.reindex(sub.index).fillna(False)].copy()
     c = pd.to_numeric(sub.get("cost", 0), errors="coerce").fillna(0)
     cl = pd.to_numeric(sub.get("clicks", 0), errors="coerce").fillna(0)
     im = pd.to_numeric(sub.get("impressions", 0), errors="coerce").fillna(0)
