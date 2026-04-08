@@ -4075,8 +4075,11 @@ def _mpo_merge_pool_clicks_impressions_onto_spend(
 
     pool = _mpo_supermetrics_pool_for_clicks_impressions(df_loaded, primary_sheet_id=prim)
     out = _normalize_master_merge_frame(spend_master.copy())
+    # Keep X-Ray clicks/impressions when Supermetrics is unavailable.
     for col in ("clicks", "impressions"):
-        out[col] = 0
+        if col not in out.columns:
+            out[col] = 0
+        out[col] = pd.to_numeric(out[col], errors="coerce").fillna(0)
     if pool.empty:
         return out
     pn = _normalize_master_merge_frame(pool.copy())
@@ -4086,11 +4089,9 @@ def _mpo_merge_pool_clicks_impressions_onto_spend(
     pool_impr = float(pd.to_numeric(pn.get("impressions", 0), errors="coerce").fillna(0).sum())
     if pool_clicks < 1e-9 and pool_impr < 1e-9:
         return out
-    for col in ("clicks", "impressions"):
-        if col not in out.columns:
-            out[col] = 0
-    out["clicks"] = pd.to_numeric(out["clicks"], errors="coerce").fillna(0)
-    out["impressions"] = pd.to_numeric(out["impressions"], errors="coerce").fillna(0)
+    # Supermetrics is present: reset CI and refill from connector rows.
+    out["clicks"] = 0.0
+    out["impressions"] = 0.0
 
     merged_ok = False
     if "country" in pn.columns and "country" in out.columns:
