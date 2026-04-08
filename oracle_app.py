@@ -37,6 +37,14 @@ DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 # ``PAID_MEDIA_SHEET_ID`` / ``SUPERMETRICS_SHEET_ID`` / ``XRAY_ADS_SHEET_ID``, or set ``PAID_MEDIA_SHEET_ID``
 # to ``none`` to disable the second load. ``DISABLE_PAID_MEDIA_SECOND_WORKBOOK=1`` also disables it.
 DEFAULT_PAID_MEDIA_SHEET_ID = "1tcjVk7UD-4LG3DG-73ELTNCfzD2XnwnEYqdS8NoH71I"
+# Supermetrics paid-media tabs (explicit gids provided by the owner).
+# 0=Google Ads, 1802364778=Meta, 1720904536=Snapchat, 279936880=LinkedIn.
+DEFAULT_PAID_MEDIA_PLATFORM_GIDS: tuple[int, ...] = (
+    0,
+    1802364778,
+    1720904536,
+    279936880,
+)
 DEFAULT_SOURCE_TRUTH_GID = 8109573
 DEFAULT_LEADS_WORKSHEET_GID = 743065354
 # Default empty on Streamlit Cloud; set `XRAY_EXCEL_PATH` in secrets or `XRAY_EXCEL_PATH_DEFAULT` locally.
@@ -2846,6 +2854,24 @@ def load_source_of_truth_tab(sheet_id: str, worksheet_gid: int, _secret_fp: str)
     out = _normalize(raw)
     out["source_tab"] = f"gid:{worksheet_gid}"
     return out
+
+
+def _load_paid_media_platform_tabs_by_gid(sheet_id: str, _secret_fp: str) -> pd.DataFrame:
+    """Explicitly load the 4 paid-media platform tabs by gid (Google/Meta/Snapchat/LinkedIn)."""
+    parts: list[pd.DataFrame] = []
+    for gid in DEFAULT_PAID_MEDIA_PLATFORM_GIDS:
+        try:
+            sub = load_worksheet_by_gid_preprocessed(sheet_id, int(gid), _secret_fp)
+        except Exception:
+            continue
+        if sub.empty:
+            continue
+        sub = sub.copy()
+        sub["worksheet_gid"] = int(gid)
+        parts.append(sub)
+    if not parts:
+        return pd.DataFrame()
+    return pd.concat(parts, ignore_index=True)
 
 
 @st.cache_data(ttl=300)
@@ -7163,6 +7189,17 @@ def render_main_dashboard(
         ads_id = _optional_paid_media_sheet_id_from_secrets()
         if ads_id and ads_id != sheet_id:
             df_ads = load_all_worksheets_combined(ads_id, _fp)
+            # Explicitly re-load the 4 platform gids so these critical tabs are always present.
+            df_ads_gid = _load_paid_media_platform_tabs_by_gid(ads_id, _fp)
+            if not df_ads_gid.empty:
+                if df_ads.empty:
+                    df_ads = df_ads_gid
+                elif "worksheet_gid" in df_ads.columns:
+                    wg_ads = pd.to_numeric(df_ads["worksheet_gid"], errors="coerce")
+                    keep = ~wg_ads.isin(list(DEFAULT_PAID_MEDIA_PLATFORM_GIDS))
+                    df_ads = pd.concat([df_ads.loc[keep].copy(), df_ads_gid], ignore_index=True)
+                else:
+                    df_ads = pd.concat([df_ads, df_ads_gid], ignore_index=True)
             df_ads = _dataframe_with_spreadsheet_id(df_ads, ads_id)
             if not df_ads.empty:
                 if df_loaded.empty:
