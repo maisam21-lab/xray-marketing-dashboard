@@ -4074,6 +4074,17 @@ def _mpo_merge_pool_clicks_impressions_onto_spend(
     prim = str(_extract_sheet_id(str(primary_sheet_id)))
 
     pool = _mpo_supermetrics_pool_for_clicks_impressions(df_loaded, primary_sheet_id=prim)
+    # Cloud safety: if the second-workbook split is misconfigured, fall back to paid-media rows
+    # from any loaded workbook so clicks/impressions are not forced to zero.
+    if pool.empty:
+        pool = _mpo_rows_paid_media_from_combined(df_loaded)
+    else:
+        _pc = float(pd.to_numeric(pool.get("clicks", 0), errors="coerce").fillna(0).sum())
+        _pi = float(pd.to_numeric(pool.get("impressions", 0), errors="coerce").fillna(0).sum())
+        if _pc < 1e-9 and _pi < 1e-9:
+            pool_any = _mpo_rows_paid_media_from_combined(df_loaded)
+            if not pool_any.empty:
+                pool = pool_any
     out = _normalize_master_merge_frame(spend_master.copy())
     # Keep X-Ray clicks/impressions when Supermetrics is unavailable.
     for col in ("clicks", "impressions"):
