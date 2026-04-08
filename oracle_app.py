@@ -2436,6 +2436,57 @@ def _filter_spend_for_dashboard(df: pd.DataFrame, start: date, end: date) -> pd.
     return sub_d if not sub_d.empty else df
 
 
+def _restrict_paid_media_workbook_to_date_range(
+    df: pd.DataFrame,
+    ads_workbook_id: str,
+    start_date: date,
+    end_date: date,
+) -> pd.DataFrame:
+    """Keep only rows from the Supermetrics workbook whose ``month`` or ``date`` falls in the app reporting window.
+
+    CRM tabs elsewhere use ``_filter_by_date_range`` which keeps undated rows; for paid-media exports we
+    strictly scope by period so 2025–2026 does not mix in other years from wide connector tabs.
+    """
+    if df.empty or "spreadsheet_id" not in df.columns:
+        return df
+    aid = str(_extract_sheet_id(str(ads_workbook_id)))
+    is_sm = df["spreadsheet_id"].astype(str) == aid
+    if not bool(is_sm.any()):
+        return df
+    start_p = pd.Period(start_date, freq="M")
+    end_p = pd.Period(end_date, freq="M")
+    sub = df.loc[is_sm].copy()
+    in_window = pd.Series(False, index=sub.index)
+    if "month" in sub.columns:
+
+        def _month_ok(m: Any) -> bool:
+            mk = _month_norm_key(m)
+            if not mk:
+                return False
+            try:
+                p = pd.Period(str(mk), freq="M")
+                return bool(start_p <= p <= end_p)
+            except Exception:
+                return False
+
+        in_window = sub["month"].map(_month_ok)
+    if "date" in sub.columns:
+        ts = pd.to_datetime(sub["date"], errors="coerce")
+        try:
+            if getattr(ts.dtype, "tz", None) is not None:
+                ts = ts.dt.tz_convert("UTC").dt.tz_localize(None)
+        except Exception:
+            pass
+        start_ts = pd.Timestamp(datetime.combine(start_date, time.min))
+        end_ts = pd.Timestamp(datetime.combine(end_date, time.max))
+        in_window = in_window | (ts.notna() & (ts >= start_ts) & (ts <= end_ts))
+    kept = sub.loc[in_window].copy()
+    rest = df.loc[~is_sm].copy()
+    if kept.empty:
+        return rest
+    return pd.concat([rest, kept], ignore_index=True)
+
+
 def _impute_master_df_cost_from_spend_pool(
     master_df: pd.DataFrame,
     spend_pool: pd.DataFrame,
@@ -7269,6 +7320,16 @@ def render_main_dashboard(
     except Exception as exc:
         load_error = str(exc)
 
+    if not load_error and not df_loaded.empty:
+        try:
+            _ads_wb = _optional_paid_media_sheet_id_from_secrets()
+        except Exception:
+            _ads_wb = ""
+        if _ads_wb and str(_extract_sheet_id(_ads_wb)) != str(_extract_sheet_id(sheet_id)):
+            df_loaded = _restrict_paid_media_workbook_to_date_range(
+                df_loaded, _ads_wb, start_date, end_date
+            )
+
     _no_data_msg = (
         "No data rows were returned. Check tabs and column headers against the ME X-Ray template."
     )
@@ -8548,8 +8609,8 @@ def main() -> None:
                 st.info("Signed out.")
     st.markdown("</div>", unsafe_allow_html=True)
 
-    _end = date.today()
-    _start = _end - timedelta(days=730)
+    _start = date(2025, 1, 1)
+    _end = date(2026, 12, 31)
 
     render_main_dashboard(_start, _end)
 
