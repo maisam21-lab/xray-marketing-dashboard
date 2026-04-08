@@ -2313,7 +2313,7 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
     # Always compare against "sum all matching columns" for wide campaign exports.
     _sum_clicks_all = _sum_metric_columns_by_keywords(
         df,
-        include_keywords=("click",),
+        include_keywords=("click", "swipe"),
         exclude_keywords=("ctr", "cpc", "cost", "rate", "conv", "position", "share", "quality", "rank"),
     )
     if float(_sum_clicks_all.abs().sum()) > float(pd.to_numeric(out.get("clicks", 0), errors="coerce").fillna(0).abs().sum()) + 1e-6:
@@ -2868,12 +2868,20 @@ def load_worksheet_by_gid_preprocessed(sheet_id: str, worksheet_gid: int, _secre
             "No service account in Streamlit Secrets. Add a `[gsheet_service_account]` block "
             "(or `GCP_SERVICE_ACCOUNT`) in this app’s Secrets, then reboot."
         )
-    raw = _read_sheet_auth(
-        sheet_id,
-        secret_creds,
-        worksheet_name=None,
-        worksheet_gid=int(worksheet_gid),
-    )
+    try:
+        raw = _read_sheet_auth(
+            sheet_id,
+            secret_creds,
+            worksheet_name=None,
+            worksheet_gid=int(worksheet_gid),
+        )
+        if raw.empty or len(raw.columns) == 0:
+            raw = _read_sheet_auth_loose(sheet_id, secret_creds, worksheet_gid=int(worksheet_gid))
+    except Exception:
+        try:
+            raw = _read_sheet_auth_loose(sheet_id, secret_creds, worksheet_gid=int(worksheet_gid))
+        except Exception:
+            return pd.DataFrame()
     raw = _coerce_two_row_sheet_headers(raw)
     title = _tab_title_for_worksheet_gid(sheet_id, worksheet_gid, _secret_fp)
     raw = _preprocess_excel_sheet(raw, title)
