@@ -21,10 +21,11 @@ from typing import Any, Optional, Union
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
-DASHBOARD_BUILD = "2026-04-08-mpo-charts-v2"
+DASHBOARD_BUILD = "2026-04-09-mpo-trends-3up"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 # Optional workbook: set Streamlit secret ``XRAY_SHEET_ID`` to the id or full URL below, then set
@@ -5657,6 +5658,15 @@ def _mpo_format_trend_value(ycol: str, v: float) -> str:
     return f"{v:,.0f}"
 
 
+def _mpo_mom_pct_str(cur: pd.Series) -> str:
+    if cur is None or len(cur) < 2:
+        return "—"
+    a, b = float(cur.iloc[-2]), float(cur.iloc[-1])
+    if abs(a) < 1e-9:
+        return "—"
+    return f"{((b - a) / a) * 100:+.1f}%"
+
+
 def _render_mpo_trend_charts(
     *,
     start_date: date,
@@ -5670,7 +5680,7 @@ def _render_mpo_trend_charts(
     post_df_kpi: pd.DataFrame,
     df_ref_for_scope: pd.DataFrame,
 ) -> None:
-    """Two symmetric cards: monthly trend (metric switcher) and breakdown donut (view switcher)."""
+    """Two symmetric cards: monthly **Cost + Clicks + Impressions** (stacked trends) and breakdown donut (view switcher)."""
     _ = start_date, end_date  # window implied by filtered monthly series / scope
     st.markdown(
         '<div class="mpo-perf-charts-wrap">'
@@ -5686,93 +5696,107 @@ def _render_mpo_trend_charts(
     leads_sliced = _mpo_slice_by_dashboard_ref(leads_df, df_ref_for_scope)
     post_sliced = _mpo_slice_by_dashboard_ref(post_df_kpi, df_ref_for_scope)
 
-    _chart_h = 500
-    _layout_base = dict(
-        plot_bgcolor="white",
-        paper_bgcolor="white",
-        height=_chart_h,
-        margin=dict(l=12, r=12, t=8, b=80),
-    )
+    _chart_h = 560
 
     col_left, col_right = st.columns(2, gap="large")
 
     with col_left:
         with st.container(border=True):
-            h1, h2 = st.columns([3, 9])
-            with h1:
-                st.markdown('<p class="mpo-perf-chart-title">Trends</p>', unsafe_allow_html=True)
-            with h2:
-                trend_metric = _mpo_segmented_or_radio(
-                    "trend_metric",
-                    ["Clicks", "Impressions", "Cost"],
-                    key=f"{key_suffix}_mpo_trend_metric",
-                )
-
-            col_map = {"Clicks": "clicks", "Impressions": "impressions", "Cost": "cost"}
-            ycol = col_map.get(str(trend_metric), "clicks")
+            st.markdown('<p class="mpo-perf-chart-title">Trends</p>', unsafe_allow_html=True)
 
             if g.empty or len(g["Month"]) == 0:
                 st.caption("Not enough monthly data in scope — widen the date range or relax filters.")
             else:
-                cur = pd.to_numeric(g[ycol], errors="coerce").fillna(0.0)
-                lag = cur.shift(1)
-                fig_t = go.Figure()
+                g = g.copy()
+                for c in ("cost", "clicks", "impressions"):
+                    if c not in g.columns:
+                        g[c] = 0.0
+                xs = g["Month"]
+                s_cost = pd.to_numeric(g["cost"], errors="coerce").fillna(0.0)
+                s_clk = pd.to_numeric(g["clicks"], errors="coerce").fillna(0.0)
+                s_imp = pd.to_numeric(g["impressions"], errors="coerce").fillna(0.0)
+                n_mo = int(len(xs))
+                fig_t = make_subplots(
+                    rows=3,
+                    cols=1,
+                    shared_xaxes=True,
+                    vertical_spacing=0.07,
+                    subplot_titles=("Cost ($)", "Clicks", "Impressions"),
+                )
                 fig_t.add_trace(
                     go.Scatter(
-                        x=g["Month"],
-                        y=cur,
-                        name="Series (month)",
+                        x=xs,
+                        y=s_cost,
+                        name="Cost",
                         mode="lines+markers",
                         line=dict(color="#0d9488", width=3.5),
-                        marker=dict(size=9, color="#0d9488", line=dict(width=1, color="#fff")),
+                        marker=dict(size=8, color="#0d9488", line=dict(width=1, color="#fff")),
                         fill="tozeroy",
-                        fillcolor="rgba(13, 148, 136, 0.12)",
-                        hovertemplate="<b>%{x}</b><br>"
-                        + str(trend_metric)
-                        + ": %{y:,.0f}<extra></extra>",
-                    )
+                        fillcolor="rgba(13, 148, 136, 0.1)",
+                        hovertemplate="<b>%{x}</b><br>Cost: $%{y:,.0f}<extra></extra>",
+                    ),
+                    row=1,
+                    col=1,
                 )
                 fig_t.add_trace(
                     go.Scatter(
-                        x=g["Month"],
-                        y=lag,
-                        name="Prior month (lag)",
+                        x=xs,
+                        y=s_clk,
+                        name="Clicks",
                         mode="lines+markers",
-                        line=dict(color="#64748b", width=2.5, dash="dot"),
-                        marker=dict(size=7, color="#64748b"),
-                        connectgaps=False,
-                        hovertemplate="<b>%{x}</b><br>Lag: %{y:,.0f}<extra></extra>",
-                    )
+                        line=dict(color="#2563eb", width=3.5),
+                        marker=dict(size=8, color="#2563eb", line=dict(width=1, color="#fff")),
+                        hovertemplate="<b>%{x}</b><br>Clicks: %{y:,.0f}<extra></extra>",
+                    ),
+                    row=2,
+                    col=1,
                 )
-                if ycol == "cost":
-                    fig_t.update_yaxes(
-                        tickprefix="$",
-                        tickformat=",.0f",
-                        title_text=str(trend_metric),
-                        title_font=dict(size=14, color="#0f172a"),
-                        tickfont=dict(size=12, color="#334155"),
-                        showgrid=True,
-                        gridcolor="rgba(148, 163, 184, 0.25)",
-                        zeroline=False,
-                        showspikes=True,
-                        spikemode="across",
-                        spikecolor="#cbd5e1",
-                        spikesnap="cursor",
-                    )
-                else:
-                    fig_t.update_yaxes(
-                        tickformat=",.0f",
-                        title_text=str(trend_metric),
-                        title_font=dict(size=14, color="#0f172a"),
-                        tickfont=dict(size=12, color="#334155"),
-                        showgrid=True,
-                        gridcolor="rgba(148, 163, 184, 0.25)",
-                        zeroline=False,
-                        showspikes=True,
-                        spikemode="across",
-                        spikecolor="#cbd5e1",
-                        spikesnap="cursor",
-                    )
+                fig_t.add_trace(
+                    go.Scatter(
+                        x=xs,
+                        y=s_imp,
+                        name="Impressions",
+                        mode="lines+markers",
+                        line=dict(color="#7c3aed", width=3.5),
+                        marker=dict(size=8, color="#7c3aed", line=dict(width=1, color="#fff")),
+                        hovertemplate="<b>%{x}</b><br>Impressions: %{y:,.0f}<extra></extra>",
+                    ),
+                    row=3,
+                    col=1,
+                )
+                _ax_title = dict(size=13, color="#0f172a")
+                _ax_tick = dict(size=12, color="#334155")
+                fig_t.update_yaxes(
+                    tickprefix="$",
+                    tickformat=",.0f",
+                    title_font=_ax_title,
+                    tickfont=_ax_tick,
+                    showgrid=True,
+                    gridcolor="rgba(148, 163, 184, 0.25)",
+                    zeroline=False,
+                    row=1,
+                    col=1,
+                )
+                fig_t.update_yaxes(
+                    tickformat=",.0f",
+                    title_font=_ax_title,
+                    tickfont=_ax_tick,
+                    showgrid=True,
+                    gridcolor="rgba(148, 163, 184, 0.25)",
+                    zeroline=False,
+                    row=2,
+                    col=1,
+                )
+                fig_t.update_yaxes(
+                    tickformat=",.0f",
+                    title_font=_ax_title,
+                    tickfont=_ax_tick,
+                    showgrid=True,
+                    gridcolor="rgba(148, 163, 184, 0.25)",
+                    zeroline=False,
+                    row=3,
+                    col=1,
+                )
                 fig_t.update_xaxes(
                     title_text="Month",
                     title_font=dict(size=14, color="#0f172a"),
@@ -5783,38 +5807,38 @@ def _render_mpo_trend_charts(
                     spikecolor="#cbd5e1",
                     spikesnap="cursor",
                     spikethickness=1,
+                    row=3,
+                    col=1,
                 )
-                n_mo = int(len(cur))
-                total_s = float(cur.sum())
-                mom_s = ""
-                if n_mo >= 2:
-                    a, b = float(cur.iloc[-2]), float(cur.iloc[-1])
-                    if abs(a) > 1e-9:
-                        mom_s = f" · Latest MoM {((b - a) / a) * 100:+.1f}%"
-                    else:
-                        mom_s = " · Latest MoM —"
+                fig_t.update_xaxes(showspikes=True, spikemode="across", spikecolor="#cbd5e1", row=1, col=1)
+                fig_t.update_xaxes(showspikes=True, spikemode="across", spikecolor="#cbd5e1", row=2, col=1)
                 fig_t.update_layout(
+                    height=_chart_h,
+                    plot_bgcolor="white",
+                    paper_bgcolor="white",
                     showlegend=True,
-                    legend=dict(orientation="h", yanchor="top", y=-0.24, xanchor="center", x=0.5, font=dict(size=12)),
+                    legend=dict(
+                        orientation="h",
+                        yanchor="top",
+                        y=-0.06,
+                        xanchor="center",
+                        x=0.5,
+                        font=dict(size=12),
+                    ),
                     hovermode="x unified",
                     hoverlabel=dict(font_size=12),
-                    **{**_layout_base, "margin": dict(l=12, r=12, t=28, b=80)},
-                    annotations=[
-                        dict(
-                            text=f"<b>{n_mo} months</b> · Σ {_mpo_format_trend_value(ycol, total_s)}{mom_s}",
-                            xref="paper",
-                            yref="paper",
-                            x=0,
-                            y=1.07,
-                            xanchor="left",
-                            yanchor="bottom",
-                            showarrow=False,
-                            font=dict(size=14, color="#334155"),
-                        )
-                    ],
+                    margin=dict(l=12, r=12, t=36, b=72),
                 )
-                if ycol in ("clicks", "impressions") and float(cur.sum()) < 1e-6:
-                    st.caption("No click or impression totals in this slice — check Supermetrics / filters.")
+                fig_t.update_annotations(font=dict(size=13, color="#0f172a"))
+                mom_c = _mpo_mom_pct_str(s_cost)
+                mom_k = _mpo_mom_pct_str(s_clk)
+                mom_i = _mpo_mom_pct_str(s_imp)
+                st.caption(
+                    f"{n_mo} months in view · Cost Σ {_mpo_format_trend_value('cost', float(s_cost.sum()))} (MoM {mom_c}) · "
+                    f"Clicks Σ {float(s_clk.sum()):,.0f} ({mom_k}) · Impr Σ {float(s_imp.sum()):,.0f} ({mom_i})"
+                )
+                if float(s_clk.sum()) < 1e-6 and float(s_imp.sum()) < 1e-6:
+                    st.caption("Clicks/impressions are zero in this slice — check Supermetrics / filters.")
                 st.plotly_chart(fig_t, use_container_width=True, key=f"{key_suffix}_pl_mpo_perf_trends")
 
     with col_right:
