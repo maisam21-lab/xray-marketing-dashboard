@@ -25,7 +25,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
-DASHBOARD_BUILD = "2026-04-09-pmc-charts-reference"
+DASHBOARD_BUILD = "2026-04-09-dash-tab-chrome"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 # Optional workbook: set Streamlit secret ``XRAY_SHEET_ID`` to the id or full URL below, then set
@@ -3942,6 +3942,15 @@ def _apply_sheet_filters(
     return df, df_for_tabs
 
 
+def _dashboard_tab_page_header(heading: str) -> None:
+    """Same tab chrome as **Marketing performance**: kicker + title (matches main dashboard tabs)."""
+    st.caption("Marketing · RevOps")
+    st.markdown(
+        f'<p class="dash-tab-heading">{html.escape(heading)}</p>',
+        unsafe_allow_html=True,
+    )
+
+
 # Marketing Performance: one multiselect token per dimension = full data (no slice on that dimension).
 _MPO_ALL_GEO_SENTINEL = "All markets"
 _MPO_ALL_GEO_LEGACY: frozenset[str] = frozenset(
@@ -7011,7 +7020,7 @@ def render_page_marketing_performance(
         st.info("No rows in the selected date range.")
         return
 
-    st.caption("Marketing · RevOps")
+    _dashboard_tab_page_header("Marketing performance")
     df, _ = _apply_marketing_performance_filters(
         df_date,
         key_suffix=key_suffix,
@@ -7545,7 +7554,7 @@ def render_page_market_mom(
         st.info("No rows in the selected date range.")
         return
 
-    st.markdown('<h1 class="looker-page-h1">Market MoM View</h1>', unsafe_allow_html=True)
+    _dashboard_tab_page_header("Market MoM")
     df, _ = _apply_sheet_filters(df_date, key_suffix=key_suffix)
 
     mk_opts = sorted([x for x in df_date["country"].dropna().unique().tolist() if x and x != "Unknown"])
@@ -8000,7 +8009,7 @@ def _pmc_render_charts(by_ch: pd.DataFrame, key_suffix: str) -> None:
     fig2.update_xaxes(title_text="Unified Channel", tickangle=-12, showgrid=False)
     st.plotly_chart(fig2, use_container_width=True, key=f"{key_suffix}_pmc_spend_tcv")
 
-    # --- 3) Bubble matrix: CPL × SQL %, bubble size ∝ lead volume
+    # --- 3) Bubble matrix: CPL × SQL % (labels on hover only — avoids overlap clutter)
     st.markdown('<p class="mpo-perf-chart-title">Paid Channel Lead Quality Matrix</p>', unsafe_allow_html=True)
     qm = by_ch.dropna(subset=["CPL"]).copy()
     if qm.empty:
@@ -8008,6 +8017,10 @@ def _pmc_render_charts(by_ch: pd.DataFrame, key_suffix: str) -> None:
     vol = pd.to_numeric(qm["leads"], errors="coerce").fillna(0.0)
     mx = float(vol.max()) if len(vol) and float(vol.max()) > 0 else 1.0
     bubble_sz = (22 + 48 * (vol / mx).clip(lower=0.12)).tolist()
+    _cd = [
+        [str(qm["unified_channel"].iloc[i]), float(vol.iloc[i])]
+        for i in range(len(qm))
+    ]
 
     fig3 = go.Figure(
         data=[
@@ -8015,18 +8028,15 @@ def _pmc_render_charts(by_ch: pd.DataFrame, key_suffix: str) -> None:
                 name="Unified Channel",
                 x=qm["CPL"],
                 y=qm["SQL%"],
-                mode="markers+text",
-                text=qm["unified_channel"],
-                textposition="top center",
-                textfont=dict(size=11, color="#0f172a"),
+                mode="markers",
                 marker=dict(
                     size=bubble_sz,
                     color="rgba(125, 211, 252, 0.72)",
                     line=dict(color="#38bdf8", width=1.2),
                     sizemode="diameter",
                 ),
-                hovertemplate="<b>%{text}</b><br>CPL: $%{x:,.0f}<br>SQL %: %{y:.1f}<br>Leads: %{customdata}<extra></extra>",
-                customdata=vol,
+                customdata=_cd,
+                hovertemplate="<b>%{customdata[0]}</b><br>CPL: $%{x:,.0f}<br>SQL %: %{y:.1f}<br>Leads: %{customdata[1]:,.0f}<extra></extra>",
             )
         ]
     )
@@ -8065,23 +8075,29 @@ def _render_page_performance_marketing_channels(
         f"Reporting window **{start_date:%d %b %Y}** → **{end_date:%d %b %Y}** · Unified channels derived from "
         "platform, channel, or Ads Data tab names in the X-Ray workbook."
     )
+    st.markdown('<div class="dash-master-surface dash-kpi-band">', unsafe_allow_html=True)
     _pmc_render_overview_kpis(u)
+    st.markdown("</div>", unsafe_allow_html=True)
 
+    mv = _pmc_master_view_table(u)
+    st.markdown('<div class="dash-master-surface">', unsafe_allow_html=True)
     st.markdown(
         '<div class="looker-table-title">Performance Marketing Channels Master View</div>',
         unsafe_allow_html=True,
     )
-    mv = _pmc_master_view_table(u)
     if mv.empty:
         st.info("Need **month** and **country** on rows to build the Master View — check sheet ingest.")
     else:
         st.dataframe(mv, use_container_width=True, hide_index=True, key=f"{key_suffix}_pmc_master")
+    st.markdown("</div>", unsafe_allow_html=True)
 
+    st.markdown('<div class="dash-chart-stack">', unsafe_allow_html=True)
     st.markdown(
         '<div class="looker-table-title">Performance Marketing Charts</div>',
         unsafe_allow_html=True,
     )
     _pmc_render_charts(_pmc_by_channel_summary(u), key_suffix=key_suffix)
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 def render_page_channels(df_loaded: pd.DataFrame, start_date: date, end_date: date, *, inbound: bool) -> None:
@@ -8092,8 +8108,7 @@ def render_page_channels(df_loaded: pd.DataFrame, start_date: date, end_date: da
         st.info("No rows in the selected date range.")
         return
 
-    title = "All Inbound Channels Overview" if inbound else "Performance Marketing Channels Overview"
-    st.markdown(f'<h1 class="looker-page-h1">{title}</h1>', unsafe_allow_html=True)
+    _dashboard_tab_page_header("Inbound channels" if inbound else "Performance marketing")
     df, _ = _apply_sheet_filters(df_date, key_suffix=key_suffix)
 
     if not inbound:
@@ -8105,7 +8120,7 @@ def render_page_channels(df_loaded: pd.DataFrame, start_date: date, end_date: da
         st.warning(f"Column `{group_col}` missing; showing channel breakdown instead.")
         group_col = "channel"
 
-    st.markdown("#### Spend & efficiency by channel / source")
+    st.caption("Spend & efficiency by source — same **Country / Platform** filters as other tabs.")
     agg = (
         df.groupby(group_col, as_index=False)
         .agg(spend=("cost", "sum"), clicks=("clicks", "sum"), cw=("closed_won", "sum"))
@@ -8117,11 +8132,17 @@ def render_page_channels(df_loaded: pd.DataFrame, start_date: date, end_date: da
         grp_leads.append(_lead_rows_count(gk))
     agg["leads"] = grp_leads
     agg["CPL"] = agg.apply(lambda r: (r["spend"] / r["leads"]) if r["leads"] else float("nan"), axis=1)
-    st.dataframe(agg, use_container_width=True, hide_index=True, key=f"{key_suffix}_df_ch")
 
+    st.markdown('<div class="dash-master-surface">', unsafe_allow_html=True)
+    st.markdown('<div class="looker-table-title">Channel master view</div>', unsafe_allow_html=True)
+    st.dataframe(agg, use_container_width=True, hide_index=True, key=f"{key_suffix}_df_ch")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown('<div class="dash-chart-stack">', unsafe_allow_html=True)
+    st.markdown('<div class="looker-table-title">Channel trends</div>', unsafe_allow_html=True)
     m1, m2 = st.columns(2)
     with m1:
-        fig = px.bar(agg.head(20), x=group_col, y="spend", title="Spend")
+        fig = px.bar(agg.head(20), x=group_col, y="spend", title="Spend by source")
         fig.update_traces(marker_color="#4f8483")
         fig.update_layout(plot_bgcolor="white", paper_bgcolor="white", margin=dict(l=8, r=8, t=45, b=8))
         st.plotly_chart(fig, use_container_width=True, key=f"{key_suffix}_pl_spend")
@@ -8136,6 +8157,7 @@ def render_page_channels(df_loaded: pd.DataFrame, start_date: date, end_date: da
         fig2 = px.line(trend, x="month", y="spend", color=group_col, markers=True, title="Spend trend (top groups)")
         fig2.update_layout(plot_bgcolor="white", paper_bgcolor="white", margin=dict(l=8, r=8, t=45, b=8))
         st.plotly_chart(fig2, use_container_width=True, key=f"{key_suffix}_pl_trend")
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 def _extras_skip_tabs_already_loaded(df_loaded: pd.DataFrame, extras: list[pd.DataFrame]) -> list[pd.DataFrame]:
@@ -8366,6 +8388,29 @@ def main() -> None:
         line-height: 1.2;
     }
     .looker-table-title { font-size: 1.0rem; font-weight: 700; color: #202124; margin: 20px 0 8px 0; }
+    .dash-tab-heading {
+        font-size: 1.22rem;
+        font-weight: 800;
+        letter-spacing: -0.035em;
+        color: #0f172a;
+        margin: 0 0 12px 0;
+        line-height: 1.2;
+    }
+    .dash-master-surface {
+        margin: 0 0 14px 0;
+        padding: 12px 14px 14px;
+        border-radius: 14px;
+        border: 1px solid rgba(15, 23, 42, 0.08);
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.98) 0%, rgba(248, 250, 252, 0.95) 100%);
+        box-shadow: 0 4px 20px rgba(15, 23, 42, 0.06);
+    }
+    .dash-master-surface .looker-table-title:first-child { margin-top: 0 !important; }
+    .dash-kpi-band { padding-bottom: 16px; }
+    .dash-chart-stack {
+        margin: 0 0 8px 0;
+        padding: 4px 0 0 0;
+    }
+    .dash-chart-stack .looker-table-title { margin-top: 4px !important; }
     /* KPI scorecards: glass panels, staggered entrance, hover lift */
     .kpi-section {
         min-width: 0;
