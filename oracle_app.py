@@ -23,8 +23,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-# Bump when you ship UI/logic changes — shown in the hero so you know which code the app loaded.
-DASHBOARD_BUILD = "2026-04-08-hide-paid-sm-expanders"
+# Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
+DASHBOARD_BUILD = "2026-04-08-mpo-revops-caption"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 # Optional workbook: set Streamlit secret ``XRAY_SHEET_ID`` to the id or full URL below, then set
@@ -4009,66 +4009,6 @@ def _mpo_market_scope_countries_only(sel: Any) -> list[str]:
     return [str(x) for x in sel if x and str(x) not in _MPO_ALL_GEO_LEGACY]
 
 
-def _mpo_market_scope_note(key_suffix: str) -> str:
-    """Short label for which markets apply (scorecard + table)."""
-    sm = st.session_state.get(f"{key_suffix}_market", [_MPO_ALL_GEO_SENTINEL])
-    if _mpo_market_scope_is_all(sm):
-        return "All markets"
-    picks = _mpo_market_scope_countries_only(sm)
-    if not picks:
-        return "All markets"
-    if len(picks) <= 2:
-        return ", ".join(html.escape(p) for p in picks)
-    return f"{html.escape(picks[0])}, {html.escape(picks[1])} +{len(picks) - 2} more"
-
-
-def _mpo_marketing_performance_hero_html() -> str:
-    """Page hero: title, short explainer, build id (confirms deploy picked up latest ``oracle_app.py``)."""
-    _b = html.escape(str(DASHBOARD_BUILD))
-    return (
-        '<div class="mpo-hero">'
-        '<div class="mpo-hero-bg" aria-hidden="true"></div>'
-        '<div class="mpo-hero-main">'
-        '<p class="mpo-hero-kicker">Marketing · RevOps</p>'
-        '<h1 class="mpo-hero-title">Performance overview</h1>'
-        f'<p class="mpo-hero-build" title="oracle_app.py deployment stamp">Build {_b}</p>'
-        "</div>"
-        "</div>"
-    )
-
-
-def _mpo_headline_scope_html(key_suffix: str, headline_month_keys: list[str]) -> str:
-    """Chip row describing headline aggregation scope (markets + months)."""
-    months_sel = st.session_state.get(f"{key_suffix}_month", [_MPO_ALL_MONTHS_SENTINEL])
-    mkt = _mpo_market_scope_note(key_suffix)
-    if _mpo_month_multiselect_is_all(months_sel):
-        n = len(headline_month_keys)
-        if n <= 0:
-            mo_chip = html.escape("All months · no data in range")
-        elif n == 1:
-            mo_chip = html.escape("All months · 1 month summed")
-        else:
-            mo_chip = html.escape(f"All months · {n} months summed")
-    else:
-        picks = _mpo_month_multiselect_explicit(months_sel)
-        labs = [_month_label_short(m) for m in picks if _month_label_short(m)]
-        if not labs:
-            mo_chip = html.escape("Selected months")
-        else:
-            s = ", ".join(labs[:5])
-            if len(labs) > 5:
-                s += "…"
-            mo_chip = html.escape(s)
-    return (
-        '<div class="mpo-scope-row">'
-        '<div class="mpo-scope-row-inner">'
-        '<span class="mpo-scope-label">Headline scope</span>'
-        f'<span class="mpo-scope-pill mpo-scope-pill--geo">{mkt}</span>'
-        f'<span class="mpo-scope-pill mpo-scope-pill--time">{mo_chip}</span>'
-        "</div></div>"
-    )
-
-
 def _mpo_scorecard_compare_label(opt: str) -> str:
     """Labels for scorecard comparison: MoM vs YoY only."""
     return {
@@ -4162,7 +4102,6 @@ def _apply_marketing_performance_filters(
         st.markdown(
             '<div class="mpo-filter-ribbon">'
             '<span class="mpo-filter-ribbon-title">Data scope</span>'
-            "<span class=\"mpo-filter-ribbon-hint\">Defaults: all markets &amp; all months in range</span>"
             "</div>",
             unsafe_allow_html=True,
         )
@@ -5729,9 +5668,8 @@ def _render_mpo_trend_charts(
     st.markdown(
         '<div class="mpo-perf-charts-wrap">'
         '<div class="looker-table-title mpo-perf-charts-page-title">Performance charts</div>'
-        '<p class="mpo-perf-charts-sub">Same filters as the scorecard and grid. '
-        f"Reporting period: <strong>{start_date:%d %b %Y}</strong> → <strong>{end_date:%d %b %Y}</strong>."
-        "</p></div>",
+        "<p class=\"mpo-perf-charts-sub\">Same filters as the scorecard and grid above "
+        "(reporting window follows the sidebar date range).</p></div>",
         unsafe_allow_html=True,
     )
 
@@ -6571,7 +6509,7 @@ def _master_performance_table(
     df: pd.DataFrame,
     *,
     key_suffix: str,
-    section_title: Optional[str] = "Marketing Performance Master View",
+    section_title: Optional[str] = "Master view",
     spend_grid: Optional[pd.DataFrame] = None,
     detail_sources: Optional[dict[str, pd.DataFrame]] = None,
 ) -> None:
@@ -6937,7 +6875,7 @@ def render_page_marketing_performance(
         st.info("No rows in the selected date range.")
         return
 
-    st.markdown(_mpo_marketing_performance_hero_html(), unsafe_allow_html=True)
+    st.caption("Marketing · RevOps")
     df, _ = _apply_marketing_performance_filters(
         df_date,
         key_suffix=key_suffix,
@@ -8098,120 +8036,6 @@ def main() -> None:
         opacity: 0.95;
     }
     .mpo-cmp-bar--surface > * { position: relative; z-index: 1; }
-    /* Marketing Performance — page chrome */
-    .mpo-hero {
-        position: relative;
-        display: flex;
-        flex-wrap: wrap;
-        align-items: flex-start;
-        justify-content: space-between;
-        gap: 14px 20px;
-        margin: 0 0 18px 0;
-        padding: 18px 20px 20px;
-        border-radius: 18px;
-        border: 1px solid rgba(15, 23, 42, 0.07);
-        background: linear-gradient(145deg, rgba(255, 255, 255, 0.98) 0%, rgba(240, 253, 250, 0.5) 48%, rgba(248, 250, 252, 0.95) 100%);
-        box-shadow: 0 12px 40px -24px rgba(15, 23, 42, 0.2);
-        overflow: hidden;
-    }
-    .mpo-hero-bg {
-        position: absolute;
-        inset: -40% -20% auto auto;
-        width: 55%;
-        height: 140%;
-        background: radial-gradient(circle at 70% 30%, rgba(13, 148, 136, 0.14) 0%, transparent 58%);
-        pointer-events: none;
-    }
-    .mpo-hero-main { flex: 1 1 280px; min-width: 0; position: relative; z-index: 1; }
-    .mpo-hero-kicker {
-        margin: 0 0 6px 0;
-        font-size: 11px;
-        font-weight: 700;
-        letter-spacing: 0.12em;
-        text-transform: uppercase;
-        color: #0f766e;
-    }
-    .mpo-hero-title {
-        margin: 0 0 8px 0;
-        font-size: clamp(1.35rem, 2.4vw, 1.75rem);
-        font-weight: 800;
-        letter-spacing: -0.045em;
-        line-height: 1.12;
-        color: #0f172a;
-    }
-    .mpo-hero-lead {
-        margin: 0;
-        max-width: 52rem;
-        font-size: 0.9375rem;
-        line-height: 1.55;
-        color: #475569;
-        font-weight: 500;
-    }
-    .mpo-hero-badge {
-        flex: 0 0 auto;
-        align-self: center;
-        padding: 8px 12px;
-        border-radius: 12px;
-        font-size: 11px;
-        font-weight: 600;
-        color: #475569;
-        background: rgba(255, 255, 255, 0.85);
-        border: 1px solid rgba(15, 23, 42, 0.08);
-        box-shadow: 0 2px 8px rgba(15, 23, 42, 0.05);
-        position: relative;
-        z-index: 1;
-    }
-    .mpo-hero-build {
-        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-        font-size: 10px;
-        font-weight: 600;
-        color: #0f766e;
-        margin: 8px 0 0 0;
-        letter-spacing: 0.02em;
-    }
-    .mpo-scope-row {
-        margin: 0 0 16px 0;
-    }
-    .mpo-scope-row-inner {
-        display: flex;
-        flex-wrap: wrap;
-        align-items: center;
-        gap: 8px 10px;
-        padding: 10px 14px;
-        border-radius: 14px;
-        background: rgba(255, 255, 255, 0.72);
-        border: 1px solid rgba(15, 23, 42, 0.06);
-        box-shadow: 0 2px 12px rgba(15, 23, 42, 0.04);
-    }
-    .mpo-scope-label {
-        font-size: 10px;
-        font-weight: 800;
-        letter-spacing: 0.1em;
-        text-transform: uppercase;
-        color: #94a3b8;
-        margin-right: 4px;
-    }
-    .mpo-scope-pill {
-        display: inline-flex;
-        align-items: center;
-        gap: 6px;
-        padding: 5px 11px;
-        border-radius: 999px;
-        font-size: 12px;
-        font-weight: 600;
-        line-height: 1.3;
-        border: 1px solid transparent;
-    }
-    .mpo-scope-pill--geo {
-        background: linear-gradient(135deg, #ecfdf5 0%, #d1fae5 100%);
-        color: #065f46;
-        border-color: rgba(16, 185, 129, 0.35);
-    }
-    .mpo-scope-pill--time {
-        background: linear-gradient(135deg, #eff6ff 0%, #dbeafe 100%);
-        color: #1e40af;
-        border-color: rgba(59, 130, 246, 0.35);
-    }
     .mpo-sec-head {
         display: flex;
         gap: 14px;
@@ -8246,7 +8070,7 @@ def main() -> None:
     }
     .mpo-kpi-shell {
         margin-top: 2px;
-        padding: 18px 14px 10px;
+        padding: 12px 10px 8px;
         border-radius: 18px;
         background: linear-gradient(165deg, rgba(255, 255, 255, 0.65) 0%, rgba(248, 250, 252, 0.4) 100%);
         border: 1px solid rgba(15, 23, 42, 0.06);
@@ -8256,15 +8080,15 @@ def main() -> None:
         display: flex;
         flex-wrap: wrap;
         align-items: center;
-        justify-content: space-between;
+        justify-content: flex-start;
         gap: 8px 12px;
-        margin: -2px 0 8px 0;
-        padding: 0 0 10px 0;
+        margin: -2px 0 6px 0;
+        padding: 0 0 8px 0;
         border-bottom: 1px solid rgba(15, 23, 42, 0.07);
     }
     .mpo-data-surface {
-        margin: 0 0 8px 0;
-        padding: 12px 12px 10px;
+        margin: 0 0 6px 0;
+        padding: 10px 10px 8px;
         border-radius: 14px;
         background:
             radial-gradient(circle at 86% 16%, rgba(13, 148, 136, 0.1) 0%, rgba(13, 148, 136, 0.0) 42%),
@@ -8280,7 +8104,7 @@ def main() -> None:
         margin-bottom: 4px !important;
     }
     .mpo-perf-charts-sub {
-        margin: 0 0 12px 0;
+        margin: 0 0 8px 0;
         font-size: 0.8125rem;
         line-height: 1.5;
         color: #64748b;
@@ -8314,11 +8138,6 @@ def main() -> None:
         border-radius: 999px;
         background: #ecfdf5;
         border: 1px solid #a7f3d0;
-    }
-    .mpo-filter-ribbon-hint {
-        font-size: 10px;
-        font-weight: 500;
-        color: #64748b;
     }
     .mpo-top-toolbar {
         margin: 2px 0 2px 0;
