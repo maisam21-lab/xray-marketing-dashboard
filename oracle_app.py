@@ -25,7 +25,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
-DASHBOARD_BUILD = "2026-04-09-pmc-pdf-layout"
+DASHBOARD_BUILD = "2026-04-09-pmc-charts-reference"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 # Optional workbook: set Streamlit secret ``XRAY_SHEET_ID`` to the id or full URL below, then set
@@ -7834,6 +7834,27 @@ def _pmc_master_view_table(u: pd.DataFrame) -> pd.DataFrame:
     return pd.concat([show, gt], ignore_index=True)
 
 
+_PMC_CHANNEL_ORDER: tuple[str, ...] = (
+    "Google Search",
+    "Meta",
+    "Snapchat",
+    "LinkedIn",
+    "PMax",
+    "Other",
+)
+
+
+def _pmc_order_channels_df(by_ch: pd.DataFrame) -> pd.DataFrame:
+    """Match Looker/PDF axis order (not sort by spend)."""
+    if by_ch.empty:
+        return by_ch
+    d = by_ch.copy()
+    ord_map = {c: i for i, c in enumerate(_PMC_CHANNEL_ORDER)}
+    d["_sort"] = d["unified_channel"].map(lambda x: ord_map.get(str(x).strip(), 99))
+    d = d.sort_values(["_sort", "unified_channel"]).drop(columns=["_sort"])
+    return d
+
+
 def _pmc_by_channel_summary(u: pd.DataFrame) -> pd.DataFrame:
     g = (
         u.groupby("unified_channel", as_index=False)
@@ -7845,103 +7866,189 @@ def _pmc_by_channel_summary(u: pd.DataFrame) -> pd.DataFrame:
             rows=("cost", "count"),
         )
         .rename(columns={"rows": "leads"})
-        .sort_values("spend", ascending=False)
     )
     g["CPL"] = g.apply(lambda r: (r["spend"] / r["leads"]) if r["leads"] else float("nan"), axis=1)
     g["SQL%"] = g.apply(lambda r: (r["qualified"] / r["leads"] * 100.0) if r["leads"] else 0.0, axis=1)
-    return g
+    return _pmc_order_channels_df(g)
 
 
 def _pmc_render_charts(by_ch: pd.DataFrame, key_suffix: str) -> None:
-    """PDF **Performance Marketing Charts**: volumes, spend×TCV, quality matrix."""
+    """KitchenPark reference layout: dual-axis combos + bubble quality matrix."""
     if by_ch.empty:
         st.caption("Not enough channel-level rows for charts.")
         return
     chans = by_ch["unified_channel"].astype(str).tolist()
+    leads = pd.to_numeric(by_ch["leads"], errors="coerce").fillna(0.0)
+    qual = pd.to_numeric(by_ch["qualified"], errors="coerce").fillna(0.0)
+    cw = pd.to_numeric(by_ch["cw"], errors="coerce").fillna(0.0)
+    spend = pd.to_numeric(by_ch["spend"], errors="coerce").fillna(0.0)
+    tcv = pd.to_numeric(by_ch["tcv"], errors="coerce").fillna(0.0)
 
+    _paper = dict(plot_bgcolor="white", paper_bgcolor="white")
+
+    # --- 1) Grouped bars (leads + qualified, left axis) + CW line (right axis) — single panel
     st.markdown('<p class="mpo-perf-chart-title">Paid Channel Lead &amp; CW Volumes</p>', unsafe_allow_html=True)
-    fig1 = make_subplots(
-        rows=2,
-        cols=1,
-        shared_xaxes=True,
-        vertical_spacing=0.12,
-        subplot_titles=("Total Leads & Qualified", "CW (Inc Approved)"),
-        row_heights=[0.55, 0.45],
+    fig1 = make_subplots(specs=[[{"secondary_y": True}]])
+    fig1.add_trace(
+        go.Bar(
+            name="Total Leads",
+            x=chans,
+            y=leads,
+            marker_color="#ea580c",
+            marker_line=dict(width=0),
+        ),
+        secondary_y=False,
     )
     fig1.add_trace(
-        go.Bar(name="Total Leads", x=chans, y=by_ch["leads"], marker_color="#2563eb"),
-        row=1,
-        col=1,
+        go.Bar(
+            name="Qualified",
+            x=chans,
+            y=qual,
+            marker_color="#9333ea",
+            marker_line=dict(width=0),
+        ),
+        secondary_y=False,
     )
     fig1.add_trace(
-        go.Bar(name="Qualified", x=chans, y=by_ch["qualified"], marker_color="#93c5fd"),
-        row=1,
-        col=1,
-    )
-    fig1.add_trace(
-        go.Bar(name="CW", x=chans, y=by_ch["cw"], marker_color="#0d9488"),
-        row=2,
-        col=1,
+        go.Scatter(
+            name="CW (Inc Approved)",
+            x=chans,
+            y=cw,
+            mode="lines+markers",
+            line=dict(color="#2563eb", width=3),
+            marker=dict(size=10, color="#2563eb", line=dict(width=2, color="#fff")),
+            hovertemplate="<b>%{x}</b><br>CW: %{y:,.0f}<extra></extra>",
+        ),
+        secondary_y=True,
     )
     fig1.update_layout(
         barmode="group",
-        height=520,
-        plot_bgcolor="white",
-        paper_bgcolor="white",
-        margin=dict(l=8, r=8, t=36, b=8),
-        legend=dict(orientation="h", yanchor="bottom", y=-0.2, x=0.5, font=dict(size=12)),
+        height=460,
+        margin=dict(l=56, r=56, t=16, b=72),
+        legend=dict(orientation="h", yanchor="bottom", y=-0.28, x=0.5, xanchor="center", font=dict(size=12)),
         hovermode="x unified",
+        bargap=0.18,
+        bargroupgap=0.08,
+        **_paper,
     )
-    fig1.update_yaxes(tickformat=",.0f")
+    fig1.update_yaxes(
+        title_text="Total Leads | Qualified",
+        tickformat=",.0f",
+        showgrid=True,
+        gridcolor="rgba(148,163,184,0.25)",
+        zeroline=False,
+        secondary_y=False,
+    )
+    fig1.update_yaxes(
+        title_text="CW (Inc Approved)",
+        tickformat=",.0f",
+        showgrid=False,
+        zeroline=False,
+        secondary_y=True,
+    )
+    fig1.update_xaxes(title_text="Unified Channel", tickangle=-12, showgrid=False)
     st.plotly_chart(fig1, use_container_width=True, key=f"{key_suffix}_pmc_vol")
 
+    # --- 2) Spend bars (left) + Actual TCV line (right) — single panel
     st.markdown('<p class="mpo-perf-chart-title">Paid Channel Spend × TCV</p>', unsafe_allow_html=True)
     fig2 = make_subplots(specs=[[{"secondary_y": True}]])
     fig2.add_trace(
-        go.Bar(name="Spend", x=chans, y=by_ch["spend"], marker_color="#4f8483"),
+        go.Bar(
+            name="Spend",
+            x=chans,
+            y=spend,
+            marker_color="#ea580c",
+            marker_line=dict(width=0),
+        ),
         secondary_y=False,
     )
     fig2.add_trace(
-        go.Bar(name="Actual TCV", x=chans, y=by_ch["tcv"], marker_color="#c4b5fd", opacity=0.85),
+        go.Scatter(
+            name="Actual TCV",
+            x=chans,
+            y=tcv,
+            mode="lines+markers",
+            line=dict(color="#2563eb", width=3),
+            marker=dict(size=10, color="#2563eb", line=dict(width=2, color="#fff")),
+            hovertemplate="<b>%{x}</b><br>TCV: $%{y:,.0f}<extra></extra>",
+        ),
         secondary_y=True,
     )
-    fig2.update_yaxes(title_text="Spend", secondary_y=False, tickprefix="$", tickformat=",.0f")
-    fig2.update_yaxes(title_text="Actual TCV", secondary_y=True, tickprefix="$", tickformat=",.0f")
     fig2.update_layout(
-        height=400,
-        plot_bgcolor="white",
-        paper_bgcolor="white",
-        barmode="group",
-        margin=dict(l=8, r=8, t=8, b=8),
-        legend=dict(orientation="h", y=1.12, x=0.5, xanchor="center", font=dict(size=12)),
+        height=420,
+        margin=dict(l=56, r=64, t=16, b=72),
+        legend=dict(orientation="h", yanchor="bottom", y=-0.26, x=0.5, xanchor="center", font=dict(size=12)),
         hovermode="x unified",
+        bargap=0.2,
+        **_paper,
     )
+    fig2.update_yaxes(
+        title_text="Spend",
+        tickprefix="$",
+        tickformat=",.0f",
+        showgrid=True,
+        gridcolor="rgba(148,163,184,0.25)",
+        secondary_y=False,
+    )
+    fig2.update_yaxes(
+        title_text="Actual TCV",
+        tickprefix="$",
+        tickformat=",.0f",
+        showgrid=False,
+        secondary_y=True,
+    )
+    fig2.update_xaxes(title_text="Unified Channel", tickangle=-12, showgrid=False)
     st.plotly_chart(fig2, use_container_width=True, key=f"{key_suffix}_pmc_spend_tcv")
 
+    # --- 3) Bubble matrix: CPL × SQL %, bubble size ∝ lead volume
     st.markdown('<p class="mpo-perf-chart-title">Paid Channel Lead Quality Matrix</p>', unsafe_allow_html=True)
     qm = by_ch.dropna(subset=["CPL"]).copy()
     if qm.empty:
         qm = by_ch.copy()
+    vol = pd.to_numeric(qm["leads"], errors="coerce").fillna(0.0)
+    mx = float(vol.max()) if len(vol) and float(vol.max()) > 0 else 1.0
+    bubble_sz = (22 + 48 * (vol / mx).clip(lower=0.12)).tolist()
+
     fig3 = go.Figure(
         data=[
             go.Scatter(
+                name="Unified Channel",
                 x=qm["CPL"],
                 y=qm["SQL%"],
                 mode="markers+text",
                 text=qm["unified_channel"],
                 textposition="top center",
-                marker=dict(size=12, color="#0d9488", line=dict(width=1, color="#fff")),
-                hovertemplate="<b>%{text}</b><br>CPL: $%{x:,.0f}<br>SQL %: %{y:.1f}<extra></extra>",
+                textfont=dict(size=11, color="#0f172a"),
+                marker=dict(
+                    size=bubble_sz,
+                    color="rgba(125, 211, 252, 0.72)",
+                    line=dict(color="#38bdf8", width=1.2),
+                    sizemode="diameter",
+                ),
+                hovertemplate="<b>%{text}</b><br>CPL: $%{x:,.0f}<br>SQL %: %{y:.1f}<br>Leads: %{customdata}<extra></extra>",
+                customdata=vol,
             )
         ]
     )
     fig3.update_layout(
-        height=420,
-        plot_bgcolor="white",
-        paper_bgcolor="white",
-        xaxis=dict(title="CPL ($)", tickprefix="$", gridcolor="rgba(148,163,184,0.3)"),
-        yaxis=dict(title="SQL %", ticksuffix="%", gridcolor="rgba(148,163,184,0.3)"),
-        margin=dict(l=8, r=8, t=8, b=8),
+        height=440,
+        margin=dict(l=56, r=24, t=24, b=48),
+        showlegend=True,
+        legend=dict(x=0, y=1.02, xanchor="left", yanchor="bottom", font=dict(size=12)),
+        xaxis=dict(
+            title="CPL ($)",
+            tickprefix="$",
+            gridcolor="rgba(148,163,184,0.35)",
+            zeroline=False,
+            range=[0, None],
+        ),
+        yaxis=dict(
+            title="SQL %",
+            ticksuffix="%",
+            gridcolor="rgba(148,163,184,0.35)",
+            zeroline=False,
+        ),
+        **_paper,
     )
     st.plotly_chart(fig3, use_container_width=True, key=f"{key_suffix}_pmc_matrix")
 
