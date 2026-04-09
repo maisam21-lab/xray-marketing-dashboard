@@ -24,7 +24,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
-DASHBOARD_BUILD = "2026-04-08-mpo-revops-caption"
+DASHBOARD_BUILD = "2026-04-08-mpo-charts-v2"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 # Optional workbook: set Streamlit secret ``XRAY_SHEET_ID`` to the id or full URL below, then set
@@ -5651,6 +5651,12 @@ def _mpo_funnel_stage_slices(post_sliced: pd.DataFrame) -> tuple[list[str], list
     return labels, values
 
 
+def _mpo_format_trend_value(ycol: str, v: float) -> str:
+    if ycol == "cost":
+        return f"${v:,.0f}"
+    return f"{v:,.0f}"
+
+
 def _render_mpo_trend_charts(
     *,
     start_date: date,
@@ -5664,12 +5670,12 @@ def _render_mpo_trend_charts(
     post_df_kpi: pd.DataFrame,
     df_ref_for_scope: pd.DataFrame,
 ) -> None:
-    """Two cards: **Performance Trends** (Clicks / Impressions / Cost vs prior month) and **Performance Breakdown** donut."""
+    """Two symmetric cards: monthly trend (metric switcher) and breakdown donut (view switcher)."""
+    _ = start_date, end_date  # window implied by filtered monthly series / scope
     st.markdown(
         '<div class="mpo-perf-charts-wrap">'
         '<div class="looker-table-title mpo-perf-charts-page-title">Performance charts</div>'
-        "<p class=\"mpo-perf-charts-sub\">Same filters as the scorecard and grid above "
-        "(reporting window follows the sidebar date range).</p></div>",
+        "</div>",
         unsafe_allow_html=True,
     )
 
@@ -5680,20 +5686,21 @@ def _render_mpo_trend_charts(
     leads_sliced = _mpo_slice_by_dashboard_ref(leads_df, df_ref_for_scope)
     post_sliced = _mpo_slice_by_dashboard_ref(post_df_kpi, df_ref_for_scope)
 
-    _layout_kw = dict(
+    _chart_h = 420
+    _layout_base = dict(
         plot_bgcolor="white",
         paper_bgcolor="white",
-        margin=dict(l=8, r=8, t=28, b=72),
-        height=380,
+        height=_chart_h,
+        margin=dict(l=12, r=12, t=8, b=80),
     )
 
     col_left, col_right = st.columns(2, gap="large")
 
     with col_left:
         with st.container(border=True):
-            h1, h2 = st.columns([5, 7])
+            h1, h2 = st.columns([4, 8])
             with h1:
-                st.markdown('<p class="mpo-perf-chart-title">Performance Trends</p>', unsafe_allow_html=True)
+                st.markdown('<p class="mpo-perf-chart-title">Trends</p>', unsafe_allow_html=True)
             with h2:
                 trend_metric = _mpo_segmented_or_radio(
                     "trend_metric",
@@ -5705,48 +5712,109 @@ def _render_mpo_trend_charts(
             ycol = col_map.get(str(trend_metric), "clicks")
 
             if g.empty or len(g["Month"]) == 0:
-                st.caption("Not enough monthly data in scope for a trend — widen the date range or relax filters.")
+                st.caption("Not enough monthly data in scope — widen the date range or relax filters.")
             else:
                 cur = pd.to_numeric(g[ycol], errors="coerce").fillna(0.0)
-                prev = cur.shift(1)
+                lag = cur.shift(1)
                 fig_t = go.Figure()
                 fig_t.add_trace(
                     go.Scatter(
                         x=g["Month"],
                         y=cur,
-                        name="Current period",
+                        name="Series (month)",
                         mode="lines+markers",
-                        line=dict(color="#2563eb", width=2.5),
-                        marker=dict(size=7, color="#2563eb"),
+                        line=dict(color="#0d9488", width=3),
+                        marker=dict(size=8, color="#0d9488", line=dict(width=1, color="#fff")),
+                        fill="tozeroy",
+                        fillcolor="rgba(13, 148, 136, 0.12)",
+                        hovertemplate="<b>%{x}</b><br>"
+                        + str(trend_metric)
+                        + ": %{y:,.0f}<extra></extra>",
                     )
                 )
                 fig_t.add_trace(
                     go.Scatter(
                         x=g["Month"],
-                        y=prev,
-                        name="Previous period",
+                        y=lag,
+                        name="Prior month (lag)",
                         mode="lines+markers",
-                        line=dict(color="#94a3b8", width=2),
+                        line=dict(color="#94a3b8", width=2, dash="dot"),
                         marker=dict(size=6, color="#94a3b8"),
                         connectgaps=False,
+                        hovertemplate="<b>%{x}</b><br>Lag: %{y:,.0f}<extra></extra>",
                     )
                 )
-                fig_t.update_yaxes(tickformat=",.0f", title_text=str(trend_metric))
-                fig_t.update_xaxes(title_text="Month")
+                if ycol == "cost":
+                    fig_t.update_yaxes(
+                        tickprefix="$",
+                        tickformat=",.0f",
+                        title_text=str(trend_metric),
+                        showgrid=True,
+                        gridcolor="rgba(148, 163, 184, 0.25)",
+                        zeroline=False,
+                        showspikes=True,
+                        spikemode="across",
+                        spikecolor="#cbd5e1",
+                        spikesnap="cursor",
+                    )
+                else:
+                    fig_t.update_yaxes(
+                        tickformat=",.0f",
+                        title_text=str(trend_metric),
+                        showgrid=True,
+                        gridcolor="rgba(148, 163, 184, 0.25)",
+                        zeroline=False,
+                        showspikes=True,
+                        spikemode="across",
+                        spikecolor="#cbd5e1",
+                        spikesnap="cursor",
+                    )
+                fig_t.update_xaxes(
+                    title_text="Month",
+                    showgrid=False,
+                    showspikes=True,
+                    spikemode="across",
+                    spikecolor="#cbd5e1",
+                    spikesnap="cursor",
+                    spikethickness=1,
+                )
+                n_mo = int(len(cur))
+                total_s = float(cur.sum())
+                mom_s = ""
+                if n_mo >= 2:
+                    a, b = float(cur.iloc[-2]), float(cur.iloc[-1])
+                    if abs(a) > 1e-9:
+                        mom_s = f" · Latest MoM {((b - a) / a) * 100:+.1f}%"
+                    else:
+                        mom_s = " · Latest MoM —"
                 fig_t.update_layout(
                     showlegend=True,
-                    legend=dict(orientation="h", yanchor="top", y=-0.28, xanchor="center", x=0.5),
-                    **_layout_kw,
+                    legend=dict(orientation="h", yanchor="top", y=-0.22, xanchor="center", x=0.5),
+                    hovermode="x unified",
+                    **{**_layout_base, "margin": dict(l=12, r=12, t=28, b=80)},
+                    annotations=[
+                        dict(
+                            text=f"<b>{n_mo} months</b> · Σ {_mpo_format_trend_value(ycol, total_s)}{mom_s}",
+                            xref="paper",
+                            yref="paper",
+                            x=0,
+                            y=1.07,
+                            xanchor="left",
+                            yanchor="bottom",
+                            showarrow=False,
+                            font=dict(size=12, color="#475569"),
+                        )
+                    ],
                 )
                 if ycol in ("clicks", "impressions") and float(cur.sum()) < 1e-6:
-                    st.caption("No click or impression totals in scope — connect the Supermetrics workbook or widen filters.")
+                    st.caption("No click or impression totals in this slice — check Supermetrics / filters.")
                 st.plotly_chart(fig_t, use_container_width=True, key=f"{key_suffix}_pl_mpo_perf_trends")
 
     with col_right:
         with st.container(border=True):
-            r1, r2 = st.columns([5, 9])
+            r1, r2 = st.columns([4, 8])
             with r1:
-                st.markdown('<p class="mpo-perf-chart-title">Performance Breakdown</p>', unsafe_allow_html=True)
+                st.markdown('<p class="mpo-perf-chart-title">Breakdown</p>', unsafe_allow_html=True)
             with r2:
                 brk = _mpo_segmented_or_radio(
                     "breakdown",
@@ -5756,48 +5824,83 @@ def _render_mpo_trend_charts(
 
             labels: list[str] = []
             values: list[float] = []
-            brk_caption = ""
+            basis_note = ""
             if brk == "Traffic":
                 labels, values, _basis = _mpo_traffic_platform_breakdown(
                     df_loaded, sheet_id, df_ref_for_scope, spend_for_charts
                 )
-                brk_caption = f"Share by platform ({str(_basis).lower()})."
+                basis_note = str(_basis)
             elif brk == "Leads Conversion":
                 labels, values = _mpo_leads_conversion_slices(leads_sliced)
-                brk_caption = "Qualified vs remaining leads in scope."
             else:
                 labels, values = _mpo_funnel_stage_slices(post_sliced)
-                brk_caption = "Post-qualification pipeline stages in scope."
 
             if not labels or not values or float(sum(values)) < 1e-9:
                 st.caption(
-                    "No breakdown data for this view in the current scope — check filters or source worksheets."
+                    "No breakdown for this view in the current scope — adjust filters or worksheets."
                 )
             else:
-                pal = ["#2563eb", "#ef4444", "#10b981", "#8b5cf6", "#f59e0b", "#64748b", "#0d9488"]
+                pal = ["#0d9488", "#6366f1", "#f59e0b", "#ec4899", "#14b8a6", "#64748b", "#2563eb"]
                 cols = [pal[i % len(pal)] for i in range(len(labels))]
+                total_v = float(sum(values))
                 fig_d = go.Figure(
                     data=[
                         go.Pie(
                             labels=labels,
                             values=values,
-                            hole=0.55,
-                            marker=dict(colors=cols, line=dict(color="#fff", width=1)),
+                            hole=0.58,
+                            marker=dict(colors=cols, line=dict(color="#fff", width=1.5)),
                             textinfo="label+percent",
                             textposition="auto",
-                            sort=False,
+                            textfont=dict(size=11),
+                            sort=True,
+                            direction="clockwise",
+                            hovertemplate="<b>%{label}</b><br>%{value:,.0f} · %{percent}<extra></extra>",
                         )
                     ]
                 )
+                _brk_label = (
+                    f"{len(labels)} platforms · Σ {total_v:,.0f} {basis_note.lower()}"
+                    if brk == "Traffic"
+                    else f"{len(labels)} segments · Σ {total_v:,.0f}"
+                )
+                _center_sub = (
+                    basis_note
+                    if brk == "Traffic"
+                    else ("Qualified vs not" if brk == "Leads Conversion" else "Stages in scope")
+                )
                 fig_d.update_layout(
                     showlegend=True,
-                    legend=dict(orientation="h", yanchor="top", y=-0.22, xanchor="center", x=0.5),
-                    margin=dict(l=8, r=8, t=8, b=64),
-                    height=380,
+                    legend=dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5),
+                    margin=dict(l=12, r=12, t=4, b=72),
+                    height=_chart_h,
                     paper_bgcolor="white",
+                    annotations=[
+                        dict(
+                            text=f"<b>{_brk_label}</b>",
+                            xref="paper",
+                            yref="paper",
+                            x=0,
+                            y=1.07,
+                            xanchor="left",
+                            yanchor="bottom",
+                            showarrow=False,
+                            font=dict(size=12, color="#475569"),
+                        ),
+                        dict(
+                            text=f"<b>{total_v:,.0f}</b><br><span style='font-size:11px;color:#64748b'>{_center_sub}</span>",
+                            xref="paper",
+                            yref="paper",
+                            x=0.5,
+                            y=0.5,
+                            xanchor="center",
+                            yanchor="middle",
+                            showarrow=False,
+                            font=dict(size=15, color="#0f172a"),
+                        ),
+                    ],
                 )
                 st.plotly_chart(fig_d, use_container_width=True, key=f"{key_suffix}_pl_mpo_perf_breakdown")
-                st.caption(brk_caption)
 
 
 def _master_view_spend_authoritative_from_grid(spend_grid: pd.DataFrame) -> pd.DataFrame:
@@ -8101,14 +8204,7 @@ def main() -> None:
         margin: 10px 0 6px 0;
     }
     .mpo-perf-charts-page-title {
-        margin-bottom: 4px !important;
-    }
-    .mpo-perf-charts-sub {
-        margin: 0 0 8px 0;
-        font-size: 0.8125rem;
-        line-height: 1.5;
-        color: #64748b;
-        font-weight: 500;
+        margin-bottom: 2px !important;
     }
     .mpo-perf-chart-title {
         margin: 0 0 6px 0;
