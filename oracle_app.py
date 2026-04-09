@@ -24,7 +24,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 # Bump when you ship UI/logic changes — shown in the hero so you know which code the app loaded.
-DASHBOARD_BUILD = "2026-04-08-sm-pool-skip-unknown-geo"
+DASHBOARD_BUILD = "2026-04-08-sm-hero-reporting-months"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 # Optional workbook: set Streamlit secret ``XRAY_SHEET_ID`` to the id or full URL below, then set
@@ -1223,6 +1223,21 @@ def _spend_slice_for_dashboard_filters(spend_master: pd.DataFrame, df_ref: pd.Da
     return out
 
 
+def _month_norm_keys_in_reporting_window(start: date, end: date) -> set[str]:
+    """``YYYY-MM`` keys for every calendar month from ``start`` through ``end`` (inclusive)."""
+    try:
+        s = pd.Period(start, freq="M")
+        e = pd.Period(end, freq="M")
+        out: set[str] = set()
+        cur = s
+        while cur <= e:
+            out.add(str(cur))
+            cur = cur + 1
+        return out
+    except Exception:
+        return set()
+
+
 def _mpo_slice_by_dashboard_ref(frame: pd.DataFrame, df_ref: pd.DataFrame) -> pd.DataFrame:
     """Apply Market/Month filters from ``df_ref`` (same keys as spend KPI slice, without spend-sum fallback)."""
     if frame.empty or df_ref.empty:
@@ -1242,12 +1257,17 @@ def _mpo_slice_by_dashboard_ref(frame: pd.DataFrame, df_ref: pd.DataFrame) -> pd
     return out
 
 
-def _mpo_slice_supermetrics_pool_for_kpis(pool: pd.DataFrame, df_scope: pd.DataFrame) -> pd.DataFrame:
-    """Apply **month** from Data scope; apply **country** only when paid rows have real geo.
+def _mpo_slice_supermetrics_pool_for_kpis(
+    pool: pd.DataFrame,
+    df_scope: pd.DataFrame,
+    *,
+    allowed_month_keys: set[str],
+) -> pd.DataFrame:
+    """Apply **country** from Data scope when paid rows have geo; **month** from ``allowed_month_keys`` only.
 
-    Supermetrics wide exports often leave ``country`` as Unknown (geo is only in campaign column names).
-    Filtering those rows by CRM markets removes **every** row, so hero traffic fell back to X-Ray merge totals
-    and never changed when connector ingest improved.
+    Supermetrics rows often have ``country`` = Unknown — then we skip the CRM country filter.
+    Months must **not** come from ``df_scope`` alone: CRM can miss months where ads ran, understating
+    totals vs agency / ad-platform reports for the same reporting window.
     """
     if pool.empty or df_scope.empty:
         return pool.copy() if not pool.empty else pool
@@ -1256,13 +1276,17 @@ def _mpo_slice_supermetrics_pool_for_kpis(pool: pd.DataFrame, df_scope: pd.DataF
     if "country" in out.columns:
         ck = out["country"].map(_country_join_key).astype(str).str.strip().str.lower()
         has_geo = bool(((ck != "unknown") & (ck != "") & (ck != "nan") & (ck != "none")).any())
-    if has_geo:
-        return _mpo_slice_by_dashboard_ref(out, df_scope)
-    if "month" in out.columns and "month" in df_scope.columns:
-        allow_m = {x for x in df_scope["month"].map(_month_norm_key).unique().tolist() if x}
-        if allow_m:
-            km = out["month"].map(_month_norm_key)
-            out = out[km.isin(allow_m) | (km == "")]
+    if has_geo and "country" in df_scope.columns:
+        allow_c = {
+            x
+            for x in df_scope["country"].map(_country_join_key).unique().tolist()
+            if x and x not in ("unknown", "nan", "")
+        }
+        if allow_c:
+            out = out[out["country"].map(_country_join_key).isin(allow_c)]
+    if "month" in out.columns and allowed_month_keys:
+        km = out["month"].map(_month_norm_key)
+        out = out[km.isin(allowed_month_keys) | (km == "")]
     return out
 
 
@@ -1271,19 +1295,31 @@ def _mpo_traffic_totals_from_sm_pool(
     df_scope: pd.DataFrame,
     *,
     primary_sheet_id: str,
+    start_date: date,
+    end_date: date,
+    headline_month_keys: list[str],
+    key_suffix: str = "mpo",
 ) -> Optional[tuple[int, int, float]]:
-    """Hero **impressions / clicks / CTR** from Supermetrics pool rows scoped to **Data scope** (market + month).
-
-    ``df_scope`` must be the same filtered frame as the performance tab (``df`` after
-    ``_apply_marketing_performance_filters``). Uses :func:`_mpo_slice_supermetrics_pool_for_kpis` so
-    connector rows without per-row country still contribute to totals.
-    """
+    """Hero **impressions / clicks / CTR** from Supermetrics pool — months aligned to reporting window + month UI."""
     pool = _mpo_supermetrics_pool_for_clicks_impressions(df_loaded, primary_sheet_id=str(primary_sheet_id))
     if pool.empty:
         return None
     if df_scope.empty:
         return 0, 0, 0.0
-    p = _mpo_slice_supermetrics_pool_for_kpis(pool, df_scope)
+    window_m = _month_norm_keys_in_reporting_window(start_date, end_date)
+    months_sel = st.session_state.get(f"{key_suffix}_month", [_MPO_ALL_MONTHS_SENTINEL])
+    if _mpo_month_multiselect_is_all(months_sel):
+        allowed_m = window_m
+    else:
+        hk = {
+            str(_month_norm_key(x)).strip()
+            for x in headline_month_keys
+            if x and str(x).strip().lower() not in ("", "nan", "nat", "none")
+        }
+        allowed_m = hk & window_m
+        if not allowed_m:
+            allowed_m = window_m
+    p = _mpo_slice_supermetrics_pool_for_kpis(pool, df_scope, allowed_month_keys=allowed_m)
     ti = int(pd.to_numeric(p["impressions"], errors="coerce").fillna(0).sum()) if "impressions" in p.columns else 0
     tc = int(pd.to_numeric(p["clicks"], errors="coerce").fillna(0).sum()) if "clicks" in p.columns else 0
     if ti == 0 and tc == 0:
@@ -7311,6 +7347,10 @@ def render_page_marketing_performance(
         df_loaded,
         df,
         primary_sheet_id=sheet_id,
+        start_date=start_date,
+        end_date=end_date,
+        headline_month_keys=_headline_keys,
+        key_suffix=key_suffix,
     )
     if _sm_traffic is not None:
         total_impr, total_clicks, ctr = _sm_traffic
