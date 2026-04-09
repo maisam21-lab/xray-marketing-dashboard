@@ -24,7 +24,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 # Bump when you ship UI/logic changes — shown in the hero so you know which code the app loaded.
-DASHBOARD_BUILD = "2026-04-08-debug-rows-vs-columns-caption"
+DASHBOARD_BUILD = "2026-04-08-hide-paid-sm-expanders"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 # Optional workbook: set Streamlit secret ``XRAY_SHEET_ID`` to the id or full URL below, then set
@@ -7431,16 +7431,6 @@ def render_page_marketing_performance(
         total_pitching=total_pitching,
         total_qualifying=total_qualifying,
         prior=_kpi_prior,
-    )
-
-    _mpo_render_paid_media_by_platform_summary(df_loaded, key_suffix=key_suffix, primary_sheet_id=sheet_id)
-
-    _mpo_render_supermetrics_debug_pane(
-        df_loaded,
-        start_date=start_date,
-        end_date=end_date,
-        key_suffix=key_suffix,
-        primary_sheet_id=sheet_id,
     )
 
     _master_performance_table(
