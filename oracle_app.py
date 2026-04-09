@@ -25,7 +25,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
-DASHBOARD_BUILD = "2026-04-09-pmc-master-scalar-fix"
+DASHBOARD_BUILD = "2026-04-09-pmc-country-normalize"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 # Optional workbook: set Streamlit secret ``XRAY_SHEET_ID`` to the id or full URL below, then set
@@ -7677,7 +7677,10 @@ def _pmc_unified_channel_series(df: pd.DataFrame) -> pd.Series:
 
 
 def _pmc_frame_with_metrics(df: pd.DataFrame) -> pd.DataFrame:
+    """Align ``country`` / ``month`` join keys with the main Master view (UAE vs Uae, regional aliases)."""
     out = df.copy()
+    if not out.empty:
+        out = _normalize_master_merge_frame(out)
     out["unified_channel"] = _pmc_unified_channel_series(out)
     if "closed_won" not in out.columns:
         out["closed_won"] = 0
