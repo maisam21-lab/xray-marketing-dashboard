@@ -24,7 +24,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 # Bump when you ship UI/logic changes — shown in the hero so you know which code the app loaded.
-DASHBOARD_BUILD = "2026-04-08-sm-hero-reporting-months"
+DASHBOARD_BUILD = "2026-04-08-full-calendar-month-picker"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 # Optional workbook: set Streamlit secret ``XRAY_SHEET_ID`` to the id or full URL below, then set
@@ -4110,10 +4110,33 @@ def _mpo_ensure_scorecard_compare_session(key_suffix: str) -> str:
     return v
 
 
+def _mpo_month_picker_options(
+    df_date: pd.DataFrame,
+    *,
+    reporting_start: date,
+    reporting_end: date,
+) -> list[Any]:
+    """Every calendar month in the reporting window, plus any extra month values present in data (deduped)."""
+    cal_keys = sorted(_month_norm_keys_in_reporting_window(reporting_start, reporting_end))
+    by_k: dict[str, Any] = {k: pd.Period(k, freq="M") for k in cal_keys}
+    if not df_date.empty and "month" in df_date.columns:
+        for x in df_date["month"].dropna().unique().tolist():
+            if x is None or str(x) in ("NaT", "nan", "None"):
+                continue
+            nk = str(_month_norm_key(x)).strip()
+            if not nk or nk.lower() in ("nan", "nat", "none"):
+                continue
+            if nk not in by_k:
+                by_k[nk] = x
+    return [by_k[k] for k in sorted(by_k.keys(), key=_mpo_month_ts_for_sort)]
+
+
 def _apply_marketing_performance_filters(
     df_date: pd.DataFrame,
     *,
     key_suffix: str,
+    reporting_start: date,
+    reporting_end: date,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Performance-tab filters: market × month, plus **Scorecard comparison** (MoM vs YoY) in an expander."""
 
@@ -4128,7 +4151,7 @@ def _apply_marketing_performance_filters(
         market_opts = sorted(mk_raw, key=lambda c: (-float(_tot.get(c, 0)), str(c).lower()))
     else:
         market_opts = sorted(mk_raw)
-    month_opts = sorted([x for x in df_date["month"].dropna().unique().tolist() if x and x != "NaT"])
+    month_opts = _mpo_month_picker_options(df_date, reporting_start=reporting_start, reporting_end=reporting_end)
 
     _mpo_ensure_scorecard_compare_session(key_suffix)
     _mpo_normalize_market_multiselect_state(key_suffix)
@@ -4249,8 +4272,11 @@ def _apply_marketing_performance_filters(
         df = df[df["country"].isin(_geo_picks)]
     if not _mpo_month_multiselect_is_all(selected_months):
         _mo_pick = _mpo_month_multiselect_explicit(selected_months)
-        if _mo_pick:
-            df = df[df["month"].isin(_mo_pick)]
+        if _mo_pick and "month" in df.columns:
+            allow_k = {str(_month_norm_key(m)) for m in _mo_pick if _month_norm_key(m)}
+            if allow_k:
+                km = df["month"].map(_month_norm_key)
+                df = df[km.isin(allow_k) | (km == "")]
 
     return df, df.copy()
 
@@ -4313,6 +4339,9 @@ def _mpo_headline_month_keys_for_scope(
     master_df: pd.DataFrame,
     table_df: Optional[pd.DataFrame],
     key_suffix: str,
+    *,
+    reporting_start: date,
+    reporting_end: date,
 ) -> list[str]:
     """Month keys to **sum** for headline KPIs: all months in the filtered table, or only months explicitly chosen."""
     months_sel = st.session_state.get(f"{key_suffix}_month", [_MPO_ALL_MONTHS_SENTINEL])
@@ -4321,11 +4350,16 @@ def _mpo_headline_month_keys_for_scope(
         if table_df is not None and not table_df.empty and "month" in table_df.columns
         else master_df
     )
+    cal_win = sorted(_month_norm_keys_in_reporting_window(reporting_start, reporting_end))
     if base.empty or "month" not in base.columns:
-        return []
+        if _mpo_month_multiselect_is_all(months_sel):
+            return sorted(cal_win, key=_mpo_month_ts_for_sort)
+        ex = _mpo_month_multiselect_explicit(months_sel)
+        out = [str(_month_norm_key(m)).strip() for m in ex if _month_norm_key(m)]
+        return sorted({k for k in out if k}, key=_mpo_month_ts_for_sort)
     keys = _mpo_month_keys_sorted_master(base)
     if _mpo_month_multiselect_is_all(months_sel):
-        return keys
+        return sorted(set(cal_win) | set(keys), key=_mpo_month_ts_for_sort)
     ex = _mpo_month_multiselect_explicit(months_sel)
     out: list[str] = []
     for m in ex:
@@ -4733,7 +4767,12 @@ def _mpo_render_supermetrics_debug_pane(
                     {str(_month_norm_key(x)) for x in norm["month"].tolist() if str(_month_norm_key(x)).strip()},
                     key=_mpo_month_ts_for_sort,
                 )
-                months_u = ", ".join(u[-8:]) if len(u) > 8 else ", ".join(u)
+                if u:
+                    months_u = f"{u[0]} → {u[-1]} ({len(u)} mo.)"
+                    if len(u) > 8:
+                        months_u += " · " + ", ".join(u[-8:])
+                else:
+                    months_u = "—"
             ch_click, ch_impr = _debug_column_hints_for_metrics(norm if n_norm else pd.DataFrame())
 
             n_merged = 0
@@ -6897,7 +6936,12 @@ def render_page_marketing_performance(
         return
 
     st.markdown(_mpo_marketing_performance_hero_html(), unsafe_allow_html=True)
-    df, _ = _apply_marketing_performance_filters(df_date, key_suffix=key_suffix)
+    df, _ = _apply_marketing_performance_filters(
+        df_date,
+        key_suffix=key_suffix,
+        reporting_start=start_date,
+        reporting_end=end_date,
+    )
 
     sheet_id, _ = _workbook_id_resolution()
     _fp_mpo = _secret_fingerprint(_service_account_from_streamlit_secrets())
@@ -7289,7 +7333,13 @@ def render_page_marketing_performance(
     cw_cmp = _cw_dataframe_for_kpis(_resolve_cw_tcv_dataframe(df_loaded, df_mkt), df_mkt)
     ck, rk, cmp_kind = _mpo_compare_month_keys(master_df, key_suffix=key_suffix, table_df=df)
 
-    _headline_keys = _mpo_headline_month_keys_for_scope(master_df, df, key_suffix)
+    _headline_keys = _mpo_headline_month_keys_for_scope(
+        master_df,
+        df,
+        key_suffix,
+        reporting_start=start_date,
+        reporting_end=end_date,
+    )
     if not _headline_keys:
         _fb = _mpo_month_keys_sorted_master(master_df)
         _headline_keys = _fb[-1:] if _fb else []
