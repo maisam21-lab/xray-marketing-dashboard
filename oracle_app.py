@@ -24,7 +24,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 # Bump when you ship UI/logic changes — shown in the hero so you know which code the app loaded.
-DASHBOARD_BUILD = "2026-04-08-full-calendar-month-picker"
+DASHBOARD_BUILD = "2026-04-08-debug-rows-vs-columns-caption"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 # Optional workbook: set Streamlit secret ``XRAY_SHEET_ID`` to the id or full URL below, then set
@@ -4810,7 +4810,9 @@ def _mpo_render_supermetrics_debug_pane(
         st.dataframe(dbg, use_container_width=True, hide_index=True, key=f"{key_suffix}_df_sm_debug")
         st.caption(
             "Compare **gid load** (fresh `load_worksheet_by_gid_preprocessed`) vs **merged** (rows in `df_loaded` after concat + date filter). "
-            "Large gaps usually mean date/month filtering dropped rows or duplicate header parsing differed between full-workbook load and gid reload."
+            "Large gaps usually mean date/month filtering dropped rows or duplicate header parsing differed between full-workbook load and gid reload. "
+            "**Row counts** are **data rows** in the tab (usually **one row per day** in time-series exports). "
+            "Supermetrics **wide** layouts put **many campaigns in columns**, not extra rows — hundreds of rows with hundreds of columns is normal."
         )
 
 
