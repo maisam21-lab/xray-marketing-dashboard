@@ -5686,7 +5686,7 @@ def _render_mpo_trend_charts(
     leads_sliced = _mpo_slice_by_dashboard_ref(leads_df, df_ref_for_scope)
     post_sliced = _mpo_slice_by_dashboard_ref(post_df_kpi, df_ref_for_scope)
 
-    _chart_h = 420
+    _chart_h = 500
     _layout_base = dict(
         plot_bgcolor="white",
         paper_bgcolor="white",
@@ -5698,7 +5698,7 @@ def _render_mpo_trend_charts(
 
     with col_left:
         with st.container(border=True):
-            h1, h2 = st.columns([4, 8])
+            h1, h2 = st.columns([3, 9])
             with h1:
                 st.markdown('<p class="mpo-perf-chart-title">Trends</p>', unsafe_allow_html=True)
             with h2:
@@ -5723,8 +5723,8 @@ def _render_mpo_trend_charts(
                         y=cur,
                         name="Series (month)",
                         mode="lines+markers",
-                        line=dict(color="#0d9488", width=3),
-                        marker=dict(size=8, color="#0d9488", line=dict(width=1, color="#fff")),
+                        line=dict(color="#0d9488", width=3.5),
+                        marker=dict(size=9, color="#0d9488", line=dict(width=1, color="#fff")),
                         fill="tozeroy",
                         fillcolor="rgba(13, 148, 136, 0.12)",
                         hovertemplate="<b>%{x}</b><br>"
@@ -5738,8 +5738,8 @@ def _render_mpo_trend_charts(
                         y=lag,
                         name="Prior month (lag)",
                         mode="lines+markers",
-                        line=dict(color="#94a3b8", width=2, dash="dot"),
-                        marker=dict(size=6, color="#94a3b8"),
+                        line=dict(color="#64748b", width=2.5, dash="dot"),
+                        marker=dict(size=7, color="#64748b"),
                         connectgaps=False,
                         hovertemplate="<b>%{x}</b><br>Lag: %{y:,.0f}<extra></extra>",
                     )
@@ -5749,6 +5749,8 @@ def _render_mpo_trend_charts(
                         tickprefix="$",
                         tickformat=",.0f",
                         title_text=str(trend_metric),
+                        title_font=dict(size=14, color="#0f172a"),
+                        tickfont=dict(size=12, color="#334155"),
                         showgrid=True,
                         gridcolor="rgba(148, 163, 184, 0.25)",
                         zeroline=False,
@@ -5761,6 +5763,8 @@ def _render_mpo_trend_charts(
                     fig_t.update_yaxes(
                         tickformat=",.0f",
                         title_text=str(trend_metric),
+                        title_font=dict(size=14, color="#0f172a"),
+                        tickfont=dict(size=12, color="#334155"),
                         showgrid=True,
                         gridcolor="rgba(148, 163, 184, 0.25)",
                         zeroline=False,
@@ -5771,6 +5775,8 @@ def _render_mpo_trend_charts(
                     )
                 fig_t.update_xaxes(
                     title_text="Month",
+                    title_font=dict(size=14, color="#0f172a"),
+                    tickfont=dict(size=12, color="#334155"),
                     showgrid=False,
                     showspikes=True,
                     spikemode="across",
@@ -5789,8 +5795,9 @@ def _render_mpo_trend_charts(
                         mom_s = " · Latest MoM —"
                 fig_t.update_layout(
                     showlegend=True,
-                    legend=dict(orientation="h", yanchor="top", y=-0.22, xanchor="center", x=0.5),
+                    legend=dict(orientation="h", yanchor="top", y=-0.24, xanchor="center", x=0.5, font=dict(size=12)),
                     hovermode="x unified",
+                    hoverlabel=dict(font_size=12),
                     **{**_layout_base, "margin": dict(l=12, r=12, t=28, b=80)},
                     annotations=[
                         dict(
@@ -5802,7 +5809,7 @@ def _render_mpo_trend_charts(
                             xanchor="left",
                             yanchor="bottom",
                             showarrow=False,
-                            font=dict(size=12, color="#475569"),
+                            font=dict(size=14, color="#334155"),
                         )
                     ],
                 )
@@ -5812,7 +5819,7 @@ def _render_mpo_trend_charts(
 
     with col_right:
         with st.container(border=True):
-            r1, r2 = st.columns([4, 8])
+            r1, r2 = st.columns([3, 9])
             with r1:
                 st.markdown('<p class="mpo-perf-chart-title">Breakdown</p>', unsafe_allow_html=True)
             with r2:
@@ -5852,9 +5859,10 @@ def _render_mpo_trend_charts(
                             marker=dict(colors=cols, line=dict(color="#fff", width=1.5)),
                             textinfo="label+percent",
                             textposition="auto",
-                            textfont=dict(size=11),
+                            textfont=dict(size=13),
                             sort=True,
                             direction="clockwise",
+                            insidetextorientation="horizontal",
                             hovertemplate="<b>%{label}</b><br>%{value:,.0f} · %{percent}<extra></extra>",
                         )
                     ]
@@ -5871,10 +5879,11 @@ def _render_mpo_trend_charts(
                 )
                 fig_d.update_layout(
                     showlegend=True,
-                    legend=dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5),
+                    legend=dict(orientation="h", yanchor="top", y=-0.22, xanchor="center", x=0.5, font=dict(size=12)),
                     margin=dict(l=12, r=12, t=4, b=72),
                     height=_chart_h,
                     paper_bgcolor="white",
+                    hoverlabel=dict(font_size=12),
                     annotations=[
                         dict(
                             text=f"<b>{_brk_label}</b>",
@@ -5885,7 +5894,7 @@ def _render_mpo_trend_charts(
                             xanchor="left",
                             yanchor="bottom",
                             showarrow=False,
-                            font=dict(size=12, color="#475569"),
+                            font=dict(size=14, color="#334155"),
                         ),
                         dict(
                             text=f"<b>{total_v:,.0f}</b><br><span style='font-size:11px;color:#64748b'>{_center_sub}</span>",
@@ -5896,7 +5905,7 @@ def _render_mpo_trend_charts(
                             xanchor="center",
                             yanchor="middle",
                             showarrow=False,
-                            font=dict(size=15, color="#0f172a"),
+                            font=dict(size=19, color="#0f172a"),
                         ),
                     ],
                 )
@@ -8208,7 +8217,7 @@ def main() -> None:
     }
     .mpo-perf-chart-title {
         margin: 0 0 6px 0;
-        font-size: 1rem;
+        font-size: 1.08rem;
         font-weight: 800;
         letter-spacing: -0.02em;
         color: #0f172a;
