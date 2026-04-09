@@ -8224,6 +8224,12 @@ def _render_page_performance_marketing_channels(
         '<div class="looker-table-title">Performance Marketing Channels Master View</div>',
         unsafe_allow_html=True,
     )
+    st.caption(
+        "**Market** is taken from the workbook **Country** column. Rows show **Unknown** when that column is "
+        "blank or missing (typical for connector exports until you add a market per row or tab). "
+        "**Middle East** is a subtotal of attributed GCC/ME countries only — it does not include Unknown. "
+        "CW / LF / TCV stay empty when CRM fields are not merged onto those spend rows."
+    )
     _pmc_render_master_view_table(u, key_suffix=key_suffix)
     st.markdown("</div>", unsafe_allow_html=True)
 
