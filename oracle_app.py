@@ -25,7 +25,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
-DASHBOARD_BUILD = "2026-04-09-pmc-country-normalize"
+DASHBOARD_BUILD = "2026-04-09-pmc-sheet-pivot"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 # Optional workbook: set Streamlit secret ``XRAY_SHEET_ID`` to the id or full URL below, then set
@@ -1512,6 +1512,21 @@ def _is_middle_east_market(name: str) -> bool:
     if k == "uae":
         k = "united arab emirates"
     return k in _MIDDLE_EAST_MARKET_KEYS
+
+
+def _pmc_is_middle_east_row(df: pd.DataFrame) -> pd.Series:
+    """Paid / PMC rows scoped to GCC/ME countries or sheet **Middle East** regional key."""
+    if df.empty or "country" not in df.columns:
+        return pd.Series(False, index=df.index)
+    jk = df["country"].map(_country_join_key).astype(str).str.strip().str.lower()
+    disp = df["country"].map(_market_display_from_join_key)
+    return disp.map(_is_middle_east_market) | jk.eq("middle east")
+
+
+def _pmc_filter_middle_east(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+    return df.loc[_pmc_is_middle_east_row(df)].copy()
 
 
 # Master View regional roll-up (first row under each month for ME markets).
@@ -3838,7 +3853,15 @@ def _master_view_style_css(df: pd.DataFrame) -> pd.DataFrame:
         return f"{b}; {a}" if b else a
 
     css = pd.DataFrame("", index=df.index, columns=df.columns)
-    is_region = df["Market"].astype(str).str.strip().str.lower().isin({"middle east", "mena"})
+    is_region = pd.Series(False, index=df.index)
+    if "Market" in df.columns:
+        is_region = is_region | df["Market"].astype(str).str.strip().str.lower().isin({"middle east", "mena"})
+    if "Country / platform" in df.columns:
+        _cp = df["Country / platform"].astype(str).str.strip().str.lower()
+        is_region = is_region | _cp.str.startswith("middle east")
+    if "Unified Channel" in df.columns:
+        _uc = df["Unified Channel"].astype(str).str.strip().str.lower()
+        is_region = is_region | _uc.eq("middle east")
     non_me = ~is_region
     cyan = "background-color: #e8f4f8; color: #0f172a;"
     white = "background-color: #ffffff; color: #0f172a;"
@@ -3878,7 +3901,7 @@ def _master_view_style_css(df: pd.DataFrame) -> pd.DataFrame:
     for i in df.index:
         me = bool(is_region.loc[i])
         for col in df.columns:
-            if col == "Month":
+            if col in {"Month", "Unified Date"}:
                 v = df.loc[i, col]
                 if v == "" or (isinstance(v, str) and not str(v).strip()):
                     css.loc[i, col] = _cell(empty_cell)
@@ -3889,13 +3912,19 @@ def _master_view_style_css(df: pd.DataFrame) -> pd.DataFrame:
             elif col == "Market":
                 base = (me_bold + " background-color: #ffffff; color: #0f172a;") if me else white
                 css.loc[i, col] = _cell(base, center=False)
+            elif col == "Country / platform":
+                base = (me_bold + " background-color: #ffffff; color: #0f172a;") if me else white
+                css.loc[i, col] = _cell(base, center=False)
             elif col == "Channel":
+                base = (me_bold + " background-color: #ffffff; color: #0f172a;") if me else white
+                css.loc[i, col] = _cell(base, center=False)
+            elif col == "Unified Channel":
                 base = (me_bold + " background-color: #ffffff; color: #0f172a;") if me else white
                 css.loc[i, col] = _cell(base, center=False)
             elif col in cyan_cols:
                 base = (cyan + me_bold) if me else cyan
                 css.loc[i, col] = _cell(base)
-            elif col == "Total Leads":
+            elif col in {"Total Leads", "Qualified"}:
                 base = (white + me_bold) if me else white
                 css.loc[i, col] = _cell(base)
             elif col == "CPCW:LF":
@@ -7763,12 +7792,21 @@ def _pmc_render_overview_kpis(u: pd.DataFrame) -> None:
     r3[5].metric("Channels", f"{u['unified_channel'].nunique()}")
 
 
+# Sheet / Looker pivot order (Performance Marketing Channels master).
+_PMC_MASTER_SHEET_CHANNEL_ORDER: tuple[str, ...] = (
+    "Google Search",
+    "LinkedIn",
+    "Meta",
+    "PMax",
+    "Snapchat",
+)
+
 _PMC_CHANNEL_ORDER: tuple[str, ...] = (
     "Google Search",
-    "Meta",
-    "Snapchat",
     "LinkedIn",
+    "Meta",
     "PMax",
+    "Snapchat",
     "Other",
 )
 
@@ -7809,29 +7847,35 @@ def _pmc_coerce_int_scalar(v: Any) -> int:
 
 
 def _pmc_render_master_view_table(u: pd.DataFrame, *, key_suffix: str) -> None:
-    """MoH × Market × Channel: Middle East roll-up first per month, month label on first row only — matches main Master view."""
-    if u.empty or "month" not in u.columns or "country" not in u.columns:
-        st.info("Need **month** and **country** on rows to build the Master View — check sheet ingest.")
+    """X-Ray sheet layout: each month → fixed channel rows (Google Search … Snapchat), then **Middle East** subtotal."""
+    if u.empty or "month" not in u.columns:
+        st.info("Need **month** on rows to build the Master View — check sheet ingest.")
         return
     x = u.copy()
+    if "unified_channel" not in x.columns:
+        x["unified_channel"] = _pmc_unified_channel_series(x)
     x["_mk"] = x["month"].map(_month_norm_key).astype(str).str.strip()
     x = x.loc[x["_mk"].ne("")].copy()
     if x.empty:
-        st.info("Need **month** and **country** on rows to build the Master View — check sheet ingest.")
+        st.info("Need plausible **month** values to build the Master View — check sheet ingest.")
         return
 
-    cnt = x.groupby(["_mk", "country", "unified_channel"], as_index=False, dropna=False).size().rename(
-        columns={"size": "leads_n"}
-    )
-    g = x.groupby(["_mk", "country", "unified_channel"], as_index=False, dropna=False).agg(
-        spend=("cost", "sum"),
-        cw=("closed_won", "sum"),
-        lf=("first_month_lf", "sum"),
-        tcv=("tcv", "sum"),
-    )
-    g = g.merge(cnt, on=["_mk", "country", "unified_channel"], how="left")
+    cnt = x.groupby(["_mk", "unified_channel"], as_index=False, dropna=False).size().rename(columns={"size": "leads_n"})
+    agg_kw: dict[str, tuple[str, str]] = {
+        "spend": ("cost", "sum"),
+        "cw": ("closed_won", "sum"),
+        "lf": ("first_month_lf", "sum"),
+        "tcv": ("tcv", "sum"),
+    }
+    if "qualified" in x.columns:
+        agg_kw["qual"] = ("qualified", "sum")
+    g = x.groupby(["_mk", "unified_channel"], as_index=False, dropna=False).agg(**agg_kw)
+    g = g.merge(cnt, on=["_mk", "unified_channel"], how="left")
     g["leads_n"] = pd.to_numeric(g["leads_n"], errors="coerce").fillna(0).astype(int)
-    g["Market"] = g["country"].map(_market_display_from_join_key)
+    if "qual" not in g.columns:
+        g["qual"] = 0.0
+    else:
+        g["qual"] = pd.to_numeric(g["qual"], errors="coerce").fillna(0.0)
 
     def _month_sort_key(m: Any) -> Any:
         try:
@@ -7839,75 +7883,83 @@ def _pmc_render_master_view_table(u: pd.DataFrame, *, key_suffix: str) -> None:
         except Exception:
             return str(m)
 
-    ord_map = {c: i for i, c in enumerate(_PMC_CHANNEL_ORDER)}
+    std_ch = frozenset(_PMC_MASTER_SHEET_CHANNEL_ORDER)
     months_sorted = sorted(g["_mk"].dropna().unique(), key=_month_sort_key, reverse=True)
     out_rows: list[dict[str, Any]] = []
 
+    def _row_from_vals(
+        mk: str,
+        ch_label: str,
+        spend: float,
+        cw: float,
+        lf: float,
+        tcv: float,
+        leads_n: int,
+        qual: float,
+    ) -> dict[str, Any]:
+        cpcw, cpcw_lf, ct = _pmc_master_view_row_ratios(spend, cw, lf, tcv)
+        return {
+            "month": mk,
+            "uch": ch_label,
+            "spend": spend,
+            "cw": cw,
+            "lf": lf,
+            "tcv": tcv,
+            "leads_n": leads_n,
+            "qual": qual,
+            "CPCW": cpcw,
+            "CPCW:LF": cpcw_lf,
+            "Cost/TCV%": ct,
+        }
+
     for mk in months_sorted:
-        mdf = g.loc[g["_mk"] == mk].copy()
-        if mdf.empty:
-            continue
-        me_mask = mdf["Market"].map(_is_middle_east_market)
-        me_df = mdf.loc[me_mask]
-        if not me_df.empty:
-            spend = float(pd.to_numeric(me_df["spend"], errors="coerce").fillna(0).sum())
-            cw = float(pd.to_numeric(me_df["cw"], errors="coerce").fillna(0).sum())
-            lf = float(pd.to_numeric(me_df["lf"], errors="coerce").fillna(0).sum())
-            tcv = float(pd.to_numeric(me_df["tcv"], errors="coerce").fillna(0).sum())
-            leads_n = int(pd.to_numeric(me_df["leads_n"], errors="coerce").fillna(0).sum())
-            cpcw, cpcw_lf, ct = _pmc_master_view_row_ratios(spend, cw, lf, tcv)
-            out_rows.append(
-                {
-                    "month": mk,
-                    "Market": _MIDDLE_EAST_REGION_LABEL,
-                    "Channel": "—",
-                    "spend": spend,
-                    "cw": cw,
-                    "lf": lf,
-                    "tcv": tcv,
-                    "leads_n": leads_n,
-                    "CPCW": cpcw,
-                    "CPCW:LF": cpcw_lf,
-                    "Cost/TCV%": ct,
-                }
+        mx = x.loc[x["_mk"] == mk]
+        by_m = g.loc[g["_mk"] == mk].copy()
+        by_m["uch_key"] = by_m["unified_channel"].map(lambda z: str(z).strip() if pd.notna(z) and str(z).strip() else "")
+
+        def _vals_for_channel(canonical: str) -> tuple[float, float, float, float, int, float]:
+            hit = by_m.loc[by_m["uch_key"] == canonical]
+            if hit.empty:
+                return 0.0, 0.0, 0.0, 0.0, 0, 0.0
+            r = hit.iloc[0]
+            return (
+                _pmc_coerce_float_scalar(r["spend"]),
+                _pmc_coerce_float_scalar(r["cw"]),
+                _pmc_coerce_float_scalar(r["lf"]),
+                _pmc_coerce_float_scalar(r["tcv"]),
+                _pmc_coerce_int_scalar(r["leads_n"]),
+                _pmc_coerce_float_scalar(r["qual"]),
             )
 
-        cts = (
-            mdf.groupby("country", as_index=False)
-            .agg(sp=("spend", "sum"))
-            .merge(mdf[["country", "Market"]].drop_duplicates("country"), on="country", how="left")
-        )
-        cts = cts.sort_values(["sp", "Market"], ascending=[False, True], kind="mergesort")
-        for co in cts["country"].tolist():
-            cdf = mdf.loc[mdf["country"] == co].copy()
-            cdf["_sort"] = cdf["unified_channel"].map(lambda ch: ord_map.get(str(ch).strip(), 99))
-            cdf = cdf.sort_values(["_sort", "unified_channel"], kind="mergesort").drop(columns=["_sort"])
-            for _, r in cdf.iterrows():
-                spend = _pmc_coerce_float_scalar(r["spend"])
-                cw = _pmc_coerce_float_scalar(r["cw"])
-                lf = _pmc_coerce_float_scalar(r["lf"])
-                tcv = _pmc_coerce_float_scalar(r["tcv"])
-                leads_n = _pmc_coerce_int_scalar(r["leads_n"])
-                cpcw, cpcw_lf, ct = _pmc_master_view_row_ratios(spend, cw, lf, tcv)
-                ch_lab = str(r.get("unified_channel") or "").strip() or "—"
-                out_rows.append(
-                    {
-                        "month": mk,
-                        "Market": str(r["Market"]),
-                        "Channel": ch_lab,
-                        "spend": spend,
-                        "cw": cw,
-                        "lf": lf,
-                        "tcv": tcv,
-                        "leads_n": leads_n,
-                        "CPCW": cpcw,
-                        "CPCW:LF": cpcw_lf,
-                        "Cost/TCV%": ct,
-                    }
-                )
+        for ch in _PMC_MASTER_SHEET_CHANNEL_ORDER:
+            sp, cw, lf, tcv, ln, qv = _vals_for_channel(ch)
+            out_rows.append(_row_from_vals(mk, ch, sp, cw, lf, tcv, ln, qv))
+
+        o_sp = o_cw = o_lf = o_tcv = o_q = 0.0
+        o_ln = 0
+        for _, r in by_m.iterrows():
+            uk = str(r["uch_key"])
+            if uk in std_ch:
+                continue
+            o_sp += float(pd.to_numeric(r["spend"], errors="coerce").fillna(0.0))
+            o_cw += float(pd.to_numeric(r["cw"], errors="coerce").fillna(0.0))
+            o_lf += float(pd.to_numeric(r["lf"], errors="coerce").fillna(0.0))
+            o_tcv += float(pd.to_numeric(r["tcv"], errors="coerce").fillna(0.0))
+            o_ln += int(pd.to_numeric(r["leads_n"], errors="coerce").fillna(0.0))
+            o_q += float(pd.to_numeric(r["qual"], errors="coerce").fillna(0.0))
+        if o_sp > 1e-6 or o_ln > 0 or o_cw > 1e-6 or o_q > 1e-6:
+            out_rows.append(_row_from_vals(mk, "Other", o_sp, o_cw, o_lf, o_tcv, o_ln, o_q))
+
+        me_sp = float(pd.to_numeric(mx["cost"], errors="coerce").fillna(0).sum())
+        me_cw = float(pd.to_numeric(mx["closed_won"], errors="coerce").fillna(0).sum())
+        me_lf = float(pd.to_numeric(mx["first_month_lf"], errors="coerce").fillna(0).sum())
+        me_tcv = float(pd.to_numeric(mx["tcv"], errors="coerce").fillna(0).sum())
+        me_ln = _lead_rows_count(mx)
+        me_q = float(pd.to_numeric(mx["qualified"], errors="coerce").fillna(0).sum()) if "qualified" in mx.columns else 0.0
+        out_rows.append(_row_from_vals(mk, _MIDDLE_EAST_REGION_LABEL, me_sp, me_cw, me_lf, me_tcv, me_ln, me_q))
 
     if not out_rows:
-        st.info("Need **month** and **country** on rows to build the Master View — check sheet ingest.")
+        st.info("No rows to display in the Master View.")
         return
 
     gm = pd.DataFrame(out_rows)
@@ -7921,49 +7973,54 @@ def _pmc_render_master_view_table(u: pd.DataFrame, *, key_suffix: str) -> None:
         "Cost/TCV%",
         "Total Leads",
     ]
+    if "qual" in gm.columns and "qualified" in x.columns:
+        metrics.append("Qualified")
     gm["Spend"] = gm["spend"]
     gm["CW (Inc Approved)"] = gm["cw"].astype(float)
     gm["1st Month LF"] = gm["lf"]
     gm["Actual TCV"] = gm["tcv"]
     gm["Total Leads"] = gm["leads_n"]
+    if "Qualified" in metrics:
+        gm["Qualified"] = gm["qual"]
 
     pvt = gm.copy()
+    pvt["Unified Channel"] = pvt["uch"]
+    pvt = pvt.drop(columns=["uch"], errors="ignore")
     pvt["_month_sort_lbl"] = pvt["month"].map(_month_label_short)
-    pvt["Month"] = ""
+    pvt["Unified Date"] = ""
 
     for ml in sorted(pvt["_month_sort_lbl"].dropna().unique(), key=_month_sort_key, reverse=True):
         ix = pvt.index[pvt["_month_sort_lbl"] == ml].tolist()
         if ix:
             raw_m = pvt.loc[ix[0], "month"]
-            pvt.loc[ix[0], "Month"] = _month_label_short(raw_m)
-    pvt = pvt.drop(columns=["month", "_month_sort_lbl", "spend", "cw", "lf", "tcv", "leads_n"], errors="ignore")
+            pvt.loc[ix[0], "Unified Date"] = _month_label_short(raw_m)
+    pvt = pvt.drop(columns=["month", "_month_sort_lbl", "spend", "cw", "lf", "tcv", "leads_n", "qual"], errors="ignore")
 
     tot_spend = float(pd.to_numeric(x["cost"], errors="coerce").fillna(0).sum())
     tot_cw = float(pd.to_numeric(x["closed_won"], errors="coerce").fillna(0).sum())
     tot_lf = float(pd.to_numeric(x["first_month_lf"], errors="coerce").fillna(0).sum())
     tot_tcv = float(pd.to_numeric(x["tcv"], errors="coerce").fillna(0).sum())
     tot_leads = _lead_rows_count(x)
+    tot_q = float(pd.to_numeric(x["qualified"], errors="coerce").fillna(0).sum()) if "qualified" in x.columns else 0.0
     g_cpcw, g_lf, g_ct = _pmc_master_view_row_ratios(tot_spend, tot_cw, tot_lf, tot_tcv)
-    gt = pd.DataFrame(
-        [
-            {
-                "Month": "Grand total",
-                "Market": "—",
-                "Channel": "—",
-                "Spend": tot_spend,
-                "CW (Inc Approved)": tot_cw,
-                "CPCW": g_cpcw,
-                "1st Month LF": tot_lf,
-                "Actual TCV": tot_tcv,
-                "CPCW:LF": g_lf,
-                "Cost/TCV%": g_ct,
-                "Total Leads": float(tot_leads),
-            }
-        ]
-    )
+    gt_dict: dict[str, Any] = {
+        "Unified Date": "Grand total",
+        "Unified Channel": "—",
+        "Spend": tot_spend,
+        "CW (Inc Approved)": tot_cw,
+        "CPCW": g_cpcw,
+        "1st Month LF": tot_lf,
+        "Actual TCV": tot_tcv,
+        "CPCW:LF": g_lf,
+        "Cost/TCV%": g_ct,
+        "Total Leads": float(tot_leads),
+    }
+    if "Qualified" in metrics:
+        gt_dict["Qualified"] = tot_q
+    gt = pd.DataFrame([gt_dict])
     pvt = pd.concat([pvt, gt], ignore_index=True)
 
-    out_cols = ["Month", "Market", "Channel"] + metrics
+    out_cols = ["Unified Date", "Unified Channel"] + metrics
     pvt = pvt[[c for c in out_cols if c in pvt.columns]]
     if "Spend" in pvt.columns:
         pvt["Spend"] = pvt["Spend"].apply(
@@ -7979,17 +8036,16 @@ def _pmc_render_master_view_table(u: pd.DataFrame, *, key_suffix: str) -> None:
             return lambda x: f"{x:,.2f}" if pd.notna(x) else "—"
         if metric_name == "Cost/TCV%":
             return lambda x: f"{x:.2f}%" if pd.notna(x) else "—"
-        if metric_name in {"CW (Inc Approved)", "Total Leads"}:
+        if metric_name in {"CW (Inc Approved)", "Total Leads", "Qualified"}:
             return lambda x: f"{x:,.0f}" if pd.notna(x) else "—"
         return lambda x: f"{x:,.2f}" if pd.notna(x) else "—"
 
     fmt_map: dict[str, Any] = {
-        "Month": lambda x: "" if x == "" or (isinstance(x, float) and pd.isna(x)) else str(x),
-        "Market": lambda x: str(x) if pd.notna(x) else "—",
-        "Channel": lambda x: str(x) if pd.notna(x) else "—",
+        "Unified Date": lambda x: "" if x == "" or (isinstance(x, float) and pd.isna(x)) else str(x),
+        "Unified Channel": lambda x: str(x) if pd.notna(x) else "—",
     }
     for c in pvt.columns:
-        if c in {"Month", "Market", "Channel"}:
+        if c in {"Unified Date", "Unified Channel"}:
             continue
         fmt_map[c] = _fmt_for_metric(c)
 
@@ -8210,10 +8266,19 @@ def _render_page_performance_marketing_channels(
     key_suffix: str,
 ) -> None:
     """KitchenPark PDF layout: Overview → Master View → Charts (paid / X-Ray scope)."""
-    u = _pmc_frame_with_metrics(df)
+    u0 = _pmc_frame_with_metrics(df)
+    u_me = _pmc_filter_middle_east(u0)
+    if u_me.empty and not u0.empty:
+        st.warning(
+            "No **Middle East**–attributed rows in this window — showing **all markets** below. "
+            "Set **Country** to UAE, Saudi Arabia, etc. on paid rows to match the ME X-Ray scope."
+        )
+        u = u0
+    else:
+        u = u_me
     st.caption(
-        f"Reporting window **{start_date:%d %b %Y}** → **{end_date:%d %b %Y}** · Unified channels derived from "
-        "platform, channel, or Ads Data tab names in the X-Ray workbook."
+        f"Reporting window **{start_date:%d %b %Y}** → **{end_date:%d %b %Y}** · Master view: **month × channel** "
+        "(fixed channel order + **Middle East** subtotal), aligned with the X-Ray workbook pivot."
     )
     st.markdown('<div class="dash-master-surface dash-kpi-band">', unsafe_allow_html=True)
     _pmc_render_overview_kpis(u)
@@ -8225,10 +8290,8 @@ def _render_page_performance_marketing_channels(
         unsafe_allow_html=True,
     )
     st.caption(
-        "**Market** is taken from the workbook **Country** column. Rows show **Unknown** when that column is "
-        "blank or missing (typical for connector exports until you add a market per row or tab). "
-        "**Middle East** is a subtotal of attributed GCC/ME countries only — it does not include Unknown. "
-        "CW / LF / TCV stay empty when CRM fields are not merged onto those spend rows."
+        "Each month lists **Google Search → LinkedIn → Meta → PMax → Snapchat**, then **Other** (if any), then "
+        "**Middle East** (month total). **Grand total** is the full filtered window."
     )
     _pmc_render_master_view_table(u, key_suffix=key_suffix)
     st.markdown("</div>", unsafe_allow_html=True)
