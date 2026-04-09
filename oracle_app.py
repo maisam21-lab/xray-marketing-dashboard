@@ -25,7 +25,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
-DASHBOARD_BUILD = "2026-04-09-pmc-master-pivot"
+DASHBOARD_BUILD = "2026-04-09-pmc-master-scalar-fix"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 # Optional workbook: set Streamlit secret ``XRAY_SHEET_ID`` to the id or full URL below, then set
@@ -7788,6 +7788,23 @@ def _pmc_master_view_row_ratios(spend: float, cw: float, lf: float, tcv: float) 
     return cpcw, cpcw_lf, ct
 
 
+def _pmc_coerce_float_scalar(v: Any) -> float:
+    """``pd.to_numeric`` on a scalar has no ``.fillna`` — use this in ``iterrows`` loops."""
+    x = pd.to_numeric(v, errors="coerce")
+    try:
+        return float(x) if pd.notna(x) else 0.0
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _pmc_coerce_int_scalar(v: Any) -> int:
+    x = pd.to_numeric(v, errors="coerce")
+    try:
+        return int(x) if pd.notna(x) else 0
+    except (TypeError, ValueError):
+        return 0
+
+
 def _pmc_render_master_view_table(u: pd.DataFrame, *, key_suffix: str) -> None:
     """MoH × Market × Channel: Middle East roll-up first per month, month label on first row only — matches main Master view."""
     if u.empty or "month" not in u.columns or "country" not in u.columns:
@@ -7863,11 +7880,11 @@ def _pmc_render_master_view_table(u: pd.DataFrame, *, key_suffix: str) -> None:
             cdf["_sort"] = cdf["unified_channel"].map(lambda ch: ord_map.get(str(ch).strip(), 99))
             cdf = cdf.sort_values(["_sort", "unified_channel"], kind="mergesort").drop(columns=["_sort"])
             for _, r in cdf.iterrows():
-                spend = float(pd.to_numeric(r["spend"], errors="coerce").fillna(0.0))
-                cw = float(pd.to_numeric(r["cw"], errors="coerce").fillna(0.0))
-                lf = float(pd.to_numeric(r["lf"], errors="coerce").fillna(0.0))
-                tcv = float(pd.to_numeric(r["tcv"], errors="coerce").fillna(0.0))
-                leads_n = int(pd.to_numeric(r["leads_n"], errors="coerce").fillna(0.0))
+                spend = _pmc_coerce_float_scalar(r["spend"])
+                cw = _pmc_coerce_float_scalar(r["cw"])
+                lf = _pmc_coerce_float_scalar(r["lf"])
+                tcv = _pmc_coerce_float_scalar(r["tcv"])
+                leads_n = _pmc_coerce_int_scalar(r["leads_n"])
                 cpcw, cpcw_lf, ct = _pmc_master_view_row_ratios(spend, cw, lf, tcv)
                 ch_lab = str(r.get("unified_channel") or "").strip() or "—"
                 out_rows.append(
