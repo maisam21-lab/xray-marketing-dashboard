@@ -24,7 +24,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 # Bump when you ship UI/logic changes — shown in the hero so you know which code the app loaded.
-DASHBOARD_BUILD = "2026-04-08-supermetrics-debug-pane"
+DASHBOARD_BUILD = "2026-04-08-grid-ingest-supermetrics"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 # Optional workbook: set Streamlit secret ``XRAY_SHEET_ID`` to the id or full URL below, then set
@@ -503,14 +503,26 @@ def _read_sheet_auth_loose(
         grid = ws.get_all_values() or []
     if not grid:
         return pd.DataFrame()
-    # Choose the first non-empty row as header.
-    header_idx = None
-    for i, row in enumerate(grid):
-        if any(str(cell).strip() for cell in row):
-            header_idx = i
-            break
-    if header_idx is None:
+    # Prefer a row that looks like Supermetrics metric headers (often row 2 when row 1 is only ``Date``).
+    best_idx: Optional[int] = None
+    best_score = -1
+    for i, row in enumerate(grid[:12]):
+        if not any(str(cell).strip() for cell in row):
+            continue
+        score = sum(1 for cell in row if _cell_looks_like_supermetrics_metric_title(cell))
+        non_empty = sum(1 for c in row if str(c).strip())
+        if score >= 3 and non_empty >= 3 and score > best_score:
+            best_score = score
+            best_idx = i
+    if best_idx is None:
+        # Fallback: first non-empty row (legacy behavior).
+        for i, row in enumerate(grid):
+            if any(str(cell).strip() for cell in row):
+                best_idx = i
+                break
+    if best_idx is None:
         return pd.DataFrame()
+    header_idx = best_idx
     headers = [str(h).strip() or f"col_{j+1}" for j, h in enumerate(grid[header_idx])]
     rows = grid[header_idx + 1 :]
     if not rows:
@@ -633,6 +645,85 @@ def _sheet_value_looks_like_metric_subheader(v: Any) -> bool:
             "campaign",
         )
     )
+
+
+def _cell_looks_like_supermetrics_metric_title(val: Any) -> bool:
+    """True for Supermetrics-style column titles, e.g. ``… (Impressions)``, ``… (Cost)``, ``… (Clicks (all))``."""
+    s = str(val).strip().lower()
+    if not s or s in ("nan", "none", "nat"):
+        return False
+    if "(" not in s:
+        return False
+    # Plain ``Date`` / ``Month`` in the header row — not a metric column.
+    if re.match(r"^\s*(date|month|year|day|week)\s*(\([^)]*\))?\s*$", s):
+        return False
+    return any(
+        k in s
+        for k in (
+            "impression",
+            "click",
+            "cost",
+            "cpc",
+            "ctr",
+            "conversion",
+            "spend",
+            "swipe",
+            "lead",
+            "engagement",
+            "traffic",
+            "awareness",
+        )
+    )
+
+
+def _score_supermetrics_metric_header_row(row: list[Any]) -> int:
+    """How many cells in a grid row look like Supermetrics metric column titles."""
+    return sum(1 for cell in row if _cell_looks_like_supermetrics_metric_title(cell))
+
+
+def _dataframe_from_grid_best_supermetrics_header(
+    sheet_id: str,
+    service_account_data: Union[bytes, dict, str],
+    worksheet_gid: int,
+) -> pd.DataFrame:
+    """Pick the best header row by scanning raw grid cells — fixes ``get_all_records`` breaking wide Snap/LinkedIn tabs."""
+    grid = _read_sheet_grid_values(sheet_id, service_account_data, int(worksheet_gid))
+    if not grid:
+        return pd.DataFrame()
+    best_i = -1
+    best_s = -1
+    best_ne = -1
+    for i in range(min(25, len(grid))):
+        row = grid[i]
+        if not any(str(c).strip() for c in row):
+            continue
+        s = _score_supermetrics_metric_header_row(row)
+        ne = sum(1 for c in row if str(c).strip())
+        if s > best_s or (s == best_s and ne > best_ne):
+            best_s, best_i, best_ne = s, i, ne
+    if best_i < 0 or best_s < 3:
+        return pd.DataFrame()
+    return _dataframe_from_grid_header_at(grid, best_i)
+
+
+def _promote_wide_metric_header_row_if_needed(raw: pd.DataFrame) -> pd.DataFrame:
+    """When ``get_all_records`` used row 1 as headers but Supermetrics metric titles are on row 2 (Snap/LinkedIn).
+
+    Meta/Google often put campaign metrics in row 1 — then the first **data** row is numeric and this no-ops.
+    """
+    if raw.empty or len(raw) < 2:
+        return raw
+    first = raw.iloc[0]
+    row_hits = sum(1 for v in first if _cell_looks_like_supermetrics_metric_title(v))
+    if row_hits < 3:
+        return raw
+    col_hits = sum(1 for c in raw.columns if _cell_looks_like_supermetrics_metric_title(str(c)))
+    if col_hits >= max(3, row_hits - 1):
+        return raw
+    new_cols = _make_unique_headers_row([str(x).strip() or f"col_{i+1}" for i, x in enumerate(first.tolist())])
+    out = raw.iloc[1:].copy()
+    out.columns = new_cols
+    return out.reset_index(drop=True)
 
 
 def _coerce_two_row_sheet_headers(raw: pd.DataFrame) -> pd.DataFrame:
@@ -1149,6 +1240,32 @@ def _mpo_slice_by_dashboard_ref(frame: pd.DataFrame, df_ref: pd.DataFrame) -> pd
             km = out["month"].map(_month_norm_key)
             out = out[km.isin(allow_m) | (km == "")]
     return out
+
+
+def _mpo_traffic_totals_from_sm_pool(
+    df_loaded: pd.DataFrame,
+    df_scope: pd.DataFrame,
+    *,
+    primary_sheet_id: str,
+) -> Optional[tuple[int, int, float]]:
+    """Hero **impressions / clicks / CTR** from Supermetrics pool rows scoped to **Data scope** (market + month).
+
+    ``df_scope`` must be the same filtered frame as the performance tab (``df`` after
+    ``_apply_marketing_performance_filters``), not market-only, so totals match the multiselects.
+    Uses ``_mpo_slice_by_dashboard_ref`` — same country/month keys as ``_spend_slice_for_dashboard_filters``.
+    """
+    pool = _mpo_supermetrics_pool_for_clicks_impressions(df_loaded, primary_sheet_id=str(primary_sheet_id))
+    if pool.empty:
+        return None
+    if df_scope.empty:
+        return 0, 0, 0.0
+    p = _mpo_slice_by_dashboard_ref(pool, df_scope)
+    ti = int(pd.to_numeric(p["impressions"], errors="coerce").fillna(0).sum()) if "impressions" in p.columns else 0
+    tc = int(pd.to_numeric(p["clicks"], errors="coerce").fillna(0).sum()) if "clicks" in p.columns else 0
+    if ti == 0 and tc == 0:
+        return None
+    ctr = (tc / ti * 100.0) if ti else 0.0
+    return ti, tc, ctr
 
 
 def _spend_sheet_month_is_blank(s: pd.Series) -> pd.Series:
@@ -2814,8 +2931,14 @@ def list_worksheet_meta(sheet_id: str, _secret_fp: str) -> list[tuple[str, int]]
 
 
 @st.cache_data(ttl=300)
-def load_all_worksheets_combined(sheet_id: str, _secret_fp: str) -> pd.DataFrame:
+def load_all_worksheets_combined(
+    sheet_id: str,
+    _secret_fp: str,
+    *,
+    _ingest_version: str = DASHBOARD_BUILD,
+) -> pd.DataFrame:
     """Read every worksheet in the spreadsheet (backend) and stack rows with `source_tab` set to the tab title."""
+    _ = _ingest_version  # cache key only — bump ``DASHBOARD_BUILD`` to invalidate after ingest fixes
     meta = list_worksheet_meta(sheet_id, _secret_fp)
     secret_creds = _service_account_from_streamlit_secrets()
     if not secret_creds:
@@ -2826,19 +2949,26 @@ def load_all_worksheets_combined(sheet_id: str, _secret_fp: str) -> pd.DataFrame
     frames: list[pd.DataFrame] = []
     tab_stats: list[tuple[str, int]] = []
     for title, ws_gid in meta:
+        prefer_grid = int(ws_gid) in DEFAULT_PAID_MEDIA_PLATFORM_GIDS or _tab_title_looks_like_ads_data_sheet(
+            title
+        )
+        raw = pd.DataFrame()
+        if prefer_grid:
+            raw = _dataframe_from_grid_best_supermetrics_header(sheet_id, secret_creds, int(ws_gid))
         try:
-            raw = _read_sheet_auth(
-                sheet_id,
-                secret_creds,
-                worksheet_name=None,
-                worksheet_gid=int(ws_gid),
-            )
-            if raw.empty or len(raw.columns) == 0:
-                raw = _read_sheet_auth_loose(
+            if raw.empty or len(raw.columns) < 4:
+                raw = _read_sheet_auth(
                     sheet_id,
                     secret_creds,
+                    worksheet_name=None,
                     worksheet_gid=int(ws_gid),
                 )
+                if raw.empty or len(raw.columns) == 0:
+                    raw = _read_sheet_auth_loose(
+                        sheet_id,
+                        secret_creds,
+                        worksheet_gid=int(ws_gid),
+                    )
         except Exception:
             # If strict read fails, retry with loose grid reader before skipping the tab.
             try:
@@ -2850,6 +2980,7 @@ def load_all_worksheets_combined(sheet_id: str, _secret_fp: str) -> pd.DataFrame
             except Exception:
                 tab_stats.append((title, -1))
                 continue
+        raw = _promote_wide_metric_header_row_if_needed(raw)
         raw = _coerce_two_row_sheet_headers(raw)
         raw = _preprocess_excel_sheet(raw, title)
         df = _normalize(raw)
@@ -2882,20 +3013,28 @@ def load_marketing_data(
     sheet_id: str,
     worksheet_gid: int,
     _secret_fp: str,
+    *,
+    _ingest_version: str = DASHBOARD_BUILD,
 ) -> pd.DataFrame:
     """Reads one worksheet by Google’s numeric worksheet id (gid in URL). Cached per tab."""
+    _ = _ingest_version
     secret_creds = _service_account_from_streamlit_secrets()
     if not secret_creds:
         raise RuntimeError(
             "No service account in Streamlit Secrets. Add a `[gsheet_service_account]` block "
             "(or `GCP_SERVICE_ACCOUNT`) in this app’s Secrets, then reboot."
         )
-    raw = _read_sheet_auth(
-        sheet_id,
-        secret_creds,
-        worksheet_name=None,
-        worksheet_gid=int(worksheet_gid),
-    )
+    raw = pd.DataFrame()
+    if int(worksheet_gid) in DEFAULT_PAID_MEDIA_PLATFORM_GIDS:
+        raw = _dataframe_from_grid_best_supermetrics_header(sheet_id, secret_creds, int(worksheet_gid))
+    if raw.empty or len(raw.columns) < 4:
+        raw = _read_sheet_auth(
+            sheet_id,
+            secret_creds,
+            worksheet_name=None,
+            worksheet_gid=int(worksheet_gid),
+        )
+    raw = _promote_wide_metric_header_row_if_needed(raw)
     raw = _coerce_two_row_sheet_headers(raw)
     return _normalize(raw)
 
@@ -2911,28 +3050,40 @@ def _tab_title_for_worksheet_gid(sheet_id: str, worksheet_gid: int, _secret_fp: 
 
 
 @st.cache_data(ttl=300)
-def load_worksheet_by_gid_preprocessed(sheet_id: str, worksheet_gid: int, _secret_fp: str) -> pd.DataFrame:
+def load_worksheet_by_gid_preprocessed(
+    sheet_id: str,
+    worksheet_gid: int,
+    _secret_fp: str,
+    *,
+    _ingest_version: str = DASHBOARD_BUILD,
+) -> pd.DataFrame:
     """Read one tab by gid with the same preprocess + normalize path as ``load_all_worksheets_combined``."""
+    _ = _ingest_version
     secret_creds = _service_account_from_streamlit_secrets()
     if not secret_creds:
         raise RuntimeError(
             "No service account in Streamlit Secrets. Add a `[gsheet_service_account]` block "
             "(or `GCP_SERVICE_ACCOUNT`) in this app’s Secrets, then reboot."
         )
+    raw = pd.DataFrame()
+    if int(worksheet_gid) in DEFAULT_PAID_MEDIA_PLATFORM_GIDS:
+        raw = _dataframe_from_grid_best_supermetrics_header(sheet_id, secret_creds, int(worksheet_gid))
     try:
-        raw = _read_sheet_auth(
-            sheet_id,
-            secret_creds,
-            worksheet_name=None,
-            worksheet_gid=int(worksheet_gid),
-        )
-        if raw.empty or len(raw.columns) == 0:
-            raw = _read_sheet_auth_loose(sheet_id, secret_creds, worksheet_gid=int(worksheet_gid))
+        if raw.empty or len(raw.columns) < 4:
+            raw = _read_sheet_auth(
+                sheet_id,
+                secret_creds,
+                worksheet_name=None,
+                worksheet_gid=int(worksheet_gid),
+            )
+            if raw.empty or len(raw.columns) == 0:
+                raw = _read_sheet_auth_loose(sheet_id, secret_creds, worksheet_gid=int(worksheet_gid))
     except Exception:
         try:
             raw = _read_sheet_auth_loose(sheet_id, secret_creds, worksheet_gid=int(worksheet_gid))
         except Exception:
             return pd.DataFrame()
+    raw = _promote_wide_metric_header_row_if_needed(raw)
     raw = _coerce_two_row_sheet_headers(raw)
     title = _tab_title_for_worksheet_gid(sheet_id, worksheet_gid, _secret_fp)
     raw = _preprocess_excel_sheet(raw, title)
@@ -6748,7 +6899,7 @@ def render_page_marketing_performance(
 
     spend_sheet_for_kpis = _mpo_merge_pool_clicks_impressions_onto_spend(
         spend_sheet_master,
-        df_date,
+        df_loaded,
         primary_sheet_id=sheet_id,
     )
     spend_df = _spend_slice_for_dashboard_filters(spend_sheet_for_kpis, df)
@@ -7073,6 +7224,7 @@ def render_page_marketing_performance(
         _spend_for_master_ui = _spend_sheet_pivot_by_month_country(spend_pool_full)
 
     df_mkt = _mpo_apply_market_only(df_date, key_suffix)
+    # Compare-month % deltas need market-wide rows (``df_mkt``) so reference months stay available.
     spend_cmp = _spend_slice_for_dashboard_filters(spend_sheet_for_kpis, df_mkt)
     cw_cmp = _cw_dataframe_for_kpis(_resolve_cw_tcv_dataframe(df_loaded, df_mkt), df_mkt)
     ck, rk, cmp_kind = _mpo_compare_month_keys(master_df, key_suffix=key_suffix, table_df=df)
@@ -7095,14 +7247,15 @@ def render_page_marketing_performance(
     else:
         _kpi_prior["_delta_label"] = "the compare month"
 
-    # Headline KPIs: **sum** across months in scope (All months = everything in the table).
+    # Headline KPIs: **sum** across months in scope — same **Data scope** as the multiselects (``spend_df``, ``cw_kpi``).
+    # ``spend_cmp`` / ``cw_cmp`` stay market-only for scorecard MoM/YoY pairs above.
     _hm = (
         _mpo_scorecard_headline_totals_for_months(
             _headline_keys,
-            spend_df=spend_cmp,
+            spend_df=spend_df,
             leads_df=leads_df,
             post_df_kpi=post_df_kpi,
-            cw_kpi=cw_cmp,
+            cw_kpi=cw_kpi,
         )
         if _headline_keys
         else None
@@ -7130,6 +7283,15 @@ def render_page_marketing_performance(
         cw_for_qwin = _hm.get("cw_for_qwin")
         qual_for_qwin = _hm.get("qual_for_qwin")
 
+    _sm_traffic = _mpo_traffic_totals_from_sm_pool(
+        df_loaded,
+        df,
+        primary_sheet_id=sheet_id,
+    )
+    if _sm_traffic is not None:
+        total_impr, total_clicks, ctr = _sm_traffic
+        cpc = (total_spend / float(total_clicks)) if total_clicks else 0.0
+
     _kpi_block(
         total_spend=total_spend,
         total_impr=total_impr,
@@ -7155,7 +7317,7 @@ def render_page_marketing_performance(
         prior=_kpi_prior,
     )
 
-    _mpo_render_paid_media_by_platform_summary(df_date, key_suffix=key_suffix, primary_sheet_id=sheet_id)
+    _mpo_render_paid_media_by_platform_summary(df_loaded, key_suffix=key_suffix, primary_sheet_id=sheet_id)
 
     _mpo_render_supermetrics_debug_pane(
         df_loaded,
