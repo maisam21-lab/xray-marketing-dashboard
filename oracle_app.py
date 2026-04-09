@@ -25,7 +25,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
-DASHBOARD_BUILD = "2026-04-09-mpo-trends-3up"
+DASHBOARD_BUILD = "2026-04-09-pmc-pdf-layout"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 # Optional workbook: set Streamlit secret ``XRAY_SHEET_ID`` to the id or full URL below, then set
@@ -7615,6 +7615,368 @@ def render_page_market_mom(
         st.plotly_chart(fig2, use_container_width=True, key=f"{key_suffix}_pl_lines")
 
 
+def _pmc_normalize_channel_label(raw: str) -> str:
+    """Map raw platform/channel strings toward KitchenPark PDF **Unified Channel** names."""
+    s = str(raw or "").strip()
+    if not s or s.lower() in ("unknown", "nan", "none", "nat"):
+        return "Other"
+    tl = s.lower()
+    if "performance max" in tl or re.search(r"\bpmax\b", tl):
+        return "PMax"
+    if "google" in tl:
+        return "Google Search"
+    if "meta" in tl or "facebook" in tl or "instagram" in tl:
+        return "Meta"
+    if "linked" in tl:
+        return "LinkedIn"
+    if "snap" in tl:
+        return "Snapchat"
+    return s
+
+
+def _pmc_unified_channel_series(df: pd.DataFrame) -> pd.Series:
+    """Prefer **platform**, then **channel**, then **source_tab** → unified paid label."""
+    if df.empty:
+        return pd.Series(dtype=object)
+    n = len(df)
+    plat = (
+        df["platform"].astype(str).str.strip()
+        if "platform" in df.columns
+        else pd.Series([""] * n, index=df.index, dtype=object)
+    )
+    ch = (
+        df["channel"].astype(str).str.strip()
+        if "channel" in df.columns
+        else pd.Series([""] * n, index=df.index, dtype=object)
+    )
+    stb = df["source_tab"].astype(str) if "source_tab" in df.columns else pd.Series([""] * n, index=df.index, dtype=object)
+
+    def _pick(i: int) -> str:
+        p = str(plat.iloc[i])
+        c = str(ch.iloc[i])
+        t = str(stb.iloc[i])
+        if p and p.lower() not in ("unknown", "nan", "none", "nat"):
+            return _pmc_normalize_channel_label(p)
+        if c and c.lower() not in ("unknown", "nan", "none", "nat", ""):
+            return _pmc_normalize_channel_label(c)
+        return _pmc_normalize_channel_label(_mpo_platform_label_from_source_tab(t))
+
+    return pd.Series([_pick(i) for i in range(n)], index=df.index, dtype=object)
+
+
+def _pmc_frame_with_metrics(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    out["unified_channel"] = _pmc_unified_channel_series(out)
+    if "closed_won" not in out.columns:
+        out["closed_won"] = 0
+    else:
+        out["closed_won"] = pd.to_numeric(out["closed_won"], errors="coerce").fillna(0)
+    if "qualified" not in out.columns:
+        out["qualified"] = 0
+    else:
+        out["qualified"] = pd.to_numeric(out["qualified"], errors="coerce").fillna(0)
+    if "tcv" not in out.columns:
+        out["tcv"] = 0.0
+    else:
+        out["tcv"] = pd.to_numeric(out["tcv"], errors="coerce").fillna(0.0)
+    if "first_month_lf" not in out.columns:
+        out["first_month_lf"] = 0.0
+    else:
+        out["first_month_lf"] = pd.to_numeric(out["first_month_lf"], errors="coerce").fillna(0.0)
+    if "cost" not in out.columns:
+        out["cost"] = 0.0
+    else:
+        out["cost"] = pd.to_numeric(out["cost"], errors="coerce").fillna(0.0)
+    return out
+
+
+def _pmc_render_overview_kpis(u: pd.DataFrame) -> None:
+    """KitchenPark PDF — **Performance Marketing Channels Overview** KPI strip."""
+    st.markdown(
+        '<div class="looker-table-title">Performance Marketing Channels Overview</div>',
+        unsafe_allow_html=True,
+    )
+    tot_spend = float(u["cost"].sum())
+    tot_cw = int(u["closed_won"].sum())
+    tot_tcv = float(u["tcv"].sum())
+    tot_lf = float(u["first_month_lf"].sum())
+    tot_qual = float(u["qualified"].sum())
+    tot_leads = _lead_rows_count(u)
+    cpcw = (tot_spend / tot_cw) if tot_cw else float("nan")
+    cpcw_lf = (tot_spend / tot_lf) if tot_lf > 1e-9 else float("nan")
+    spend_tcv_pct = (tot_spend / tot_tcv * 100.0) if tot_tcv > 1e-9 else float("nan")
+    sql_pct = (tot_qual / tot_leads * 100.0) if tot_leads else 0.0
+    cpl = (tot_spend / tot_leads) if tot_leads else float("nan")
+    cpsql = (tot_spend / tot_qual) if tot_qual > 1e-9 else float("nan")
+    q_win = (tot_cw / tot_qual * 100.0) if tot_qual > 1e-9 else 0.0
+
+    tot_live = 0
+    if all(c in u.columns for c in ("qualifying", "pitching", "negotiation", "commitment")):
+        tot_live = int(
+            pd.to_numeric(u["qualifying"], errors="coerce").fillna(0).sum()
+            + pd.to_numeric(u["pitching"], errors="coerce").fillna(0).sum()
+            + pd.to_numeric(u["negotiation"], errors="coerce").fillna(0).sum()
+            + pd.to_numeric(u["commitment"], errors="coerce").fillna(0).sum()
+        )
+    tot_nego = int(pd.to_numeric(u["negotiation"], errors="coerce").fillna(0).sum()) if "negotiation" in u.columns else 0
+    tot_commit = int(pd.to_numeric(u["commitment"], errors="coerce").fillna(0).sum()) if "commitment" in u.columns else 0
+    tot_nw = _new_working_count_from_leads(u) if not u.empty else 0
+    tot_clost = int(pd.to_numeric(u["closed_lost"], errors="coerce").fillna(0).sum()) if "closed_lost" in u.columns else 0
+
+    r1 = st.columns(6)
+    r1[0].metric("CW (Inc Approved)", f"{tot_cw:,}")
+    r1[1].metric("CPCW", _format_currency(cpcw) if cpcw == cpcw else "—")
+    r1[2].metric("CPCW:LF", f"{cpcw_lf:.2f}" if cpcw_lf == cpcw_lf else "—")
+    r1[3].metric("Spend", _format_spend_k(tot_spend))
+    r1[4].metric("Actual TCV", _format_currency(tot_tcv))
+    r1[5].metric("Cost/TCV%", f"{spend_tcv_pct:.2f}%" if spend_tcv_pct == spend_tcv_pct else "—")
+
+    r2 = st.columns(6)
+    r2[0].metric("Total Leads", f"{tot_leads:,}")
+    r2[1].metric("Qualified", f"{int(tot_qual):,}")
+    r2[2].metric("SQL%", f"{sql_pct:.2f}%")
+    r2[3].metric("Total Live", f"{tot_live:,}" if tot_live else "—")
+    r2[4].metric("CPL", _format_currency(cpl) if cpl == cpl else "—")
+    r2[5].metric("CPSQL", _format_currency(cpsql) if cpsql == cpsql else "—")
+
+    r3 = st.columns(6)
+    r3[0].metric("New + Working", f"{tot_nw:,}" if tot_nw else "—")
+    r3[1].metric("Negotiation", f"{tot_nego:,}" if tot_nego else "—")
+    r3[2].metric("Commitment", f"{tot_commit:,}" if tot_commit else "—")
+    r3[3].metric("Q Win Rate%", f"{q_win:.2f}%")
+    r3[4].metric("Closed Lost", f"{tot_clost:,}" if tot_clost else "—")
+    r3[5].metric("Channels", f"{u['unified_channel'].nunique()}")
+
+
+def _pmc_master_view_table(u: pd.DataFrame) -> pd.DataFrame:
+    """Month × Market × Unified Channel — aligned with PDF **Master View**."""
+    if u.empty or "month" not in u.columns or "country" not in u.columns:
+        return pd.DataFrame()
+    x = u.copy()
+    x["_mk"] = x["month"].map(_month_norm_key).astype(str).str.strip()
+    x = x.loc[x["_mk"].ne("")].copy()
+    if x.empty:
+        return pd.DataFrame()
+    g = x.groupby(["_mk", "country", "unified_channel"], as_index=False, dropna=False).agg(
+        Spend=("cost", "sum"),
+        **{"CW (Inc Approved)": ("closed_won", "sum")},
+        Qualified=("qualified", "sum"),
+        **{"Actual TCV": ("tcv", "sum")},
+        **{"1st Month LF": ("first_month_lf", "sum")},
+    )
+    cnt = x.groupby(["_mk", "country", "unified_channel"], as_index=False, dropna=False).size().rename(
+        columns={"size": "Total Leads"}
+    )
+    g = g.merge(cnt, on=["_mk", "country", "unified_channel"], how="left")
+    g["CPCW"] = g.apply(
+        lambda r: (r["Spend"] / r["CW (Inc Approved)"]) if r["CW (Inc Approved)"] and r["CW (Inc Approved)"] > 0 else float("nan"),
+        axis=1,
+    )
+    g["CPCW:LF"] = g.apply(
+        lambda r: (r["Spend"] / r["1st Month LF"]) if r["1st Month LF"] and r["1st Month LF"] > 1e-9 else float("nan"),
+        axis=1,
+    )
+    g["Cost/TCV%"] = g.apply(
+        lambda r: (r["Spend"] / r["Actual TCV"] * 100.0) if r["Actual TCV"] and r["Actual TCV"] > 1e-9 else float("nan"),
+        axis=1,
+    )
+    g["SQL%"] = g.apply(
+        lambda r: (r["Qualified"] / r["Total Leads"] * 100.0) if r["Total Leads"] else 0.0,
+        axis=1,
+    )
+    g["Unified Date"] = g["_mk"].map(lambda k: _month_label_short(k) if k else "")
+    g["Market"] = g["country"].map(_market_display_from_join_key)
+    g["Unified Channel"] = g["unified_channel"]
+    g = g.sort_values(["_mk", "Market", "Unified Channel"], ascending=[False, True, True])
+    show = g[
+        [
+            "Unified Date",
+            "Market",
+            "Unified Channel",
+            "Spend",
+            "CW (Inc Approved)",
+            "CPCW",
+            "1st Month LF",
+            "Actual TCV",
+            "CPCW:LF",
+            "Cost/TCV%",
+            "Total Leads",
+            "Qualified",
+            "SQL%",
+        ]
+    ].copy()
+    # Grand total row
+    gt = pd.DataFrame(
+        [
+            {
+                "Unified Date": "Grand total",
+                "Market": "—",
+                "Unified Channel": "—",
+                "Spend": float(x["cost"].sum()),
+                "CW (Inc Approved)": int(x["closed_won"].sum()),
+                "CPCW": (float(x["cost"].sum()) / int(x["closed_won"].sum()))
+                if int(x["closed_won"].sum()) > 0
+                else float("nan"),
+                "1st Month LF": float(x["first_month_lf"].sum()),
+                "Actual TCV": float(x["tcv"].sum()),
+                "CPCW:LF": (float(x["cost"].sum()) / float(x["first_month_lf"].sum()))
+                if float(x["first_month_lf"].sum()) > 1e-9
+                else float("nan"),
+                "Cost/TCV%": (float(x["cost"].sum()) / float(x["tcv"].sum()) * 100.0)
+                if float(x["tcv"].sum()) > 1e-9
+                else float("nan"),
+                "Total Leads": _lead_rows_count(x),
+                "Qualified": float(x["qualified"].sum()),
+                "SQL%": (float(x["qualified"].sum()) / _lead_rows_count(x) * 100.0) if _lead_rows_count(x) else 0.0,
+            }
+        ]
+    )
+    return pd.concat([show, gt], ignore_index=True)
+
+
+def _pmc_by_channel_summary(u: pd.DataFrame) -> pd.DataFrame:
+    g = (
+        u.groupby("unified_channel", as_index=False)
+        .agg(
+            spend=("cost", "sum"),
+            cw=("closed_won", "sum"),
+            qualified=("qualified", "sum"),
+            tcv=("tcv", "sum"),
+            rows=("cost", "count"),
+        )
+        .rename(columns={"rows": "leads"})
+        .sort_values("spend", ascending=False)
+    )
+    g["CPL"] = g.apply(lambda r: (r["spend"] / r["leads"]) if r["leads"] else float("nan"), axis=1)
+    g["SQL%"] = g.apply(lambda r: (r["qualified"] / r["leads"] * 100.0) if r["leads"] else 0.0, axis=1)
+    return g
+
+
+def _pmc_render_charts(by_ch: pd.DataFrame, key_suffix: str) -> None:
+    """PDF **Performance Marketing Charts**: volumes, spend×TCV, quality matrix."""
+    if by_ch.empty:
+        st.caption("Not enough channel-level rows for charts.")
+        return
+    chans = by_ch["unified_channel"].astype(str).tolist()
+
+    st.markdown('<p class="mpo-perf-chart-title">Paid Channel Lead &amp; CW Volumes</p>', unsafe_allow_html=True)
+    fig1 = make_subplots(
+        rows=2,
+        cols=1,
+        shared_xaxes=True,
+        vertical_spacing=0.12,
+        subplot_titles=("Total Leads & Qualified", "CW (Inc Approved)"),
+        row_heights=[0.55, 0.45],
+    )
+    fig1.add_trace(
+        go.Bar(name="Total Leads", x=chans, y=by_ch["leads"], marker_color="#2563eb"),
+        row=1,
+        col=1,
+    )
+    fig1.add_trace(
+        go.Bar(name="Qualified", x=chans, y=by_ch["qualified"], marker_color="#93c5fd"),
+        row=1,
+        col=1,
+    )
+    fig1.add_trace(
+        go.Bar(name="CW", x=chans, y=by_ch["cw"], marker_color="#0d9488"),
+        row=2,
+        col=1,
+    )
+    fig1.update_layout(
+        barmode="group",
+        height=520,
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        margin=dict(l=8, r=8, t=36, b=8),
+        legend=dict(orientation="h", yanchor="bottom", y=-0.2, x=0.5, font=dict(size=12)),
+        hovermode="x unified",
+    )
+    fig1.update_yaxes(tickformat=",.0f")
+    st.plotly_chart(fig1, use_container_width=True, key=f"{key_suffix}_pmc_vol")
+
+    st.markdown('<p class="mpo-perf-chart-title">Paid Channel Spend × TCV</p>', unsafe_allow_html=True)
+    fig2 = make_subplots(specs=[[{"secondary_y": True}]])
+    fig2.add_trace(
+        go.Bar(name="Spend", x=chans, y=by_ch["spend"], marker_color="#4f8483"),
+        secondary_y=False,
+    )
+    fig2.add_trace(
+        go.Bar(name="Actual TCV", x=chans, y=by_ch["tcv"], marker_color="#c4b5fd", opacity=0.85),
+        secondary_y=True,
+    )
+    fig2.update_yaxes(title_text="Spend", secondary_y=False, tickprefix="$", tickformat=",.0f")
+    fig2.update_yaxes(title_text="Actual TCV", secondary_y=True, tickprefix="$", tickformat=",.0f")
+    fig2.update_layout(
+        height=400,
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        barmode="group",
+        margin=dict(l=8, r=8, t=8, b=8),
+        legend=dict(orientation="h", y=1.12, x=0.5, xanchor="center", font=dict(size=12)),
+        hovermode="x unified",
+    )
+    st.plotly_chart(fig2, use_container_width=True, key=f"{key_suffix}_pmc_spend_tcv")
+
+    st.markdown('<p class="mpo-perf-chart-title">Paid Channel Lead Quality Matrix</p>', unsafe_allow_html=True)
+    qm = by_ch.dropna(subset=["CPL"]).copy()
+    if qm.empty:
+        qm = by_ch.copy()
+    fig3 = go.Figure(
+        data=[
+            go.Scatter(
+                x=qm["CPL"],
+                y=qm["SQL%"],
+                mode="markers+text",
+                text=qm["unified_channel"],
+                textposition="top center",
+                marker=dict(size=12, color="#0d9488", line=dict(width=1, color="#fff")),
+                hovertemplate="<b>%{text}</b><br>CPL: $%{x:,.0f}<br>SQL %: %{y:.1f}<extra></extra>",
+            )
+        ]
+    )
+    fig3.update_layout(
+        height=420,
+        plot_bgcolor="white",
+        paper_bgcolor="white",
+        xaxis=dict(title="CPL ($)", tickprefix="$", gridcolor="rgba(148,163,184,0.3)"),
+        yaxis=dict(title="SQL %", ticksuffix="%", gridcolor="rgba(148,163,184,0.3)"),
+        margin=dict(l=8, r=8, t=8, b=8),
+    )
+    st.plotly_chart(fig3, use_container_width=True, key=f"{key_suffix}_pmc_matrix")
+
+
+def _render_page_performance_marketing_channels(
+    df: pd.DataFrame,
+    start_date: date,
+    end_date: date,
+    key_suffix: str,
+) -> None:
+    """KitchenPark PDF layout: Overview → Master View → Charts (paid / X-Ray scope)."""
+    u = _pmc_frame_with_metrics(df)
+    st.caption(
+        f"Reporting window **{start_date:%d %b %Y}** → **{end_date:%d %b %Y}** · Unified channels derived from "
+        "platform, channel, or Ads Data tab names in the X-Ray workbook."
+    )
+    _pmc_render_overview_kpis(u)
+
+    st.markdown(
+        '<div class="looker-table-title">Performance Marketing Channels Master View</div>',
+        unsafe_allow_html=True,
+    )
+    mv = _pmc_master_view_table(u)
+    if mv.empty:
+        st.info("Need **month** and **country** on rows to build the Master View — check sheet ingest.")
+    else:
+        st.dataframe(mv, use_container_width=True, hide_index=True, key=f"{key_suffix}_pmc_master")
+
+    st.markdown(
+        '<div class="looker-table-title">Performance Marketing Charts</div>',
+        unsafe_allow_html=True,
+    )
+    _pmc_render_charts(_pmc_by_channel_summary(u), key_suffix=key_suffix)
+
+
 def render_page_channels(df_loaded: pd.DataFrame, start_date: date, end_date: date, *, inbound: bool) -> None:
     key_suffix = "inb" if inbound else "pmc"
     df_filtered = _filter_by_date_range(df_loaded, start_date, end_date)
@@ -7627,7 +7989,11 @@ def render_page_channels(df_loaded: pd.DataFrame, start_date: date, end_date: da
     st.markdown(f'<h1 class="looker-page-h1">{title}</h1>', unsafe_allow_html=True)
     df, _ = _apply_sheet_filters(df_date, key_suffix=key_suffix)
 
-    group_col = "utm_source" if inbound else "channel"
+    if not inbound:
+        _render_page_performance_marketing_channels(df, start_date, end_date, key_suffix)
+        return
+
+    group_col = "utm_source"
     if group_col not in df.columns:
         st.warning(f"Column `{group_col}` missing; showing channel breakdown instead.")
         group_col = "channel"
