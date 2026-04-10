@@ -25,7 +25,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
-DASHBOARD_BUILD = "2026-04-09-pmc-sheet-pivot"
+DASHBOARD_BUILD = "2026-04-09-pmc-other-scalar-fix"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 # Optional workbook: set Streamlit secret ``XRAY_SHEET_ID`` to the id or full URL below, then set
@@ -7941,12 +7941,12 @@ def _pmc_render_master_view_table(u: pd.DataFrame, *, key_suffix: str) -> None:
             uk = str(r["uch_key"])
             if uk in std_ch:
                 continue
-            o_sp += float(pd.to_numeric(r["spend"], errors="coerce").fillna(0.0))
-            o_cw += float(pd.to_numeric(r["cw"], errors="coerce").fillna(0.0))
-            o_lf += float(pd.to_numeric(r["lf"], errors="coerce").fillna(0.0))
-            o_tcv += float(pd.to_numeric(r["tcv"], errors="coerce").fillna(0.0))
-            o_ln += int(pd.to_numeric(r["leads_n"], errors="coerce").fillna(0.0))
-            o_q += float(pd.to_numeric(r["qual"], errors="coerce").fillna(0.0))
+            o_sp += _pmc_coerce_float_scalar(r["spend"])
+            o_cw += _pmc_coerce_float_scalar(r["cw"])
+            o_lf += _pmc_coerce_float_scalar(r["lf"])
+            o_tcv += _pmc_coerce_float_scalar(r["tcv"])
+            o_ln += _pmc_coerce_int_scalar(r["leads_n"])
+            o_q += _pmc_coerce_float_scalar(r["qual"])
         if o_sp > 1e-6 or o_ln > 0 or o_cw > 1e-6 or o_q > 1e-6:
             out_rows.append(_row_from_vals(mk, "Other", o_sp, o_cw, o_lf, o_tcv, o_ln, o_q))
 
