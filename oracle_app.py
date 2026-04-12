@@ -2982,7 +2982,7 @@ def _mpo_platform_label_from_source_tab(title: str) -> str:
         return "Google Ads"
     if re.search(r"\bmeta\b|facebook|instagram", tl):
         return "Meta Ads"
-    if re.search(r"\bsnap(chat)?\b", tl):
+    if re.search(r"\bsnap(?:chat)?\b", tl):
         return "Snapchat Ads"
     if re.search(r"linked\s*in|linkedin", tl):
         return "LinkedIn Ads"
@@ -4271,6 +4271,12 @@ def _apply_marketing_performance_filters(
     month_opts = _mpo_month_picker_options(df_date, reporting_start=reporting_start, reporting_end=reporting_end)
 
     _mpo_ensure_scorecard_compare_session(key_suffix)
+    _k_mpo_market = f"{key_suffix}_market"
+    _k_mpo_month = f"{key_suffix}_month"
+    if _k_mpo_market not in st.session_state:
+        st.session_state[_k_mpo_market] = [_MPO_ALL_GEO_SENTINEL]
+    if _k_mpo_month not in st.session_state:
+        st.session_state[_k_mpo_month] = [_MPO_ALL_MONTHS_SENTINEL]
     _mpo_normalize_market_multiselect_state(key_suffix)
     _mpo_normalize_month_multiselect_state(key_suffix)
     _mpo_filter_panel = st.container()
@@ -4288,8 +4294,7 @@ def _apply_marketing_performance_filters(
             st.multiselect(
                 "Markets & countries",
                 [_MPO_ALL_GEO_SENTINEL] + market_opts,
-                default=[_MPO_ALL_GEO_SENTINEL],
-                key=f"{key_suffix}_market",
+                key=_k_mpo_market,
             )
         with _c_div:
             st.markdown('<div class="mpo-toolbar-divider" aria-hidden="true"></div>', unsafe_allow_html=True)
@@ -4297,8 +4302,7 @@ def _apply_marketing_performance_filters(
             st.multiselect(
                 "Month",
                 [_MPO_ALL_MONTHS_SENTINEL] + month_opts,
-                default=[_MPO_ALL_MONTHS_SENTINEL],
-                key=f"{key_suffix}_month",
+                key=_k_mpo_month,
             )
         st.markdown("</div>", unsafe_allow_html=True)
 
@@ -4427,6 +4431,12 @@ def _apply_channel_tab_data_scope(
 
     month_opts = _mpo_month_picker_options(work, reporting_start=reporting_start, reporting_end=reporting_end)
 
+    _k_pmc_ch = f"{key_suffix}_channel_scope"
+    _k_pmc_mo = f"{key_suffix}_month"
+    if _k_pmc_ch not in st.session_state:
+        st.session_state[_k_pmc_ch] = [_MPO_ALL_CHANNELS_SENTINEL]
+    if _k_pmc_mo not in st.session_state:
+        st.session_state[_k_pmc_mo] = [_MPO_ALL_MONTHS_SENTINEL]
     _mpo_normalize_month_multiselect_state(key_suffix)
     _mpo_normalize_channel_multiselect_state(key_suffix)
 
@@ -4445,8 +4455,7 @@ def _apply_channel_tab_data_scope(
             st.multiselect(
                 "Channels",
                 [_MPO_ALL_CHANNELS_SENTINEL] + ch_opts,
-                default=[_MPO_ALL_CHANNELS_SENTINEL],
-                key=f"{key_suffix}_channel_scope",
+                key=_k_pmc_ch,
             )
         with _c_div:
             st.markdown('<div class="mpo-toolbar-divider" aria-hidden="true"></div>', unsafe_allow_html=True)
@@ -4454,8 +4463,7 @@ def _apply_channel_tab_data_scope(
             st.multiselect(
                 "Month",
                 [_MPO_ALL_MONTHS_SENTINEL] + month_opts,
-                default=[_MPO_ALL_MONTHS_SENTINEL],
-                key=f"{key_suffix}_month",
+                key=_k_pmc_mo,
             )
         st.markdown("</div>", unsafe_allow_html=True)
         st.markdown("</div>", unsafe_allow_html=True)
@@ -4666,7 +4674,7 @@ def _mpo_rows_paid_media_from_combined(df_loaded: pd.DataFrame) -> pd.DataFrame:
     is_primary_four = (
         _tl.str.contains(r"\bgoogle\b", na=False, regex=True)
         | _tl.str.contains(r"\bmeta\b|facebook|instagram", na=False, regex=True)
-        | _tl.str.contains(r"\bsnap(chat)?\b", na=False, regex=True)
+        | _tl.str.contains(r"\bsnap(?:chat)?\b", na=False, regex=True)
         | _tl.str.contains(r"linked\s*in|linkedin", na=False, regex=True)
     )
     has_primary_four = bool(is_primary_four.any())
@@ -8469,7 +8477,9 @@ def render_main_dashboard(
         needs_spend_inject = True
         if not df_loaded.empty and "source_tab" in df_loaded.columns and "cost" in df_loaded.columns:
             sl = df_loaded["source_tab"].astype(str).str.strip().str.lower()
-            spend_like = sl.str.contains(r"^(raw\s*)?spend$|raw\s*spend|sum\s*spend|media\s*spend", na=False, regex=True)
+            spend_like = sl.str.contains(
+                r"^(?:raw\s*)?spend$|raw\s*spend|sum\s*spend|media\s*spend", na=False, regex=True
+            )
             spend_rows = df_loaded.loc[spend_like]
             if not spend_rows.empty and float(pd.to_numeric(spend_rows["cost"], errors="coerce").fillna(0).sum()) > 0:
                 needs_spend_inject = False
