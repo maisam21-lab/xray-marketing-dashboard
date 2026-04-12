@@ -26,6 +26,9 @@ class TestPmcAlignChannelLabelForXrayPivot:
         assert oa._pmc_align_channel_label_for_xray_pivot("") == ""
         assert oa._pmc_align_channel_label_for_xray_pivot("(blank)") == "(blank)"
 
+    def test_google_organic_not_rewritten_to_search(self) -> None:
+        assert oa._pmc_align_channel_label_for_xray_pivot("Google Organic") == "Google Organic"
+
 
 class TestSpendSheetPivotByMonthChannel:
     def test_aggregates_google_rows(self) -> None:
@@ -104,6 +107,26 @@ class TestSpendSheetPivotByMonthChannel:
         by_ch = out.set_index("country")["cost"].to_dict()
         assert by_ch.get("PMax", 0) == pytest.approx(50.0)
         assert by_ch.get("Google Search", 0) == pytest.approx(150.0)
+
+    def test_unified_channel_column_wins_over_channel(self) -> None:
+        df = pd.DataFrame(
+            {
+                "month": ["2026-03", "2026-03"],
+                "country": ["UAE", "UAE"],
+                "Unified Channel": ["Organic", "Meta"],
+                "channel": ["Paid Search", "Paid Social"],
+                "platform": ["Google Ads", "Meta Ads"],
+                "source_tab": ["Spend", "Spend"],
+                "cost": [10.0, 20.0],
+                "clicks": [0, 0],
+                "impressions": [0, 0],
+            }
+        )
+        out = oa._spend_sheet_pivot_by_month_channel(df)
+        assert len(out) == 2
+        by_ch = out.set_index("country")["cost"].to_dict()
+        assert by_ch.get("Organic", 0) == pytest.approx(10.0)
+        assert by_ch.get("Meta", 0) == pytest.approx(20.0)
 
 
 class TestMonthNormKey:

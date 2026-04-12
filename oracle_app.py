@@ -25,7 +25,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
-DASHBOARD_BUILD = "2026-04-09-per-row-platform"
+DASHBOARD_BUILD = "2026-04-09-unified-channel-col"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 ME_XRAY_SPEND_SHEET_URL = f"https://docs.google.com/spreadsheets/d/{DEFAULT_SHEET_ID}/edit"
@@ -1876,6 +1876,8 @@ _NORM_TO_FIELD: dict[str, str] = {
     "channel_gp": "channel",
     "channel_name": "channel",
     "channel": "channel",
+    # ME X-Ray / Looker spend pivots — **this** is the channel grain (Organic, Meta, Google Search, …).
+    "unified_channel": "channel",
     "media_type": "channel",
     "lead_source": "channel",
     # Google / Meta exports often put pivot channel here instead of **Channel**
@@ -2432,6 +2434,16 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
                 if _norm_header_key(str(c))
                 in ("first_lead_created_date", "1st_lead_created_date")
                 else 1,
+                str(c).lower(),
+            ),
+        )
+
+    if "channel" in field_to_sources:
+        _ch_src = field_to_sources["channel"]
+        field_to_sources["channel"] = sorted(
+            _ch_src,
+            key=lambda c: (
+                0 if _norm_header_key(str(c)) == "unified_channel" else 1,
                 str(c).lower(),
             ),
         )
@@ -7962,15 +7974,16 @@ def render_page_market_mom(
 
 
 def _pmc_normalize_channel_label(raw: str) -> str:
-    """Map raw platform/channel strings toward KitchenPark PDF **Unified Channel** names."""
+    """Map raw platform/channel strings toward ME X-Ray **Unified Channel** names (paid + organic)."""
     s = str(raw or "").strip()
     if not s or s.lower() in ("unknown", "nan", "none", "nat"):
         return "Other"
     tl = s.lower()
     if "performance max" in tl or re.search(r"\bpmax\b", tl):
         return "PMax"
-    if "google" in tl:
-        return "Google Search"
+    if "google" in tl and "organic" not in tl and "seo" not in tl:
+        if "ads" in tl or "adwords" in tl or tl in ("google", "google ads", "google_ads"):
+            return "Google Search"
     if "meta" in tl or "facebook" in tl or "instagram" in tl:
         return "Meta"
     if "linked" in tl:
@@ -7981,23 +7994,32 @@ def _pmc_normalize_channel_label(raw: str) -> str:
 
 
 def _pmc_unified_channel_series(df: pd.DataFrame) -> pd.Series:
-    """Prefer **platform**, then **channel**, then **source_tab** → unified paid label."""
+    """Prefer **Unified Channel** (sheet), then **platform**, **channel**, **source_tab** — same grain as the pivot table."""
     if df.empty:
         return pd.Series(dtype=object)
     n = len(df)
+    empty = pd.Series([""] * n, index=df.index, dtype=object)
+    ucx = (
+        df["Unified Channel"].astype(str).str.strip()
+        if "Unified Channel" in df.columns
+        else empty
+    )
     plat = (
         df["platform"].astype(str).str.strip()
         if "platform" in df.columns
-        else pd.Series([""] * n, index=df.index, dtype=object)
+        else empty
     )
     ch = (
         df["channel"].astype(str).str.strip()
         if "channel" in df.columns
-        else pd.Series([""] * n, index=df.index, dtype=object)
+        else empty
     )
-    stb = df["source_tab"].astype(str) if "source_tab" in df.columns else pd.Series([""] * n, index=df.index, dtype=object)
+    stb = df["source_tab"].astype(str) if "source_tab" in df.columns else empty
 
     def _pick(i: int) -> str:
+        u = str(ucx.iloc[i])
+        if u and u.lower() not in ("unknown", "nan", "none", "nat", ""):
+            return _pmc_normalize_channel_label(u)
         p = str(plat.iloc[i])
         c = str(ch.iloc[i])
         t = str(stb.iloc[i])
@@ -8011,40 +8033,48 @@ def _pmc_unified_channel_series(df: pd.DataFrame) -> pd.Series:
 
 
 def _pmc_align_channel_label_for_xray_pivot(lab: str) -> str:
-    """Map Ads / Supermetrics platform strings to the **Channel** labels used on ME X-Ray spend pivots.
+    """Map Ads / Supermetrics platform strings toward ME X-Ray **Unified Channel**–style labels where needed.
 
     Rows often have **Channel** = ``Google Search`` in the sheet while **Platform** = ``Google Ads``; without this,
     spend lands on **Google Ads** and the **Google Search** pivot row shows ``$0``.
+
+    Sheet-native unified labels (Organic, Instagram Organic, Meta, …) pass through unchanged.
     """
     s = str(lab or "").strip()
     if not s or s == "(blank)":
         return s
     tl = s.lower()
-    if "youtube" in tl:
-        return s
     if "performance max" in tl or re.search(r"\bpmax\b", tl):
         return "PMax"
-    if "google" in tl:
-        return "Google Search"
+    # Only fold generic **Google Ads** naming into **Google Search**; do not remap organic / brand strings.
+    if "google" in tl and "organic" not in tl and "seo" not in tl:
+        if "ads" in tl or "adwords" in tl or tl in ("google", "google ads", "google_ads"):
+            return "Google Search"
     return s
 
 
 def _pmc_sheet_channel_series(df: pd.DataFrame) -> pd.Series:
-    """Pivot-style channel: prefer **channel**, else **platform**, else tab — then align Google/PMax names to X-Ray pivots."""
+    """Pivot-style channel: prefer **Unified Channel** (ME X-Ray), then **channel**, else **platform**, else tab."""
     if df.empty:
         return pd.Series(dtype=object)
     n = len(df)
+    empty = pd.Series([""] * n, index=df.index, dtype=object)
+    ucx = (
+        df["Unified Channel"].astype(str).str.strip()
+        if "Unified Channel" in df.columns
+        else empty
+    )
     plat = (
         df["platform"].astype(str).str.strip()
         if "platform" in df.columns
-        else pd.Series([""] * n, index=df.index, dtype=object)
+        else empty
     )
     ch = (
         df["channel"].astype(str).str.strip()
         if "channel" in df.columns
-        else pd.Series([""] * n, index=df.index, dtype=object)
+        else empty
     )
-    stb = df["source_tab"].astype(str) if "source_tab" in df.columns else pd.Series([""] * n, index=df.index, dtype=object)
+    stb = df["source_tab"].astype(str) if "source_tab" in df.columns else empty
 
     def _bad(s: str) -> bool:
         t = str(s).strip().lower()
@@ -8052,6 +8082,9 @@ def _pmc_sheet_channel_series(df: pd.DataFrame) -> pd.Series:
         return not t or t in ("unknown", "nan", "none", "nat") or t in ("paid media", "paid_media")
 
     def _pick(i: int) -> str:
+        u = str(ucx.iloc[i])
+        if not _bad(u):
+            return _pmc_align_channel_label_for_xray_pivot(u.strip())
         c = str(ch.iloc[i])
         if not _bad(c):
             return _pmc_align_channel_label_for_xray_pivot(c.strip())
