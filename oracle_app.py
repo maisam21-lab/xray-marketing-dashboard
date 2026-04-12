@@ -25,7 +25,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
-DASHBOARD_BUILD = "2026-04-09-channel-pivot-fix"
+DASHBOARD_BUILD = "2026-04-09-per-row-platform"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 ME_XRAY_SPEND_SHEET_URL = f"https://docs.google.com/spreadsheets/d/{DEFAULT_SHEET_ID}/edit"
@@ -1878,6 +1878,10 @@ _NORM_TO_FIELD: dict[str, str] = {
     "channel": "channel",
     "media_type": "channel",
     "lead_source": "channel",
+    # Google / Meta exports often put pivot channel here instead of **Channel**
+    "campaign_type": "channel",
+    "advertising_channel_type": "channel",
+    "advertising_channel": "channel",
     "platform": "platform",
     "cost": "cost",
     "ad_spend": "cost",
@@ -4713,15 +4717,26 @@ def _mpo_supermetrics_pool_for_clicks_impressions(
     return _mpo_rows_paid_media_from_combined(ads_only)
 
 
+def _mpo_coalesce_str_series_with_tab_fallback(ser: pd.Series, tab_labels: pd.Series) -> pd.Series:
+    """Keep per-row sheet values when present; otherwise use **tab_labels** (usually ``source_tab`` → platform)."""
+    s0 = ser.astype(str).str.strip()
+    mask = s0.isin(["", "Unknown", "unknown", "nan", "None", "<NA>"])
+    return s0.where(~mask, tab_labels.astype(str).str.strip())
+
+
 def _mpo_blend_paid_media_for_master_df(df: pd.DataFrame) -> pd.DataFrame:
-    """Use stacked workbook rows for spend KPIs; set ``platform`` / ``channel`` / ``utm_source`` from tab title when Unknown."""
+    """Use stacked workbook rows for spend KPIs; fill ``platform`` / ``channel`` / ``utm_source`` from tab only when row is blank."""
     raw = _mpo_rows_paid_media_from_combined(df)
     if raw.empty:
         return raw
     out = raw.copy()
     tab = out["source_tab"].astype(str).str.strip()
     plat_from_tab = tab.map(_mpo_platform_label_from_source_tab)
-    out["platform"] = plat_from_tab.values
+    if "platform" in out.columns:
+        # Do **not** overwrite row-level Platform (Search vs PMax vs YouTube on the same Google tab).
+        out["platform"] = _mpo_coalesce_str_series_with_tab_fallback(out["platform"], plat_from_tab)
+    else:
+        out["platform"] = plat_from_tab.values
     if "channel" in out.columns:
         ch = out["channel"].astype(str).str.strip()
         mask = ch.isin(["", "Unknown", "unknown", "nan", "None", "<NA>"])
@@ -4729,7 +4744,10 @@ def _mpo_blend_paid_media_for_master_df(df: pd.DataFrame) -> pd.DataFrame:
         out.loc[mask, "channel"] = ""
     else:
         out["channel"] = ""
-    out["utm_source"] = plat_from_tab.values
+    if "utm_source" in out.columns:
+        out["utm_source"] = _mpo_coalesce_str_series_with_tab_fallback(out["utm_source"], plat_from_tab)
+    else:
+        out["utm_source"] = plat_from_tab.values
     return out
 
 

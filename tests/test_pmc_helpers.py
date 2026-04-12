@@ -84,6 +84,27 @@ class TestSpendSheetPivotByMonthChannel:
         assert by_ch.get("Google Search", 0) == pytest.approx(100.0)
         assert by_ch.get("Meta Ads", 0) == pytest.approx(200.0)
 
+    def test_row_level_platform_splits_rows_on_same_tab(self) -> None:
+        """Same ``source_tab`` but different sheet **Platform** cells → distinct pivot channels."""
+        df = pd.DataFrame(
+            {
+                "month": ["2026-03", "2026-03"],
+                "country": ["UAE", "UAE"],
+                "channel": ["", ""],
+                "platform": ["Performance Max", "Google Ads"],
+                "source_tab": ["Google Ads", "Google Ads"],
+                "cost": [50.0, 150.0],
+                "clicks": [0, 0],
+                "impressions": [0, 0],
+            }
+        )
+        blended = oa._mpo_blend_paid_media_for_master_df(df)
+        out = oa._spend_sheet_pivot_by_month_channel(blended)
+        assert len(out) == 2
+        by_ch = out.set_index("country")["cost"].to_dict()
+        assert by_ch.get("PMax", 0) == pytest.approx(50.0)
+        assert by_ch.get("Google Search", 0) == pytest.approx(150.0)
+
 
 class TestMonthNormKey:
     def test_march_2026_string(self) -> None:
