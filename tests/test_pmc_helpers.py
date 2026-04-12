@@ -64,6 +64,26 @@ class TestSpendSheetPivotByMonthChannel:
         assert by_ch.get("LinkedIn", 0) == pytest.approx(100.0)
         assert by_ch.get("Meta", 0) == pytest.approx(200.0)
 
+    def test_paid_media_placeholder_falls_back_to_platform(self) -> None:
+        """Blend used to set channel='Paid media' for unknowns; pivot must still split by tab/platform."""
+        df = pd.DataFrame(
+            {
+                "month": ["2026-03", "2026-03"],
+                "country": ["UAE", "UAE"],
+                "channel": ["Paid media", "Paid media"],
+                "platform": ["Google Ads", "Meta Ads"],
+                "source_tab": ["Google Ads", "Meta Ads"],
+                "cost": [100.0, 200.0],
+                "clicks": [0, 0],
+                "impressions": [0, 0],
+            }
+        )
+        out = oa._spend_sheet_pivot_by_month_channel(df)
+        assert len(out) == 2
+        by_ch = out.set_index("country")["cost"].to_dict()
+        assert by_ch.get("Google Search", 0) == pytest.approx(100.0)
+        assert by_ch.get("Meta Ads", 0) == pytest.approx(200.0)
+
 
 class TestMonthNormKey:
     def test_march_2026_string(self) -> None:

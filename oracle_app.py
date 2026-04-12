@@ -25,7 +25,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
-DASHBOARD_BUILD = "2026-04-09-verify-cloud"
+DASHBOARD_BUILD = "2026-04-09-channel-pivot-fix"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 ME_XRAY_SPEND_SHEET_URL = f"https://docs.google.com/spreadsheets/d/{DEFAULT_SHEET_ID}/edit"
@@ -4725,9 +4725,10 @@ def _mpo_blend_paid_media_for_master_df(df: pd.DataFrame) -> pd.DataFrame:
     if "channel" in out.columns:
         ch = out["channel"].astype(str).str.strip()
         mask = ch.isin(["", "Unknown", "unknown", "nan", "None", "<NA>"])
-        out.loc[mask, "channel"] = "Paid media"
+        # Empty lets ``_pmc_sheet_channel_series`` fall back to **platform** (from tab) for Spend-by-channel pivots.
+        out.loc[mask, "channel"] = ""
     else:
-        out["channel"] = "Paid media"
+        out["channel"] = ""
     out["utm_source"] = plat_from_tab.values
     return out
 
@@ -8029,7 +8030,8 @@ def _pmc_sheet_channel_series(df: pd.DataFrame) -> pd.Series:
 
     def _bad(s: str) -> bool:
         t = str(s).strip().lower()
-        return not t or t in ("unknown", "nan", "none", "nat")
+        # ``_mpo_blend_paid_media_for_master_df`` used to fill blanks with "Paid media", which blocked platform fallback.
+        return not t or t in ("unknown", "nan", "none", "nat") or t in ("paid media", "paid_media")
 
     def _pick(i: int) -> str:
         c = str(ch.iloc[i])
