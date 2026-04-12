@@ -25,7 +25,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
-DASHBOARD_BUILD = "2026-04-09-pmc-channel-google-align"
+DASHBOARD_BUILD = "2026-04-12-pmc-build-stamp"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 ME_XRAY_SPEND_SHEET_URL = f"https://docs.google.com/spreadsheets/d/{DEFAULT_SHEET_ID}/edit"
@@ -8362,9 +8362,10 @@ def render_page_channels(df_loaded: pd.DataFrame, start_date: date, end_date: da
         df, _ = _apply_sheet_filters(df_date, key_suffix=key_suffix, filters_in_row=True)
     else:
         st.caption(
+            f"**Build `{DASHBOARD_BUILD}`** — if the main table has only five channels plus **Other** and **Middle East**, you are "
+            "on an **old deploy**: run `git pull` on **xray-marketing-dashboard-git** `main`, then restart Streamlit from that repo. "
             f"Reporting window **{start_date:%d %b %Y}** → **{end_date:%d %b %Y}**. Spend uses the same **ME X-Ray workbook + "
-            f"Supermetrics** merge as **Marketing performance**; **Data scope** below filters by **channel** and **month** "
-            f"(instead of market). GCC / Middle East slice with regional dedupe when both country and **Middle East** rows exist. "
+            f"Supermetrics** merge as **Marketing performance**; **Data scope** filters by **channel** and **month**. "
             f"Source: [ME X-Ray spend]({ME_XRAY_SPEND_SHEET_URL})."
         )
         spend_base = _mpo_spend_sheet_for_channel_master(df_loaded, start_date, end_date)
