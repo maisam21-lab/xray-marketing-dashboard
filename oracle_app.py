@@ -25,7 +25,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
-DASHBOARD_BUILD = "2026-04-09-pmc-master-by-channel"
+DASHBOARD_BUILD = "2026-04-09-pmc-channel-google-align"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 ME_XRAY_SPEND_SHEET_URL = f"https://docs.google.com/spreadsheets/d/{DEFAULT_SHEET_ID}/edit"
@@ -7983,11 +7983,27 @@ def _pmc_unified_channel_series(df: pd.DataFrame) -> pd.Series:
     return pd.Series([_pick(i) for i in range(n)], index=df.index, dtype=object)
 
 
-def _pmc_sheet_channel_series(df: pd.DataFrame) -> pd.Series:
-    """Pivot-style channel name: prefer raw **channel** (matches sheet), else **platform**, else tab-derived label.
+def _pmc_align_channel_label_for_xray_pivot(lab: str) -> str:
+    """Map Ads / Supermetrics platform strings to the **Channel** labels used on ME X-Ray spend pivots.
 
-    Does **not** apply PDF / Looker bucket names — use for the month × channel grid so totals align with sheet pivots.
+    Rows often have **Channel** = ``Google Search`` in the sheet while **Platform** = ``Google Ads``; without this,
+    spend lands on **Google Ads** and the **Google Search** pivot row shows ``$0``.
     """
+    s = str(lab or "").strip()
+    if not s or s == "(blank)":
+        return s
+    tl = s.lower()
+    if "youtube" in tl:
+        return s
+    if "performance max" in tl or re.search(r"\bpmax\b", tl):
+        return "PMax"
+    if "google" in tl:
+        return "Google Search"
+    return s
+
+
+def _pmc_sheet_channel_series(df: pd.DataFrame) -> pd.Series:
+    """Pivot-style channel: prefer **channel**, else **platform**, else tab — then align Google/PMax names to X-Ray pivots."""
     if df.empty:
         return pd.Series(dtype=object)
     n = len(df)
@@ -8010,13 +8026,13 @@ def _pmc_sheet_channel_series(df: pd.DataFrame) -> pd.Series:
     def _pick(i: int) -> str:
         c = str(ch.iloc[i])
         if not _bad(c):
-            return c.strip()
+            return _pmc_align_channel_label_for_xray_pivot(c.strip())
         p = str(plat.iloc[i])
         if not _bad(p):
-            return p.strip()
+            return _pmc_align_channel_label_for_xray_pivot(p.strip())
         tab_lab = _mpo_platform_label_from_source_tab(str(stb.iloc[i])).strip()
         if not _bad(tab_lab):
-            return tab_lab
+            return _pmc_align_channel_label_for_xray_pivot(tab_lab)
         return "(blank)"
 
     return pd.Series([_pick(i) for i in range(n)], index=df.index, dtype=object)
