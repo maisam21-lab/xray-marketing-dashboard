@@ -25,7 +25,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
-DASHBOARD_BUILD = "2026-04-09-unified-channel-col"
+DASHBOARD_BUILD = "2026-04-09-pmc-spend-only-march"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 ME_XRAY_SPEND_SHEET_URL = f"https://docs.google.com/spreadsheets/d/{DEFAULT_SHEET_ID}/edit"
@@ -6997,10 +6997,14 @@ def _master_performance_table(
     spend_grid: Optional[pd.DataFrame] = None,
     detail_sources: Optional[dict[str, pd.DataFrame]] = None,
     pivot_dimension: Literal["market", "channel"] = "market",
+    table_mode: Literal["full", "spend_only"] = "full",
+    month_not_before: Optional[date] = None,
 ) -> None:
     """Month column (label on first row per month only), row dimension (**Market** or **Channel**), cyan metrics, R/G/Y.
 
     ``pivot_dimension="channel"`` skips Middle East roll-up / spend-grid overlays (same spend math, channel rows only).
+    ``table_mode="spend_only"`` shows **Month**, row dimension, and **Spend** only (PMC tab).
+    ``month_not_before`` drops earlier calendar months (e.g. March floor for Spend-by-channel).
     """
     df = _normalize_master_merge_frame(df)
     if not df.empty and "month" in df.columns:
@@ -7119,16 +7123,20 @@ def _master_performance_table(
         axis=1,
     )
 
-    metrics = [
-        "Spend",
-        "CW (Inc Approved)",
-        "CPCW",
-        "1st Month LF",
-        "Actual TCV",
-        "CPCW:LF",
-        "Cost/TCV%",
-        "Total Leads",
-    ]
+    metrics = (
+        ["Spend"]
+        if table_mode == "spend_only" and pivot_dimension == "channel"
+        else [
+            "Spend",
+            "CW (Inc Approved)",
+            "CPCW",
+            "1st Month LF",
+            "Actual TCV",
+            "CPCW:LF",
+            "Cost/TCV%",
+            "Total Leads",
+        ]
+    )
     for m in metrics:
         if m not in gm.columns:
             gm[m] = float("nan")
@@ -7153,6 +7161,11 @@ def _master_performance_table(
     pvt = pvt.drop(columns=["month", "_month_sort_lbl"], errors="ignore")
     out_cols = ["Month", row_heading] + [m for m in metrics if m in pvt.columns]
     pvt = pvt[out_cols]
+    cell_metric_allowlist = list(metrics)
+    if table_mode == "spend_only" and pivot_dimension == "channel":
+        _keep = [c for c in ["Month", row_heading, "Spend"] if c in pvt.columns]
+        pvt = pvt[_keep]
+        cell_metric_allowlist = [c for c in ["Spend"] if c in pvt.columns]
     # Streamlit's Arrow table path often ignores ``Styler.format`` for numeric cells — use strings for Spend.
     if "Spend" in pvt.columns:
         pvt["Spend"] = pvt["Spend"].apply(
@@ -7265,7 +7278,7 @@ def _master_performance_table(
         elif col_raw is not None:
             col_name = str(col_raw)
 
-        if rix is not None and col_name and 0 <= rix < len(gm) and col_name in metrics:
+        if rix is not None and col_name and 0 <= rix < len(gm) and col_name in cell_metric_allowlist:
             row = gm.reset_index(drop=True).iloc[rix]
             month_label = _month_label_short(row.get("month")) or str(row.get("month") or "Selected period")
             market_label = str(row.get(row_heading) or row.get("Market") or row.get("Channel") or "Selected market")
@@ -8128,6 +8141,33 @@ def _pmc_frame_with_metrics(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _pmc_floor_march_or_later(w: date) -> date:
+    """Spend-by-channel: include data from **1 March** of ``w.year`` when the reporting window starts earlier."""
+    m1 = date(w.year, 3, 1)
+    return m1 if w < m1 else w
+
+
+def _pmc_filter_month_not_before(df: pd.DataFrame, not_before: date) -> pd.DataFrame:
+    """Drop rows whose ``month`` is strictly before ``not_before`` (calendar month)."""
+    if df.empty or "month" not in df.columns:
+        return df
+    try:
+        floor = pd.Period(year=not_before.year, month=not_before.month, freq="M")
+    except Exception:
+        return df
+
+    def _ge(m: Any) -> bool:
+        try:
+            mk = _month_norm_key(m)
+            if not mk or str(mk).strip().lower() in ("nan", "nat", "none", ""):
+                return True
+            return pd.Period(str(mk), freq="M") >= floor
+        except Exception:
+            return True
+
+    return df.loc[df["month"].map(_ge)].copy()
+
+
 _PMC_CHANNEL_ORDER: tuple[str, ...] = (
     "Google Search",
     "LinkedIn",
@@ -8355,9 +8395,14 @@ def _render_page_performance_marketing_channels(
     end_date: date,
     key_suffix: str,
 ) -> None:
-    """Same **master spend table** as Marketing performance, pivoted on **Channel** instead of **Market** (+ charts)."""
+    """Channel spend from **March** of the reporting-start year onward; main grid is **Spend** only (+ charts)."""
     if df_scope.empty or "cost" not in df_scope.columns:
         st.info("No spend rows for the selected channels and months.")
+        return
+    _pmc_m0 = _pmc_floor_march_or_later(start_date)
+    df_scope = _pmc_filter_month_not_before(df_scope, _pmc_m0)
+    if df_scope.empty:
+        st.info("No spend rows on or after March for the selected window.")
         return
     u = _pmc_frame_with_metrics(df_scope.copy())
     spend_g = _spend_sheet_pivot_by_month_channel(u)
@@ -8390,16 +8435,19 @@ def _render_page_performance_marketing_channels(
     st.markdown(
         f'<p class="mpo-perf-chart-title" style="margin-top:0;margin-bottom:10px;font-weight:400;">'
         f'<a href="{html.escape(ME_XRAY_SPEND_SHEET_URL)}" target="_blank" rel="noopener noreferrer">'
-        "ME X-Ray source sheet</a> — master view columns; rows are **channels** (sheet **Channel** → **Platform** → tab).</p>",
+        "ME X-Ray source sheet</a> — from <strong>March</strong> onward; table shows <strong>Spend</strong> only by "
+        "<strong>Unified Channel</strong> (charts below still use full funnel fields when present).</p>",
         unsafe_allow_html=True,
     )
     _master_performance_table(
         m,
         key_suffix=f"{key_suffix}_ch_master",
-        section_title="Channel spend (master layout)",
+        section_title="Channel spend by month",
         spend_grid=None,
         detail_sources={"spend": u},
         pivot_dimension="channel",
+        table_mode="spend_only",
+        month_not_before=_pmc_m0,
     )
     st.markdown("</div>", unsafe_allow_html=True)
 

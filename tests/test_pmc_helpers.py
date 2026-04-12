@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import date
+
 import pandas as pd
 import pytest
 
@@ -127,6 +129,26 @@ class TestSpendSheetPivotByMonthChannel:
         by_ch = out.set_index("country")["cost"].to_dict()
         assert by_ch.get("Organic", 0) == pytest.approx(10.0)
         assert by_ch.get("Meta", 0) == pytest.approx(20.0)
+
+
+class TestPmcMarchFloor:
+    def test_floor_before_march(self) -> None:
+        assert oa._pmc_floor_march_or_later(date(2026, 1, 15)) == date(2026, 3, 1)
+
+    def test_floor_on_or_after_march(self) -> None:
+        assert oa._pmc_floor_march_or_later(date(2026, 3, 1)) == date(2026, 3, 1)
+        assert oa._pmc_floor_march_or_later(date(2026, 5, 1)) == date(2026, 5, 1)
+
+    def test_filter_drops_jan(self) -> None:
+        df = pd.DataFrame(
+            {
+                "month": ["2026-01", "2026-03"],
+                "cost": [1.0, 2.0],
+            }
+        )
+        out = oa._pmc_filter_month_not_before(df, date(2026, 3, 1))
+        assert len(out) == 1
+        assert out["month"].iloc[0] == "2026-03"
 
 
 class TestMonthNormKey:
