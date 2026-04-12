@@ -25,9 +25,10 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
-DASHBOARD_BUILD = "2026-04-09-channels-month-filter"
+DASHBOARD_BUILD = "2026-04-09-pmc-sheet-channels-all"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
+ME_XRAY_SPEND_SHEET_URL = f"https://docs.google.com/spreadsheets/d/{DEFAULT_SHEET_ID}/edit"
 # **Spend by channel** month × channel grid is scoped to this workbook (``spreadsheet_id`` on stacked loads).
 PMC_MONTH_GRID_SHEET_ID = DEFAULT_SHEET_ID
 # Optional workbook: set Streamlit secret ``XRAY_SHEET_ID`` to the id or full URL below, then set
@@ -7776,6 +7777,45 @@ def _pmc_unified_channel_series(df: pd.DataFrame) -> pd.Series:
     return pd.Series([_pick(i) for i in range(n)], index=df.index, dtype=object)
 
 
+def _pmc_sheet_channel_series(df: pd.DataFrame) -> pd.Series:
+    """Pivot-style channel name: prefer raw **channel** (matches sheet), else **platform**, else tab-derived label.
+
+    Does **not** apply PDF / Looker bucket names — use for the month × channel grid so totals align with sheet pivots.
+    """
+    if df.empty:
+        return pd.Series(dtype=object)
+    n = len(df)
+    plat = (
+        df["platform"].astype(str).str.strip()
+        if "platform" in df.columns
+        else pd.Series([""] * n, index=df.index, dtype=object)
+    )
+    ch = (
+        df["channel"].astype(str).str.strip()
+        if "channel" in df.columns
+        else pd.Series([""] * n, index=df.index, dtype=object)
+    )
+    stb = df["source_tab"].astype(str) if "source_tab" in df.columns else pd.Series([""] * n, index=df.index, dtype=object)
+
+    def _bad(s: str) -> bool:
+        t = str(s).strip().lower()
+        return not t or t in ("unknown", "nan", "none", "nat")
+
+    def _pick(i: int) -> str:
+        c = str(ch.iloc[i])
+        if not _bad(c):
+            return c.strip()
+        p = str(plat.iloc[i])
+        if not _bad(p):
+            return p.strip()
+        tab_lab = _mpo_platform_label_from_source_tab(str(stb.iloc[i])).strip()
+        if not _bad(tab_lab):
+            return tab_lab
+        return "(blank)"
+
+    return pd.Series([_pick(i) for i in range(n)], index=df.index, dtype=object)
+
+
 def _pmc_frame_with_metrics(df: pd.DataFrame) -> pd.DataFrame:
     """Align ``country`` / ``month`` join keys with the main Master view (UAE vs Uae, regional aliases)."""
     out = df.copy()
@@ -7826,17 +7866,16 @@ def _pmc_order_channels_df(by_ch: pd.DataFrame) -> pd.DataFrame:
     return d
 
 
-_PMC_MONTH_GRID_CHANNELS: tuple[str, ...] = ("Google Search", "LinkedIn", "Meta", "PMax", "Snapchat")
-
-
 def _pmc_render_month_channel_me_table(u: pd.DataFrame, *, key_suffix: str) -> None:
-    """Per **month**: fixed **channel** rows (+ **Other**). Frame is already ME-scoped — no extra regional total row."""
+    """Per **month**: every **sheet channel** (raw ``channel`` when present, else platform / tab) with summed spend.
+
+    Frame is already ME-scoped and workbook-filtered; order matches a typical pivot (alphabetical by channel name).
+    """
     if u.empty or "month" not in u.columns:
         st.info("Need **month** on rows to build this grid.")
         return
     x = u.copy()
-    if "unified_channel" not in x.columns:
-        x["unified_channel"] = _pmc_unified_channel_series(x)
+    x["sheet_channel"] = _pmc_sheet_channel_series(x)
     if "cost" not in x.columns:
         st.info("No **cost** column — cannot sum spend.")
         return
@@ -7846,8 +7885,7 @@ def _pmc_render_month_channel_me_table(u: pd.DataFrame, *, key_suffix: str) -> N
         st.info("No plausible **month** values in scope.")
         return
     x["cost"] = pd.to_numeric(x["cost"], errors="coerce").fillna(0.0)
-    g = x.groupby(["_mk", "unified_channel"], as_index=False, dropna=False)["cost"].sum().rename(columns={"cost": "Spend"})
-    std_f = frozenset(_PMC_MONTH_GRID_CHANNELS)
+    g = x.groupby(["_mk", "sheet_channel"], as_index=False, dropna=False)["cost"].sum().rename(columns={"cost": "Spend"})
 
     def _month_sort_key(m: Any) -> Any:
         try:
@@ -7859,22 +7897,13 @@ def _pmc_render_month_channel_me_table(u: pd.DataFrame, *, key_suffix: str) -> N
     out_rows: list[dict[str, Any]] = []
 
     for mk in months_sorted:
-        sub = g.loc[g["_mk"] == mk]
-        ch_sp: dict[str, float] = {}
-        for _, r in sub.iterrows():
-            lab = str(r["unified_channel"]).strip() if pd.notna(r["unified_channel"]) else ""
-            ch_sp[lab] = ch_sp.get(lab, 0.0) + float(r["Spend"])
-
-        for ch in _PMC_MONTH_GRID_CHANNELS:
-            out_rows.append({"_mk": mk, "Channel": ch, "Spend": float(ch_sp.get(ch, 0.0))})
-
-        other_sum = 0.0
-        for k, v in ch_sp.items():
-            if k in std_f:
-                continue
-            other_sum += float(v)
-        if other_sum > 1e-6:
-            out_rows.append({"_mk": mk, "Channel": "Other", "Spend": other_sum})
+        sub = g.loc[g["_mk"] == mk].copy()
+        if sub.empty:
+            continue
+        chans = sorted(sub["sheet_channel"].astype(str).unique().tolist(), key=lambda s: (str(s).lower(), str(s)))
+        for ch in chans:
+            v = float(sub.loc[sub["sheet_channel"].astype(str) == ch, "Spend"].sum())
+            out_rows.append({"_mk": mk, "Channel": ch, "Spend": v})
 
     if not out_rows:
         st.info("No rows to display.")
@@ -8120,7 +8149,7 @@ def _render_page_performance_marketing_channels(
     end_date: date,
     key_suffix: str,
 ) -> None:
-    """Month × channel spend grid (workbook ``PMC_MONTH_GRID_SHEET_ID``) + ME subtotal row per month + charts."""
+    """Month × channel spend grid (workbook ``PMC_MONTH_GRID_SHEET_ID``) + channel charts."""
     df_wb = _pmc_rows_workbook(df, PMC_MONTH_GRID_SHEET_ID)
     if df_wb.empty and not df.empty:
         st.warning(
@@ -8141,6 +8170,12 @@ def _render_page_performance_marketing_channels(
     u = _pmc_dedupe_regional_vs_country_spend(u)
     st.markdown('<div class="dash-master-surface">', unsafe_allow_html=True)
     st.markdown('<div class="looker-table-title">Spend by month &amp; channel</div>', unsafe_allow_html=True)
+    st.markdown(
+        f'<p class="mpo-perf-chart-title" style="margin-top:0;margin-bottom:10px;font-weight:400;">'
+        f'<a href="{html.escape(ME_XRAY_SPEND_SHEET_URL)}" target="_blank" rel="noopener noreferrer">'
+        "ME X-Ray source sheet</a> — every channel from the load is listed per month (alphabetical).</p>",
+        unsafe_allow_html=True,
+    )
     _pmc_render_month_channel_me_table(u, key_suffix=key_suffix)
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -8165,9 +8200,10 @@ def render_page_channels(df_loaded: pd.DataFrame, start_date: date, end_date: da
         st.caption(
             f"Reporting window **{start_date:%d %b %Y}** → **{end_date:%d %b %Y}** (rows matched by **month** when spend is "
             f"month-tagged, else by **date**). Grid uses workbook `{PMC_MONTH_GRID_SHEET_ID}` (when rows carry **spreadsheet_id**). "
-            "Figures are **GCC / Middle East** spend only (fixed channel rows per month + **Other** when needed). If the sheet has "
-            "both country lines and a **Middle East** regional row for the same month, the regional line is dropped when country "
-            "spend is present so totals are not doubled. Scorecards: **Marketing performance**."
+            "Figures are **GCC / Middle East** spend only; the table lists **all channel names from the sheet** per month (raw "
+            "**Channel** column when set, else **Platform**, else tab label). If the sheet has both country lines and a **Middle East** "
+            "regional row for the same month, the regional line is dropped when country spend is present so totals are not doubled. "
+            f"Source workbook: [ME X-Ray spend]({ME_XRAY_SPEND_SHEET_URL}) · Scorecards: **Marketing performance**."
         )
     df, _ = _apply_sheet_filters(df_date, key_suffix=key_suffix, filters_in_row=True)
 
