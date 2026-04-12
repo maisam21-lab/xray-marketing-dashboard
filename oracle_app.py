@@ -25,9 +25,11 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
-DASHBOARD_BUILD = "2026-04-09-pmc-inline-filters"
+DASHBOARD_BUILD = "2026-04-09-pmc-month-me-grid"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
+# **Spend by channel** month × channel grid is scoped to this workbook (``spreadsheet_id`` on stacked loads).
+PMC_MONTH_GRID_SHEET_ID = DEFAULT_SHEET_ID
 # Optional workbook: set Streamlit secret ``XRAY_SHEET_ID`` to the id or full URL below, then set
 # XRAY_TRUTH_GID / XRAY_SPEND_GID / XRAY_LEADS_GID / XRAY_POST_QUAL_GID / XRAY_RAW_CW_GID to each tab’s
 # ``gid`` from the URL when that tab is open (example tab gid=279936880):
@@ -1527,6 +1529,16 @@ def _pmc_filter_middle_east(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
     return df.loc[_pmc_is_middle_east_row(df)].copy()
+
+
+def _pmc_rows_workbook(df: pd.DataFrame, spreadsheet_id: str) -> pd.DataFrame:
+    """Keep rows tagged with ``spreadsheet_id`` = ME marketing workbook (excludes second Supermetrics workbook)."""
+    if df.empty:
+        return df
+    sid = str(_extract_sheet_id(spreadsheet_id))
+    if "spreadsheet_id" not in df.columns:
+        return df.iloc[0:0].copy()
+    return df.loc[df["spreadsheet_id"].astype(str) == sid].copy()
 
 
 # Master View regional roll-up (first row under each month for ME markets).
@@ -3862,6 +3874,9 @@ def _master_view_style_css(df: pd.DataFrame) -> pd.DataFrame:
     if "Unified Channel" in df.columns:
         _uc = df["Unified Channel"].astype(str).str.strip().str.lower()
         is_region = is_region | _uc.eq("middle east")
+    if "Channel" in df.columns:
+        _chm = df["Channel"].astype(str).str.strip().str.lower()
+        is_region = is_region | _chm.eq("middle east")
     non_me = ~is_region
     cyan = "background-color: #e8f4f8; color: #0f172a;"
     white = "background-color: #ffffff; color: #0f172a;"
@@ -7774,32 +7789,96 @@ def _pmc_order_channels_df(by_ch: pd.DataFrame) -> pd.DataFrame:
     return d
 
 
-def _pmc_render_channel_spend_pivot(u: pd.DataFrame, *, key_suffix: str) -> None:
-    """Excel-style pivot: **Row Labels** = unified channel, **Sum of spend** = ``sum(cost)``, plus **Grand Total** row."""
-    if u.empty:
-        st.info("No rows in scope for this tab.")
+_PMC_MONTH_GRID_CHANNELS: tuple[str, ...] = ("Google Search", "LinkedIn", "Meta", "PMax", "Snapchat")
+
+
+def _pmc_render_month_channel_me_table(u: pd.DataFrame, *, key_suffix: str) -> None:
+    """Per **month**: fixed **channel** rows + **Middle East** spend total (ME-attributed rows only)."""
+    if u.empty or "month" not in u.columns:
+        st.info("Need **month** on rows to build this grid.")
         return
-    w = u.copy()
-    if "unified_channel" not in w.columns:
-        w["unified_channel"] = _pmc_unified_channel_series(w)
-    if "cost" not in w.columns:
+    x = u.copy()
+    if "unified_channel" not in x.columns:
+        x["unified_channel"] = _pmc_unified_channel_series(x)
+    if "cost" not in x.columns:
         st.info("No **cost** column — cannot sum spend.")
         return
-    w["_spend"] = pd.to_numeric(w["cost"], errors="coerce").fillna(0.0)
-    g = (
-        w.groupby("unified_channel", as_index=False, dropna=False)["_spend"]
-        .sum()
-        .rename(columns={"unified_channel": "Row Labels", "_spend": "Sum of spend"})
+    x["_mk"] = x["month"].map(_month_norm_key).astype(str).str.strip()
+    x = x.loc[x["_mk"].ne("")].copy()
+    if x.empty:
+        st.info("No plausible **month** values in scope.")
+        return
+    x["cost"] = pd.to_numeric(x["cost"], errors="coerce").fillna(0.0)
+    g = x.groupby(["_mk", "unified_channel"], as_index=False, dropna=False)["cost"].sum().rename(columns={"cost": "Spend"})
+    std_f = frozenset(_PMC_MONTH_GRID_CHANNELS)
+
+    def _month_sort_key(m: Any) -> Any:
+        try:
+            return pd.Period(str(m), freq="M")
+        except Exception:
+            return str(m)
+
+    months_sorted = sorted(g["_mk"].dropna().unique(), key=_month_sort_key, reverse=True)
+    out_rows: list[dict[str, Any]] = []
+
+    for mk in months_sorted:
+        sub = g.loc[g["_mk"] == mk]
+        ch_sp: dict[str, float] = {}
+        for _, r in sub.iterrows():
+            lab = str(r["unified_channel"]).strip() if pd.notna(r["unified_channel"]) else ""
+            ch_sp[lab] = ch_sp.get(lab, 0.0) + float(r["Spend"])
+
+        for ch in _PMC_MONTH_GRID_CHANNELS:
+            out_rows.append({"_mk": mk, "Channel": ch, "Spend": float(ch_sp.get(ch, 0.0))})
+
+        other_sum = 0.0
+        for k, v in ch_sp.items():
+            if k in std_f or not k:
+                continue
+            other_sum += v
+        if other_sum > 1e-6:
+            out_rows.append({"_mk": mk, "Channel": "Other", "Spend": other_sum})
+
+        me_tot = float(x.loc[x["_mk"] == mk, "cost"].sum())
+        out_rows.append({"_mk": mk, "Channel": _MIDDLE_EAST_REGION_LABEL, "Spend": me_tot})
+
+    if not out_rows:
+        st.info("No rows to display.")
+        return
+
+    pvt = pd.DataFrame(out_rows)
+    pvt["_ml"] = pvt["_mk"].map(_month_label_short)
+    pvt["Month"] = ""
+    for ml in sorted(pvt["_ml"].dropna().unique(), key=_month_sort_key, reverse=True):
+        ix = pvt.index[pvt["_ml"] == ml].tolist()
+        if ix:
+            raw_m = pvt.loc[ix[0], "_mk"]
+            pvt.loc[ix[0], "Month"] = _month_label_short(raw_m)
+    pvt = pvt.drop(columns=["_mk", "_ml"], errors="ignore")
+    pvt = pvt[["Month", "Channel", "Spend"]]
+    tot_spend = float(x["cost"].sum())
+    pvt = pd.concat(
+        [pvt, pd.DataFrame([{"Month": "Grand total", "Channel": "—", "Spend": tot_spend}])],
+        ignore_index=True,
     )
-    g["Row Labels"] = g["Row Labels"].map(
-        lambda z: "(blank)" if z is None or (isinstance(z, float) and pd.isna(z)) or str(z).strip() == "" else str(z).strip()
+    pvt["Spend"] = pvt["Spend"].map(
+        lambda v: _format_spend_k(float(v)) if v is not None and not (isinstance(v, float) and pd.isna(v)) else "—"
     )
-    g = g.sort_values("Sum of spend", ascending=False).reset_index(drop=True)
-    tot = float(g["Sum of spend"].sum())
-    gt = pd.DataFrame([{"Row Labels": "Grand Total", "Sum of spend": tot}])
-    show = pd.concat([g, gt], ignore_index=True)
-    show["Sum of spend"] = show["Sum of spend"].map(lambda v: f"${float(v):,.2f}")
-    st.dataframe(show, use_container_width=True, hide_index=True, key=f"{key_suffix}_pmc_spend_pivot")
+
+    fmt_map: dict[str, Any] = {
+        "Month": lambda x: "" if x == "" or (isinstance(x, float) and pd.isna(x)) else str(x),
+        "Channel": lambda x: str(x) if pd.notna(x) else "—",
+        "Spend": lambda x: x if isinstance(x, str) else (_format_spend_k(float(x)) if pd.notna(x) else "—"),
+    }
+    css_matrix = _master_view_style_css(pvt)
+    styler = pvt.style.format(fmt_map, na_rep="—")
+    for col in css_matrix.columns:
+        styler = styler.apply(
+            lambda s, c=col: css_matrix.loc[s.index, c],
+            axis=0,
+            subset=[col],
+        )
+    st.dataframe(styler, use_container_width=True, hide_index=True, key=f"{key_suffix}_pmc_month_me")
 
 
 def _pmc_by_channel_summary(u: pd.DataFrame) -> pd.DataFrame:
@@ -8007,20 +8086,27 @@ def _render_page_performance_marketing_channels(
     end_date: date,
     key_suffix: str,
 ) -> None:
-    """**Row Labels × Sum of spend** pivot + channel charts (no duplicate KPI scorecards — see Marketing performance)."""
-    u0 = _pmc_frame_with_metrics(df)
+    """Month × channel spend grid (workbook ``PMC_MONTH_GRID_SHEET_ID``) + ME subtotal row per month + charts."""
+    df_wb = _pmc_rows_workbook(df, PMC_MONTH_GRID_SHEET_ID)
+    if df_wb.empty and not df.empty:
+        st.warning(
+            f"No rows tagged for workbook `{PMC_MONTH_GRID_SHEET_ID}` — check **spreadsheet_id** on the load. "
+            "Using all filtered rows until the primary workbook is tagged."
+        )
+        df_wb = df
+    u0 = _pmc_frame_with_metrics(df_wb)
     u_me = _pmc_filter_middle_east(u0)
     if u_me.empty and not u0.empty:
         st.warning(
-            "No Middle East–attributed rows — showing **all markets** for this pivot. "
+            "No Middle East–attributed rows — showing **all markets** in the grid. "
             "Use **Country** filters to narrow to UAE, Saudi Arabia, etc."
         )
         u = u0
     else:
         u = u_me
     st.markdown('<div class="dash-master-surface">', unsafe_allow_html=True)
-    st.markdown('<div class="looker-table-title">Spend pivot</div>', unsafe_allow_html=True)
-    _pmc_render_channel_spend_pivot(u, key_suffix=key_suffix)
+    st.markdown('<div class="looker-table-title">Spend by month &amp; channel</div>', unsafe_allow_html=True)
+    _pmc_render_month_channel_me_table(u, key_suffix=key_suffix)
     st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown('<div class="dash-chart-stack">', unsafe_allow_html=True)
@@ -8042,8 +8128,9 @@ def render_page_channels(df_loaded: pd.DataFrame, start_date: date, end_date: da
         st.caption("Spend & efficiency by source — filters below apply to this tab.")
     else:
         st.caption(
-            f"Reporting window **{start_date:%d %b %Y}** → **{end_date:%d %b %Y}** · **Sum of spend** = sum of **cost** "
-            "by **unified channel**. Full funnel scorecards live on **Marketing performance** — this tab is pivot + charts only."
+            f"Reporting window **{start_date:%d %b %Y}** → **{end_date:%d %b %Y}** · Grid uses workbook "
+            f"`{PMC_MONTH_GRID_SHEET_ID}` (when rows carry **spreadsheet_id**). Each month: fixed channels + **Middle East** "
+            "total (GCC/ME **Country** only). Scorecards: **Marketing performance**."
         )
     df, _ = _apply_sheet_filters(df_date, key_suffix=key_suffix, filters_in_row=True)
 
