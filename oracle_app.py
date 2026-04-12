@@ -25,7 +25,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
-DASHBOARD_BUILD = "2026-04-09-pmc-other-scalar-fix"
+DASHBOARD_BUILD = "2026-04-09-pmc-tab1-channel-label"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 # Optional workbook: set Streamlit secret ``XRAY_SHEET_ID`` to the id or full URL below, then set
@@ -1527,6 +1527,34 @@ def _pmc_filter_middle_east(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
     return df.loc[_pmc_is_middle_east_row(df)].copy()
+
+
+def _pmc_spend_rows_xray_first_tab(df: pd.DataFrame) -> pd.DataFrame:
+    """Spend rows from the ME X-Ray **first-tab spend** load (``load_spend_gid0_normalized`` → ``source_tab`` = ``gid:{n}_spend``).
+
+    Uses the primary workbook id from secrets / ``DEFAULT_SHEET_ID``. Optional ``XRAY_SPEND_GID`` changes ``n``
+    but stays the same injected spend pipeline (not the Supermetrics second workbook).
+    """
+    if df.empty or "source_tab" not in df.columns:
+        return df.iloc[0:0].copy()
+    sheet_id, _ = _workbook_id_resolution()
+    sid = str(_extract_sheet_id(sheet_id))
+    stb = df["source_tab"].astype(str).str.strip()
+    is_gid_spend = stb.str.match(r"^gid:\d+_spend$", na=False)
+    if "spreadsheet_id" in df.columns:
+        prim = df["spreadsheet_id"].astype(str) == sid
+        sl = df.loc[prim & is_gid_spend].copy()
+    else:
+        sl = df.loc[is_gid_spend].copy()
+    if not sl.empty:
+        return sl
+    if "spreadsheet_id" in df.columns and "worksheet_gid" in df.columns:
+        wg = pd.to_numeric(df["worksheet_gid"], errors="coerce")
+        spend_gid = int(_optional_spend_gid_from_secrets() or 0)
+        sl = df.loc[(df["spreadsheet_id"].astype(str) == sid) & (wg == spend_gid)].copy()
+        if not sl.empty:
+            return sl
+    return df.iloc[0:0].copy()
 
 
 # Master View regional roll-up (first row under each month for ME markets).
@@ -7735,9 +7763,9 @@ def _pmc_frame_with_metrics(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _pmc_render_overview_kpis(u: pd.DataFrame) -> None:
-    """KitchenPark PDF — **Performance Marketing Channels Overview** KPI strip."""
+    """KPI strip for **X-Ray first-tab spend** channel scope."""
     st.markdown(
-        '<div class="looker-table-title">Performance Marketing Channels Overview</div>',
+        '<div class="looker-table-title">Overview — spend by channel (tab 1)</div>',
         unsafe_allow_html=True,
     )
     tot_spend = float(u["cost"].sum())
@@ -8265,8 +8293,17 @@ def _render_page_performance_marketing_channels(
     end_date: date,
     key_suffix: str,
 ) -> None:
-    """KitchenPark PDF layout: Overview → Master View → Charts (paid / X-Ray scope)."""
-    u0 = _pmc_frame_with_metrics(df)
+    """Channel spend from ME X-Ray **gid=0 (first tab) spend** rows; overview → master → charts."""
+    df_gid = _pmc_spend_rows_xray_first_tab(df)
+    if df_gid.empty and not df.empty:
+        st.warning(
+            "Could not find **X-Ray first-tab spend** rows (``source_tab`` like **gid:0_spend** on the primary workbook). "
+            "Falling back to the full filtered sheet until gid spend is injected — check **load_spend_gid0_normalized** in the app loader."
+        )
+        df_base = df
+    else:
+        df_base = df_gid
+    u0 = _pmc_frame_with_metrics(df_base)
     u_me = _pmc_filter_middle_east(u0)
     if u_me.empty and not u0.empty:
         st.warning(
@@ -8277,8 +8314,9 @@ def _render_page_performance_marketing_channels(
     else:
         u = u_me
     st.caption(
-        f"Reporting window **{start_date:%d %b %Y}** → **{end_date:%d %b %Y}** · Master view: **month × channel** "
-        "(fixed channel order + **Middle East** subtotal), aligned with the X-Ray workbook pivot."
+        f"Reporting window **{start_date:%d %b %Y}** → **{end_date:%d %b %Y}** · **Spend** comes from ME X-Ray **tab 1** "
+        "rows (``source_tab`` = ``gid:{{n}}_spend`` on the primary workbook; **n** = 0 unless **XRAY_SPEND_GID** is set), "
+        "then split by **unified channel**. Master grid: **month × channel** + **Middle East** month total."
     )
     st.markdown('<div class="dash-master-surface dash-kpi-band">', unsafe_allow_html=True)
     _pmc_render_overview_kpis(u)
@@ -8286,19 +8324,19 @@ def _render_page_performance_marketing_channels(
 
     st.markdown('<div class="dash-master-surface">', unsafe_allow_html=True)
     st.markdown(
-        '<div class="looker-table-title">Performance Marketing Channels Master View</div>',
+        '<div class="looker-table-title">Master view — spend by channel (tab 1)</div>',
         unsafe_allow_html=True,
     )
     st.caption(
         "Each month lists **Google Search → LinkedIn → Meta → PMax → Snapchat**, then **Other** (if any), then "
-        "**Middle East** (month total). **Grand total** is the full filtered window."
+        "**Middle East** (month total from this spend slice). **Grand total** = full date filter on the same rows."
     )
     _pmc_render_master_view_table(u, key_suffix=key_suffix)
     st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown('<div class="dash-chart-stack">', unsafe_allow_html=True)
     st.markdown(
-        '<div class="looker-table-title">Performance Marketing Charts</div>',
+        '<div class="looker-table-title">Charts — spend by channel (tab 1)</div>',
         unsafe_allow_html=True,
     )
     _pmc_render_charts(_pmc_by_channel_summary(u), key_suffix=key_suffix)
@@ -8313,7 +8351,7 @@ def render_page_channels(df_loaded: pd.DataFrame, start_date: date, end_date: da
         st.info("No rows in the selected date range.")
         return
 
-    _dashboard_tab_page_header("Inbound channels" if inbound else "Performance marketing")
+    _dashboard_tab_page_header("Inbound channels" if inbound else "Spend by channel (X-Ray tab 1)")
     df, _ = _apply_sheet_filters(df_date, key_suffix=key_suffix)
 
     if not inbound:
@@ -8388,7 +8426,7 @@ _DASH_NAV_OPTIONS = [
     "Marketing performance",
     "Market MoM",
     "Inbound channels",
-    "Performance marketing",
+    "Spend by channel (X-Ray tab 1)",
 ]
 
 
