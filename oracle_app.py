@@ -25,7 +25,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
-DASHBOARD_BUILD = "2026-04-09-pmc-month-grid-no-dup-total"
+DASHBOARD_BUILD = "2026-04-09-channels-month-filter"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 # **Spend by channel** month × channel grid is scoped to this workbook (``spreadsheet_id`` on stacked loads).
@@ -2653,20 +2653,15 @@ def _filter_spend_for_dashboard(df: pd.DataFrame, start: date, end: date) -> pd.
     """Prefer ``month``-period filtering for spend (sheet dates often mis-parse); fall back to calendar ``date``."""
     if df.empty:
         return df
-    start_p = pd.Period(start, freq="M")
-    end_p = pd.Period(end, freq="M")
+    allow_m = _month_norm_keys_in_reporting_window(start, end)
 
     def _month_in_range(m: Any) -> bool:
         if m is None or (isinstance(m, float) and pd.isna(m)):
             return True
-        ms = str(m).strip().lower()
-        if not ms or ms in ("nat", "nan", "none"):
+        k = _month_norm_key(m)
+        if not k:
             return True
-        try:
-            p = pd.Period(str(m), freq="M")
-            return bool(start_p <= p <= end_p)
-        except Exception:
-            return True
+        return k in allow_m
 
     sub_m = pd.DataFrame()
     if "month" in df.columns:
@@ -8157,8 +8152,8 @@ def _render_page_performance_marketing_channels(
 
 def render_page_channels(df_loaded: pd.DataFrame, start_date: date, end_date: date, *, inbound: bool) -> None:
     key_suffix = "inb" if inbound else "pmc"
-    df_filtered = _filter_by_date_range(df_loaded, start_date, end_date)
-    df_date = df_loaded if df_filtered.empty else df_filtered
+    # Spend pivots are by **month**; ``date`` alone often drops sheet rows (same fix as ``_filter_spend_for_dashboard`` elsewhere).
+    df_date = _filter_spend_for_dashboard(df_loaded, start_date, end_date)
     if df_date.empty:
         st.info("No rows in the selected date range.")
         return
@@ -8168,11 +8163,11 @@ def render_page_channels(df_loaded: pd.DataFrame, start_date: date, end_date: da
         st.caption("Spend & efficiency by source — filters below apply to this tab.")
     else:
         st.caption(
-            f"Reporting window **{start_date:%d %b %Y}** → **{end_date:%d %b %Y}** · Grid uses workbook "
-            f"`{PMC_MONTH_GRID_SHEET_ID}` (when rows carry **spreadsheet_id**). Figures are **GCC / Middle East** spend only "
-            "(fixed channel rows per month + **Other** when needed). If the sheet has both country lines and a **Middle East** "
-            "regional row for the same month, the regional line is dropped when country spend is present so totals are not doubled. "
-            "Scorecards: **Marketing performance**."
+            f"Reporting window **{start_date:%d %b %Y}** → **{end_date:%d %b %Y}** (rows matched by **month** when spend is "
+            f"month-tagged, else by **date**). Grid uses workbook `{PMC_MONTH_GRID_SHEET_ID}` (when rows carry **spreadsheet_id**). "
+            "Figures are **GCC / Middle East** spend only (fixed channel rows per month + **Other** when needed). If the sheet has "
+            "both country lines and a **Middle East** regional row for the same month, the regional line is dropped when country "
+            "spend is present so totals are not doubled. Scorecards: **Marketing performance**."
         )
     df, _ = _apply_sheet_filters(df_date, key_suffix=key_suffix, filters_in_row=True)
 
