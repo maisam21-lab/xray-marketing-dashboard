@@ -25,7 +25,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
-DASHBOARD_BUILD = "2026-04-12-pmc-build-stamp"
+DASHBOARD_BUILD = "2026-04-09-verify-cloud"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 ME_XRAY_SPEND_SHEET_URL = f"https://docs.google.com/spreadsheets/d/{DEFAULT_SHEET_ID}/edit"
@@ -8642,6 +8642,16 @@ def main() -> None:
         line-height: 1;
     }
     .refresh-note { color: #6b7280; font-size: 10px; }
+    .deploy-build {
+        font-size: 10px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        color: #334155;
+        background: #e2e8f0;
+        padding: 2px 8px;
+        border-radius: 6px;
+        margin-left: 6px;
+        border: 1px solid #cbd5e1;
+    }
     .stButton > button {
         border: 1px solid #b7d9d5;
         border-radius: 999px;
@@ -9721,6 +9731,7 @@ def main() -> None:
           <h1 class="looker-header-title">KitchenPark Marketing Dashboard</h1>
           <span class="live-pill">● Live</span>
           <span class="refresh-note">{refreshed_text}</span>
+          <span class="deploy-build" title="If this string is old or missing, Streamlit Cloud is not on latest GitHub main — check app repo settings and reboot.">{html.escape(DASHBOARD_BUILD)}</span>
         </div>
         """,
             unsafe_allow_html=True,
