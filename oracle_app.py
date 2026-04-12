@@ -25,7 +25,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
-DASHBOARD_BUILD = "2026-04-09-pmc-month-me-grid"
+DASHBOARD_BUILD = "2026-04-09-pmc-month-grid-no-dup-total"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 # **Spend by channel** month × channel grid is scoped to this workbook (``spreadsheet_id`` on stacked loads).
@@ -1529,6 +1529,48 @@ def _pmc_filter_middle_east(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
     return df.loc[_pmc_is_middle_east_row(df)].copy()
+
+
+def _pmc_row_is_regional_middle_east_summary(df: pd.DataFrame) -> pd.Series:
+    """True for sheet **Middle East** / MENA / GCC **rollup** rows (join key ``middle east``), not a country line."""
+    if df.empty or "country" not in df.columns:
+        return pd.Series(False, index=df.index)
+    jk = df["country"].astype(str).str.strip().str.lower()
+    return jk.eq("middle east")
+
+
+def _pmc_row_is_me_country(df: pd.DataFrame) -> pd.Series:
+    """GCC/ME **country** rows only (excludes the regional **Middle East** aggregate row)."""
+    if df.empty or "country" not in df.columns:
+        return pd.Series(False, index=df.index)
+    disp = df["country"].map(_market_display_from_join_key)
+    return disp.map(_is_middle_east_market) & ~_pmc_row_is_regional_middle_east_summary(df)
+
+
+def _pmc_dedupe_regional_vs_country_spend(df: pd.DataFrame) -> pd.DataFrame:
+    """Per month: if ME **countries** have spend, drop **Middle East** regional rows so cost is not summed twice.
+
+    Same rule as the Master View ME row: use country detail when present, otherwise keep the regional line.
+    """
+    if df.empty or "country" not in df.columns or "month" not in df.columns or "cost" not in df.columns:
+        return df
+    mk = df["month"].map(_month_norm_key).astype(str).str.strip()
+    reg_m = _pmc_row_is_regional_middle_east_summary(df)
+    cc_m = _pmc_row_is_me_country(df)
+    cost = pd.to_numeric(df["cost"], errors="coerce").fillna(0.0)
+    drop: list[Any] = []
+    for m in mk.loc[mk.ne("")].unique():
+        m_mask = mk.eq(m)
+        if not bool(m_mask.any()):
+            continue
+        c_country = float(cost.loc[m_mask & cc_m].sum())
+        if c_country <= 1e-6:
+            continue
+        ix_reg = df.index[m_mask & reg_m]
+        drop.extend(ix_reg.tolist())
+    if not drop:
+        return df
+    return df.drop(index=drop).copy()
 
 
 def _pmc_rows_workbook(df: pd.DataFrame, spreadsheet_id: str) -> pd.DataFrame:
@@ -7793,7 +7835,7 @@ _PMC_MONTH_GRID_CHANNELS: tuple[str, ...] = ("Google Search", "LinkedIn", "Meta"
 
 
 def _pmc_render_month_channel_me_table(u: pd.DataFrame, *, key_suffix: str) -> None:
-    """Per **month**: fixed **channel** rows + **Middle East** spend total (ME-attributed rows only)."""
+    """Per **month**: fixed **channel** rows (+ **Other**). Frame is already ME-scoped — no extra regional total row."""
     if u.empty or "month" not in u.columns:
         st.info("Need **month** on rows to build this grid.")
         return
@@ -7833,14 +7875,11 @@ def _pmc_render_month_channel_me_table(u: pd.DataFrame, *, key_suffix: str) -> N
 
         other_sum = 0.0
         for k, v in ch_sp.items():
-            if k in std_f or not k:
+            if k in std_f:
                 continue
-            other_sum += v
+            other_sum += float(v)
         if other_sum > 1e-6:
             out_rows.append({"_mk": mk, "Channel": "Other", "Spend": other_sum})
-
-        me_tot = float(x.loc[x["_mk"] == mk, "cost"].sum())
-        out_rows.append({"_mk": mk, "Channel": _MIDDLE_EAST_REGION_LABEL, "Spend": me_tot})
 
     if not out_rows:
         st.info("No rows to display.")
@@ -8104,6 +8143,7 @@ def _render_page_performance_marketing_channels(
         u = u0
     else:
         u = u_me
+    u = _pmc_dedupe_regional_vs_country_spend(u)
     st.markdown('<div class="dash-master-surface">', unsafe_allow_html=True)
     st.markdown('<div class="looker-table-title">Spend by month &amp; channel</div>', unsafe_allow_html=True)
     _pmc_render_month_channel_me_table(u, key_suffix=key_suffix)
@@ -8129,8 +8169,10 @@ def render_page_channels(df_loaded: pd.DataFrame, start_date: date, end_date: da
     else:
         st.caption(
             f"Reporting window **{start_date:%d %b %Y}** → **{end_date:%d %b %Y}** · Grid uses workbook "
-            f"`{PMC_MONTH_GRID_SHEET_ID}` (when rows carry **spreadsheet_id**). Each month: fixed channels + **Middle East** "
-            "total (GCC/ME **Country** only). Scorecards: **Marketing performance**."
+            f"`{PMC_MONTH_GRID_SHEET_ID}` (when rows carry **spreadsheet_id**). Figures are **GCC / Middle East** spend only "
+            "(fixed channel rows per month + **Other** when needed). If the sheet has both country lines and a **Middle East** "
+            "regional row for the same month, the regional line is dropped when country spend is present so totals are not doubled. "
+            "Scorecards: **Marketing performance**."
         )
     df, _ = _apply_sheet_filters(df_date, key_suffix=key_suffix, filters_in_row=True)
 
