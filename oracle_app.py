@@ -16,7 +16,7 @@ import re
 import base64
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import Any, Literal, Optional, Union
 
 import pandas as pd
 import plotly.express as px
@@ -25,7 +25,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
-DASHBOARD_BUILD = "2026-04-09-pmc-sheet-channels-all"
+DASHBOARD_BUILD = "2026-04-09-pmc-master-by-channel"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 ME_XRAY_SPEND_SHEET_URL = f"https://docs.google.com/spreadsheets/d/{DEFAULT_SHEET_ID}/edit"
@@ -1507,6 +1507,40 @@ def _spend_sheet_pivot_by_month_country(spend_df: pd.DataFrame) -> pd.DataFrame:
         if c not in g.columns:
             g[c] = 0 if c in {"clicks", "impressions"} else 0.0
     g["month"] = g["month"].map(_month_norm_key)
+    return g[["month", "country"] + metrics]
+
+
+def _spend_sheet_pivot_by_month_channel(spend_df: pd.DataFrame) -> pd.DataFrame:
+    """``SUM(cost)`` / clicks / impressions per ``month`` × **sheet channel** (``country`` column holds channel for master merge)."""
+    metrics = ["cost", "clicks", "impressions"]
+    if spend_df.empty or "cost" not in spend_df.columns:
+        return pd.DataFrame(columns=["month", "country"] + metrics)
+    x0 = spend_df.copy()
+    x0 = _canonicalize_spend_month_column(x0)
+    x = _normalize_master_merge_frame(x0)
+    x["sheet_channel"] = _pmc_sheet_channel_series(x)
+    if "month" not in x.columns:
+        return pd.DataFrame(columns=["month", "country"] + metrics)
+    x["month"] = x["month"].map(_month_norm_key)
+    x = x.loc[~_spend_sheet_month_is_blank(x["month"])]
+
+    def _not_epoch_jan(m: Any) -> bool:
+        try:
+            p = pd.Period(str(m), freq="M")
+            return not (p.year == 1970 and p.month == 1)
+        except Exception:
+            return True
+
+    x = x.loc[x["month"].map(_not_epoch_jan)]
+    if x.empty:
+        return pd.DataFrame(columns=["month", "country"] + metrics)
+    cols = [c for c in metrics if c in x.columns]
+    g = x.groupby(["month", "sheet_channel"], as_index=False, dropna=False)[cols].sum()
+    for c in metrics:
+        if c not in g.columns:
+            g[c] = 0 if c in {"clicks", "impressions"} else 0.0
+    g["month"] = g["month"].map(_month_norm_key)
+    g = g.rename(columns={"sheet_channel": "country"})
     return g[["month", "country"] + metrics]
 
 
@@ -4070,6 +4104,10 @@ _MPO_ALL_MONTHS_SENTINEL = "All months"
 _MPO_ALL_MONTHS_LEGACY: frozenset[str] = frozenset(
     {"All Months", "All months", "All data", _MPO_ALL_MONTHS_SENTINEL}
 )
+_MPO_ALL_CHANNELS_SENTINEL = "All channels"
+_MPO_ALL_CHANNELS_LEGACY: frozenset[str] = frozenset(
+    {"All Channels", "All channels", "All data", _MPO_ALL_CHANNELS_SENTINEL}
+)
 
 
 def _mpo_normalize_market_multiselect_state(key_suffix: str) -> None:
@@ -4093,6 +4131,17 @@ def _mpo_normalize_month_multiselect_state(key_suffix: str) -> None:
         return
     if any(str(x) in _MPO_ALL_MONTHS_LEGACY for x in v):
         st.session_state[k] = [_MPO_ALL_MONTHS_SENTINEL]
+
+
+def _mpo_normalize_channel_multiselect_state(key_suffix: str) -> None:
+    k = f"{key_suffix}_channel_scope"
+    if k not in st.session_state:
+        return
+    v = st.session_state[k]
+    if not isinstance(v, list):
+        return
+    if any(str(x) in _MPO_ALL_CHANNELS_LEGACY for x in v):
+        st.session_state[k] = [_MPO_ALL_CHANNELS_SENTINEL]
 
 
 def _mpo_month_multiselect_is_all(sel: Any) -> bool:
@@ -4121,6 +4170,20 @@ def _mpo_market_scope_countries_only(sel: Any) -> list[str]:
     if not isinstance(sel, list):
         return []
     return [str(x) for x in sel if x and str(x) not in _MPO_ALL_GEO_LEGACY]
+
+
+def _mpo_channel_multiselect_is_all(sel: Any) -> bool:
+    if not sel:
+        return True
+    if not isinstance(sel, list):
+        return str(sel) in _MPO_ALL_CHANNELS_LEGACY
+    return any(str(x) in _MPO_ALL_CHANNELS_LEGACY for x in sel)
+
+
+def _mpo_channel_scope_explicit(sel: Any) -> list[str]:
+    if not isinstance(sel, list):
+        return []
+    return [str(x) for x in sel if x and str(x) not in _MPO_ALL_CHANNELS_LEGACY]
 
 
 def _mpo_scorecard_compare_label(opt: str) -> str:
@@ -4331,6 +4394,90 @@ def _apply_marketing_performance_filters(
                 km = df["month"].map(_month_norm_key)
                 df = df[km.isin(allow_k) | (km == "")]
 
+    return df, df.copy()
+
+
+def _apply_channel_tab_data_scope(
+    spend_df: pd.DataFrame,
+    *,
+    key_suffix: str,
+    reporting_start: date,
+    reporting_end: date,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Spend-by-channel tab: **Data scope** ribbon — **Channels** + **Month** (same layout as Marketing performance, no market slicer)."""
+    if spend_df.empty:
+        return spend_df.iloc[0:0].copy(), spend_df.iloc[0:0].copy()
+
+    work = _pmc_dedupe_regional_vs_country_spend(_pmc_filter_middle_east(_pmc_frame_with_metrics(spend_df.copy())))
+    if work.empty:
+        work = _pmc_frame_with_metrics(spend_df.copy())
+    work["_sch"] = _pmc_sheet_channel_series(work)
+    work["_sch_disp"] = work["_sch"].map(_market_display_from_join_key).astype(str).str.strip()
+
+    if "cost" in work.columns and not work.empty:
+        _tot = (
+            work.assign(_co=lambda d: pd.to_numeric(d["cost"], errors="coerce").fillna(0))
+            .groupby("_sch_disp")["_co"]
+            .sum()
+            .sort_values(ascending=False)
+        )
+        ch_opts = [str(x) for x in _tot.index.tolist() if str(x).strip()]
+    else:
+        ch_opts = sorted({str(x) for x in work["_sch_disp"].tolist() if str(x).strip()}, key=str.lower)
+
+    month_opts = _mpo_month_picker_options(work, reporting_start=reporting_start, reporting_end=reporting_end)
+
+    _mpo_normalize_month_multiselect_state(key_suffix)
+    _mpo_normalize_channel_multiselect_state(key_suffix)
+
+    _pmc_filter_panel = st.container()
+    with _pmc_filter_panel:
+        st.markdown('<div class="mpo-data-surface">', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="mpo-filter-ribbon">'
+            '<span class="mpo-filter-ribbon-title">Data scope</span>'
+            "</div>",
+            unsafe_allow_html=True,
+        )
+        st.markdown('<div class="mpo-top-toolbar">', unsafe_allow_html=True)
+        _c_ch, _c_div, _c_mo = st.columns([1, 0.03, 1], gap="small")
+        with _c_ch:
+            st.multiselect(
+                "Channels",
+                [_MPO_ALL_CHANNELS_SENTINEL] + ch_opts,
+                default=[_MPO_ALL_CHANNELS_SENTINEL],
+                key=f"{key_suffix}_channel_scope",
+            )
+        with _c_div:
+            st.markdown('<div class="mpo-toolbar-divider" aria-hidden="true"></div>', unsafe_allow_html=True)
+        with _c_mo:
+            st.multiselect(
+                "Month",
+                [_MPO_ALL_MONTHS_SENTINEL] + month_opts,
+                default=[_MPO_ALL_MONTHS_SENTINEL],
+                key=f"{key_suffix}_month",
+            )
+        st.markdown("</div>", unsafe_allow_html=True)
+        st.markdown("</div>", unsafe_allow_html=True)
+
+    selected_ch = st.session_state.get(f"{key_suffix}_channel_scope", [_MPO_ALL_CHANNELS_SENTINEL])
+    selected_months = st.session_state.get(f"{key_suffix}_month", [_MPO_ALL_MONTHS_SENTINEL])
+
+    df = work.copy()
+    if not _mpo_channel_multiselect_is_all(selected_ch):
+        picks = set(_mpo_channel_scope_explicit(selected_ch))
+        if picks:
+            mch = df["_sch_disp"].isin(picks) | df["_sch"].astype(str).str.strip().isin(picks)
+            df = df.loc[mch].copy()
+    if not _mpo_month_multiselect_is_all(selected_months):
+        _mo_pick = _mpo_month_multiselect_explicit(selected_months)
+        if _mo_pick and "month" in df.columns:
+            allow_k = {str(_month_norm_key(m)) for m in _mo_pick if _month_norm_key(m)}
+            if allow_k:
+                km = df["month"].map(_month_norm_key)
+                df = df[km.isin(allow_k) | (km == "")]
+
+    df = df.drop(columns=["_sch", "_sch_disp"], errors="ignore")
     return df, df.copy()
 
 
@@ -4696,6 +4843,28 @@ def _mpo_merge_pool_clicks_impressions_onto_spend(
         )
         out = _mpo_allocate_monthly_metrics_by_cost_weight(out, g_m)
     return out
+
+
+def _mpo_spend_sheet_for_channel_master(df_loaded: pd.DataFrame, start_date: date, end_date: date) -> pd.DataFrame:
+    """ME X-Ray workbook spend with Supermetrics clicks/impressions — same load path as **Marketing performance** spend."""
+    sheet_id, _ = _workbook_id_resolution()
+    spend_blended = _mpo_blend_paid_media_for_master_df(_rows_for_workbook_id(df_loaded, sheet_id))
+    if spend_blended.empty and not df_loaded.empty:
+        _dl = _rows_for_workbook_id(df_loaded, sheet_id)
+        if not _dl.empty:
+            spend_blended = _mpo_blend_paid_media_for_master_df(_dl)
+            if not spend_blended.empty:
+                spend_blended = _filter_by_date_range(spend_blended, start_date, end_date)
+    if spend_blended.empty:
+        return pd.DataFrame()
+    spend_sheet_master = _filter_spend_for_dashboard(spend_blended, start_date, end_date)
+    if spend_sheet_master.empty:
+        spend_sheet_master = spend_blended.copy()
+    return _mpo_merge_pool_clicks_impressions_onto_spend(
+        spend_sheet_master,
+        df_loaded,
+        primary_sheet_id=sheet_id,
+    )
 
 
 def _mpo_render_paid_media_by_platform_summary(
@@ -6367,6 +6536,28 @@ def _mpo_df_slice_month_market(
     return x.loc[m2].copy()
 
 
+def _mpo_df_slice_month_channel(
+    df: Optional[pd.DataFrame],
+    month_key: str,
+    channel_display: str,
+) -> pd.DataFrame:
+    """Spend rows for normalized **month** × **sheet channel** (display label matches master **Channel** column)."""
+    if df is None or df.empty or not month_key:
+        return pd.DataFrame()
+    x = _mpo_prep_spend_extract_for_slice(df.copy())
+    if "month" not in x.columns:
+        return pd.DataFrame()
+    x["_mk"] = x["month"].map(_month_norm_key)
+    x["_sch"] = _pmc_sheet_channel_series(x)
+    x["_disp"] = x["_sch"].map(_market_display_from_join_key).astype(str).str.strip()
+    ch = str(channel_display).strip()
+    if ch in ("", "—", "-"):
+        return pd.DataFrame()
+    mk = str(_month_norm_key(month_key)).strip()
+    m = x["_mk"].eq(mk) & (x["_disp"].eq(ch) | x["_sch"].astype(str).str.strip().eq(ch))
+    return x.loc[m].copy()
+
+
 def _mpo_df_slice_month_market_fallback_month_only(
     df: Optional[pd.DataFrame],
     month_key: str,
@@ -6555,11 +6746,14 @@ def _mpo_source_pivot_rows(
     month_key: str,
     market_label: str,
     detail_sources: Optional[dict[str, pd.DataFrame]],
+    pivot_dimension: Literal["market", "channel"] = "market",
 ) -> list[dict[str, str]]:
     if not detail_sources:
         return []
 
     def _slice(df: Optional[pd.DataFrame]) -> pd.DataFrame:
+        if pivot_dimension == "channel":
+            return _mpo_df_slice_month_channel(df, month_key, market_label)
         return _mpo_df_slice_month_market(df, month_key, market_label)
 
     rows: list[dict[str, str]] = []
@@ -6574,6 +6768,8 @@ def _mpo_source_pivot_rows(
             {"source": "Spend worksheet", "metric": "Clicks", "value": f"{clicks:,}"},
             {"source": "Spend worksheet", "metric": "Impressions", "value": f"{impr:,}"},
         ]
+    if pivot_dimension == "channel":
+        return rows
 
     ld = _slice(detail_sources.get("leads"))
     if not ld.empty:
@@ -6761,8 +6957,12 @@ def _master_performance_table(
     section_title: Optional[str] = "Master view",
     spend_grid: Optional[pd.DataFrame] = None,
     detail_sources: Optional[dict[str, pd.DataFrame]] = None,
+    pivot_dimension: Literal["market", "channel"] = "market",
 ) -> None:
-    """Month column (label on first row per month only), Middle East subtotal, cyan input metrics, R/G/Y."""
+    """Month column (label on first row per month only), row dimension (**Market** or **Channel**), cyan metrics, R/G/Y.
+
+    ``pivot_dimension="channel"`` skips Middle East roll-up / spend-grid overlays (same spend math, channel rows only).
+    """
     df = _normalize_master_merge_frame(df)
     if not df.empty and "month" in df.columns:
         _mpl = df["month"].map(lambda x: _dashboard_month_plausible(_month_norm_key(x)))
@@ -6840,11 +7040,16 @@ def _master_performance_table(
         if c in g.columns:
             sum_map[c] = "sum"
     gm = g.groupby(["month", "Market"], as_index=False, dropna=False).agg(sum_map)
-    gm = _master_union_gm_with_spend_pivot(gm, spend_grid)
-    gm = _master_view_drop_empty_months(gm)
-    gm = _master_view_append_middle_east_first(gm)
-    gm = _overlay_spend_from_spend_grid_on_gm(gm, spend_grid)
-    gm = _master_view_refresh_middle_east_spend_row(gm)
+    row_heading = "Channel" if pivot_dimension == "channel" else "Market"
+    if pivot_dimension == "channel":
+        gm = gm.rename(columns={"Market": "Channel"})
+        gm = _master_view_drop_empty_months(gm)
+    else:
+        gm = _master_union_gm_with_spend_pivot(gm, spend_grid)
+        gm = _master_view_drop_empty_months(gm)
+        gm = _master_view_append_middle_east_first(gm)
+        gm = _overlay_spend_from_spend_grid_on_gm(gm, spend_grid)
+        gm = _master_view_refresh_middle_east_spend_row(gm)
     gm["Spend"] = gm["spend"]
     gm["CW (Inc Approved)"] = gm["cw"].astype(int)
     if "lf" in gm.columns:
@@ -6891,7 +7096,7 @@ def _master_performance_table(
 
     pvt = gm.copy()
     pvt["_month_sort_lbl"] = pvt["month"].map(_month_label_short)
-    cols = ["month", "_month_sort_lbl", "Market"] + [m for m in metrics if m in pvt.columns]
+    cols = ["month", "_month_sort_lbl", row_heading] + [m for m in metrics if m in pvt.columns]
     pvt = pvt[[c for c in cols if c in pvt.columns]]
     pvt["Month"] = ""
 
@@ -6907,7 +7112,7 @@ def _master_performance_table(
             raw_m = pvt.loc[ix[0], "month"]
             pvt.loc[ix[0], "Month"] = _month_label_short(raw_m)
     pvt = pvt.drop(columns=["month", "_month_sort_lbl"], errors="ignore")
-    out_cols = ["Month", "Market"] + [m for m in metrics if m in pvt.columns]
+    out_cols = ["Month", row_heading] + [m for m in metrics if m in pvt.columns]
     pvt = pvt[out_cols]
     # Streamlit's Arrow table path often ignores ``Styler.format`` for numeric cells — use strings for Spend.
     if "Spend" in pvt.columns:
@@ -6930,10 +7135,10 @@ def _master_performance_table(
 
     fmt_map: dict[str, Any] = {
         "Month": lambda x: "" if x == "" or (isinstance(x, float) and pd.isna(x)) else str(x),
-        "Market": lambda x: str(x) if pd.notna(x) else "—",
+        row_heading: lambda x: str(x) if pd.notna(x) else "—",
     }
     for c in pvt.columns:
-        if c in {"Month", "Market"}:
+        if c in {"Month", "Market", "Channel"}:
             continue
         fmt_map[c] = _fmt_for_metric(c)
 
@@ -7024,7 +7229,7 @@ def _master_performance_table(
         if rix is not None and col_name and 0 <= rix < len(gm) and col_name in metrics:
             row = gm.reset_index(drop=True).iloc[rix]
             month_label = _month_label_short(row.get("month")) or str(row.get("month") or "Selected period")
-            market_label = str(row.get("Market") or "Selected market")
+            market_label = str(row.get(row_heading) or row.get("Market") or row.get("Channel") or "Selected market")
             value_fn = fmt_map.get(col_name, lambda x: str(x))
             try:
                 value_text = str(value_fn(row.get(col_name)))
@@ -7052,6 +7257,7 @@ def _master_performance_table(
                         month_key=month_key,
                         market_label=market_label,
                         detail_sources=detail_sources,
+                        pivot_dimension=pivot_dimension,
                     ),
                 }
 
@@ -7866,84 +8072,6 @@ def _pmc_order_channels_df(by_ch: pd.DataFrame) -> pd.DataFrame:
     return d
 
 
-def _pmc_render_month_channel_me_table(u: pd.DataFrame, *, key_suffix: str) -> None:
-    """Per **month**: every **sheet channel** (raw ``channel`` when present, else platform / tab) with summed spend.
-
-    Frame is already ME-scoped and workbook-filtered; order matches a typical pivot (alphabetical by channel name).
-    """
-    if u.empty or "month" not in u.columns:
-        st.info("Need **month** on rows to build this grid.")
-        return
-    x = u.copy()
-    x["sheet_channel"] = _pmc_sheet_channel_series(x)
-    if "cost" not in x.columns:
-        st.info("No **cost** column — cannot sum spend.")
-        return
-    x["_mk"] = x["month"].map(_month_norm_key).astype(str).str.strip()
-    x = x.loc[x["_mk"].ne("")].copy()
-    if x.empty:
-        st.info("No plausible **month** values in scope.")
-        return
-    x["cost"] = pd.to_numeric(x["cost"], errors="coerce").fillna(0.0)
-    g = x.groupby(["_mk", "sheet_channel"], as_index=False, dropna=False)["cost"].sum().rename(columns={"cost": "Spend"})
-
-    def _month_sort_key(m: Any) -> Any:
-        try:
-            return pd.Period(str(m), freq="M")
-        except Exception:
-            return str(m)
-
-    months_sorted = sorted(g["_mk"].dropna().unique(), key=_month_sort_key, reverse=True)
-    out_rows: list[dict[str, Any]] = []
-
-    for mk in months_sorted:
-        sub = g.loc[g["_mk"] == mk].copy()
-        if sub.empty:
-            continue
-        chans = sorted(sub["sheet_channel"].astype(str).unique().tolist(), key=lambda s: (str(s).lower(), str(s)))
-        for ch in chans:
-            v = float(sub.loc[sub["sheet_channel"].astype(str) == ch, "Spend"].sum())
-            out_rows.append({"_mk": mk, "Channel": ch, "Spend": v})
-
-    if not out_rows:
-        st.info("No rows to display.")
-        return
-
-    pvt = pd.DataFrame(out_rows)
-    pvt["_ml"] = pvt["_mk"].map(_month_label_short)
-    pvt["Month"] = ""
-    for ml in sorted(pvt["_ml"].dropna().unique(), key=_month_sort_key, reverse=True):
-        ix = pvt.index[pvt["_ml"] == ml].tolist()
-        if ix:
-            raw_m = pvt.loc[ix[0], "_mk"]
-            pvt.loc[ix[0], "Month"] = _month_label_short(raw_m)
-    pvt = pvt.drop(columns=["_mk", "_ml"], errors="ignore")
-    pvt = pvt[["Month", "Channel", "Spend"]]
-    tot_spend = float(x["cost"].sum())
-    pvt = pd.concat(
-        [pvt, pd.DataFrame([{"Month": "Grand total", "Channel": "—", "Spend": tot_spend}])],
-        ignore_index=True,
-    )
-    pvt["Spend"] = pvt["Spend"].map(
-        lambda v: _format_spend_k(float(v)) if v is not None and not (isinstance(v, float) and pd.isna(v)) else "—"
-    )
-
-    fmt_map: dict[str, Any] = {
-        "Month": lambda x: "" if x == "" or (isinstance(x, float) and pd.isna(x)) else str(x),
-        "Channel": lambda x: str(x) if pd.notna(x) else "—",
-        "Spend": lambda x: x if isinstance(x, str) else (_format_spend_k(float(x)) if pd.notna(x) else "—"),
-    }
-    css_matrix = _master_view_style_css(pvt)
-    styler = pvt.style.format(fmt_map, na_rep="—")
-    for col in css_matrix.columns:
-        styler = styler.apply(
-            lambda s, c=col: css_matrix.loc[s.index, c],
-            axis=0,
-            subset=[col],
-        )
-    st.dataframe(styler, use_container_width=True, hide_index=True, key=f"{key_suffix}_pmc_month_me")
-
-
 def _pmc_by_channel_summary(u: pd.DataFrame) -> pd.DataFrame:
     g = (
         u.groupby("unified_channel", as_index=False)
@@ -8144,39 +8272,58 @@ def _pmc_render_charts(by_ch: pd.DataFrame, key_suffix: str) -> None:
 
 
 def _render_page_performance_marketing_channels(
-    df: pd.DataFrame,
+    df_loaded: pd.DataFrame,
+    df_scope: pd.DataFrame,
     start_date: date,
     end_date: date,
     key_suffix: str,
 ) -> None:
-    """Month × channel spend grid (workbook ``PMC_MONTH_GRID_SHEET_ID``) + channel charts."""
-    df_wb = _pmc_rows_workbook(df, PMC_MONTH_GRID_SHEET_ID)
-    if df_wb.empty and not df.empty:
-        st.warning(
-            f"No rows tagged for workbook `{PMC_MONTH_GRID_SHEET_ID}` — check **spreadsheet_id** on the load. "
-            "Using all filtered rows until the primary workbook is tagged."
-        )
-        df_wb = df
-    u0 = _pmc_frame_with_metrics(df_wb)
-    u_me = _pmc_filter_middle_east(u0)
-    if u_me.empty and not u0.empty:
-        st.warning(
-            "No Middle East–attributed rows — showing **all markets** in the grid. "
-            "Use **Country** filters to narrow to UAE, Saudi Arabia, etc."
-        )
-        u = u0
-    else:
-        u = u_me
-    u = _pmc_dedupe_regional_vs_country_spend(u)
+    """Same **master spend table** as Marketing performance, pivoted on **Channel** instead of **Market** (+ charts)."""
+    if df_scope.empty or "cost" not in df_scope.columns:
+        st.info("No spend rows for the selected channels and months.")
+        return
+    u = _pmc_frame_with_metrics(df_scope.copy())
+    spend_g = _spend_sheet_pivot_by_month_channel(u)
+    if spend_g.empty:
+        st.info("No spend to aggregate for this scope (check **month** and **channel** filters).")
+        return
+    m = spend_g.copy()
+    for col, dv in (
+        ("closed_won", 0),
+        ("qualified", 0),
+        ("leads", 0.0),
+        ("tcv", 0.0),
+        ("first_month_lf", 0.0),
+        ("pitching", 0),
+        ("new", 0),
+        ("working", 0),
+        ("qualifying", 0),
+        ("negotiation", 0),
+        ("commitment", 0),
+        ("closed_lost", 0),
+    ):
+        if col not in m.columns:
+            m[col] = dv
+    for col in ("clicks", "impressions"):
+        if col not in m.columns:
+            m[col] = 0
+    m = _normalize_master_merge_frame(m)
+
     st.markdown('<div class="dash-master-surface">', unsafe_allow_html=True)
-    st.markdown('<div class="looker-table-title">Spend by month &amp; channel</div>', unsafe_allow_html=True)
     st.markdown(
         f'<p class="mpo-perf-chart-title" style="margin-top:0;margin-bottom:10px;font-weight:400;">'
         f'<a href="{html.escape(ME_XRAY_SPEND_SHEET_URL)}" target="_blank" rel="noopener noreferrer">'
-        "ME X-Ray source sheet</a> — every channel from the load is listed per month (alphabetical).</p>",
+        "ME X-Ray source sheet</a> — master view columns; rows are **channels** (sheet **Channel** → **Platform** → tab).</p>",
         unsafe_allow_html=True,
     )
-    _pmc_render_month_channel_me_table(u, key_suffix=key_suffix)
+    _master_performance_table(
+        m,
+        key_suffix=f"{key_suffix}_ch_master",
+        section_title="Channel spend (master layout)",
+        spend_grid=None,
+        detail_sources={"spend": u},
+        pivot_dimension="channel",
+    )
     st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown('<div class="dash-chart-stack">', unsafe_allow_html=True)
@@ -8196,19 +8343,27 @@ def render_page_channels(df_loaded: pd.DataFrame, start_date: date, end_date: da
     _dashboard_tab_page_header("Inbound channels" if inbound else "Spend by channel")
     if inbound:
         st.caption("Spend & efficiency by source — filters below apply to this tab.")
+        df, _ = _apply_sheet_filters(df_date, key_suffix=key_suffix, filters_in_row=True)
     else:
         st.caption(
-            f"Reporting window **{start_date:%d %b %Y}** → **{end_date:%d %b %Y}** (rows matched by **month** when spend is "
-            f"month-tagged, else by **date**). Grid uses workbook `{PMC_MONTH_GRID_SHEET_ID}` (when rows carry **spreadsheet_id**). "
-            "Figures are **GCC / Middle East** spend only; the table lists **all channel names from the sheet** per month (raw "
-            "**Channel** column when set, else **Platform**, else tab label). If the sheet has both country lines and a **Middle East** "
-            "regional row for the same month, the regional line is dropped when country spend is present so totals are not doubled. "
-            f"Source workbook: [ME X-Ray spend]({ME_XRAY_SPEND_SHEET_URL}) · Scorecards: **Marketing performance**."
+            f"Reporting window **{start_date:%d %b %Y}** → **{end_date:%d %b %Y}**. Spend uses the same **ME X-Ray workbook + "
+            f"Supermetrics** merge as **Marketing performance**; **Data scope** below filters by **channel** and **month** "
+            f"(instead of market). GCC / Middle East slice with regional dedupe when both country and **Middle East** rows exist. "
+            f"Source: [ME X-Ray spend]({ME_XRAY_SPEND_SHEET_URL})."
         )
-    df, _ = _apply_sheet_filters(df_date, key_suffix=key_suffix, filters_in_row=True)
-
-    if not inbound:
-        _render_page_performance_marketing_channels(df, start_date, end_date, key_suffix)
+        spend_base = _mpo_spend_sheet_for_channel_master(df_loaded, start_date, end_date)
+        if spend_base.empty:
+            st.warning(
+                "Could not resolve spend rows from the primary workbook — check sheet load and **spreadsheet_id** tagging."
+            )
+            return
+        df_scope, _ = _apply_channel_tab_data_scope(
+            spend_base,
+            key_suffix=key_suffix,
+            reporting_start=start_date,
+            reporting_end=end_date,
+        )
+        _render_page_performance_marketing_channels(df_loaded, df_scope, start_date, end_date, key_suffix)
         return
 
     group_col = "utm_source"
