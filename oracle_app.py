@@ -26,7 +26,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-15-sync-from-github-main"
+DASHBOARD_BUILD = "2026-04-15-filter-strip-layout"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -4453,17 +4453,14 @@ def _apply_marketing_performance_filters(
             "</div>",
             unsafe_allow_html=True,
         )
-        st.markdown('<div class="mpo-top-toolbar">', unsafe_allow_html=True)
-        # Capped column widths (CSS) keep multiselects from stretching full-bleed — less dead space.
-        _c_mk, _c_div, _c_mo = st.columns([1.12, 0.02, 0.88], gap="small")
+        st.markdown('<div class="mpo-top-toolbar mpo-scope-two-cols">', unsafe_allow_html=True)
+        _c_mk, _c_mo = st.columns(2, gap="medium")
         with _c_mk:
             st.multiselect(
                 "Markets & countries",
                 [_MPO_ALL_GEO_SENTINEL] + market_opts,
                 key=_k_mpo_market,
             )
-        with _c_div:
-            st.markdown('<div class="mpo-toolbar-divider" aria-hidden="true"></div>', unsafe_allow_html=True)
         with _c_mo:
             st.multiselect(
                 "Month",
@@ -4539,16 +4536,14 @@ def _apply_channel_tab_data_scope(
             "</div>",
             unsafe_allow_html=True,
         )
-        st.markdown('<div class="mpo-top-toolbar">', unsafe_allow_html=True)
-        _c_ch, _c_div, _c_mo = st.columns([1.18, 0.02, 0.82], gap="small")
+        st.markdown('<div class="mpo-top-toolbar mpo-scope-two-cols">', unsafe_allow_html=True)
+        _c_ch, _c_mo = st.columns(2, gap="medium")
         with _c_ch:
             st.multiselect(
                 "Channels",
                 [_MPO_ALL_CHANNELS_SENTINEL] + ch_opts,
                 key=_k_pmc_ch,
             )
-        with _c_div:
-            st.markdown('<div class="mpo-toolbar-divider" aria-hidden="true"></div>', unsafe_allow_html=True)
         with _c_mo:
             st.multiselect(
                 "Month",
@@ -8987,10 +8982,13 @@ def render_page_market_mom(
         "</div>",
         unsafe_allow_html=True,
     )
-    st.markdown('<div class="mpo-top-toolbar mom-toolbar-stack">', unsafe_allow_html=True)
+    st.markdown('<div class="mom-toolbar-stack">', unsafe_allow_html=True)
+    st.markdown('<div class="mpo-top-toolbar mpo-scope-two-cols">', unsafe_allow_html=True)
     df, _ = _apply_sheet_filters(df_date, key_suffix=key_suffix, filters_in_row=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown('<div class="mpo-top-toolbar mom-focus-row">', unsafe_allow_html=True)
     mk_opts = sorted([x for x in df_date["country"].dropna().unique().tolist() if x and x != "Unknown"])
-    ctl1, ctl2 = st.columns((1.05, 1.35), gap="small")
+    ctl1, ctl2 = st.columns((1, 1.15), gap="medium")
     with ctl1:
         pick = st.selectbox(
             "Focus market",
@@ -9004,6 +9002,7 @@ def render_page_market_mom(
             f"<strong>{end_date:%d %b %Y}</strong> · Filters here apply to every chart and the operating table.</p>",
             unsafe_allow_html=True,
         )
+    st.markdown("</div>", unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -10068,11 +10067,14 @@ def main() -> None:
     .mom-scope-panel.mpo-data-surface {
         margin-top: 0 !important;
     }
-    .mom-toolbar-stack.mpo-top-toolbar {
-        max-width: min(960px, 100%);
+    .mom-toolbar-stack {
+        display: flex;
+        flex-direction: column;
+        gap: 0.35rem;
+        width: 100%;
     }
-    .mom-toolbar-stack [data-testid="stVerticalBlock"] {
-        gap: 0.28rem !important;
+    .mom-focus-row [data-testid="stHorizontalBlock"] {
+        align-items: center !important;
     }
     p.mom-reporting-hint {
         margin: 0.1rem 0 0 0;
@@ -10426,21 +10428,26 @@ def main() -> None:
             0 1px 0 rgba(255, 255, 255, 0.9) inset,
             0 8px 24px -18px rgba(15, 23, 42, 0.2);
     }
-    /* Scope strip: tighter padding + capped control width (less empty space inside inputs). */
+    /* Scope strip: padding; two equal columns; full-width inputs; hairline between filters. */
     .mpo-data-surface.mpo-scope-filters {
         margin: 0 0 4px 0 !important;
         padding: 6px 10px 6px !important;
     }
-    .mpo-scope-filters .mpo-top-toolbar {
-        max-width: min(920px, 100%);
+    .mpo-scope-filters [data-testid="column"] {
+        min-width: 0 !important;
     }
-    .mpo-scope-filters .mpo-top-toolbar [data-testid="column"] .stMultiSelect [data-baseweb="select"],
-    .mpo-scope-filters .mpo-top-toolbar [data-testid="column"] .stMultiSelect > div[data-baseweb="select"] {
-        max-width: min(440px, 100%) !important;
+    .mpo-scope-filters [data-testid="stHorizontalBlock"] {
+        width: 100%;
     }
-    .mpo-scope-filters .mpo-top-toolbar [data-testid="column"] .stSelectbox [data-baseweb="select"],
-    .mpo-scope-filters .mpo-top-toolbar [data-testid="column"] .stSelectbox > div {
-        max-width: min(400px, 100%) !important;
+    /* Filters fill their column (markdown wrappers don’t wrap Streamlit widgets in the DOM). */
+    .stApp [data-testid="stMultiSelect"] > div[data-baseweb="select"],
+    .stApp .stMultiSelect > div[data-baseweb="select"] {
+        width: 100% !important;
+        max-width: none !important;
+    }
+    .stApp .stSelectbox > div[data-baseweb="select"] {
+        width: 100% !important;
+        max-width: none !important;
     }
     /* Tight vertical rhythm between “Data scope” and multiselects */
     .mpo-scope-filters .mpo-top-toolbar [data-testid="stVerticalBlock"] > div [data-testid="stElementContainer"] {
