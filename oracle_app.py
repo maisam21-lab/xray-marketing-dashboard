@@ -26,7 +26,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
 # If the hosted app shows an older string, GitHub ``main`` (or the branch Streamlit uses) does not have your latest push yet.
-DASHBOARD_BUILD = "2026-04-14-scorecards-tighter"
+DASHBOARD_BUILD = "2026-04-14-t3b3-caption-removed"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -7847,15 +7847,6 @@ def _render_t3b3_quarter_sections(
 ) -> None:
     """T3B3 quarterly tables (offset quarter definition + CPCW:LF goal scopes)."""
     st.markdown('<div class="looker-table-title">T3B3 view</div>', unsafe_allow_html=True)
-    st.caption(
-        "**T3B3 quarters** use a **one-month negative offset** from calendar quarters (trailing-close buffer): "
-        "**Q1** = Dec–Feb, **Q2** = Mar–May, **Q3** = Jun–Aug, **Q4** = Sep–Nov. "
-        "December belongs to **Q1 of the next T3B3 label year** (e.g. Dec-2025 + Jan/Feb-2026 → ``2026 - T3B3 Q1``). "
-        "**Middle East** uses the master regional roll-up. **SQL%** = Qualified ÷ Total Leads. "
-        "Grand total = non–ME markets plus one Middle East total per quarter. "
-        "**CPCW:LF goals** are tracked separately for **UAE**, **Saudi Arabia**, and **Kuwait + Bahrain** combined "
-        "(same table as Looker — no double-count in the main ME total)."
-    )
     detail = _t3b3_detail_rows_from_gm(gm)
     kb = _t3b3_kw_bh_rows_from_gm(gm)
     cpcw_goals = (
