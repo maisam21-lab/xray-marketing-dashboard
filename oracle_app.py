@@ -25,7 +25,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
-DASHBOARD_BUILD = "2026-04-14-me-xray-source-of-truth"
+DASHBOARD_BUILD = "2026-04-14-t3b3-qualified-sql-pct"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 ME_XRAY_SPEND_SHEET_URL = f"https://docs.google.com/spreadsheets/d/{DEFAULT_SHEET_ID}/edit"
@@ -7025,7 +7025,8 @@ def _t3b3_view_style_css(df: pd.DataFrame) -> pd.DataFrame:
     qcol = "T3B3 Quarter"
     css = pd.DataFrame("", index=df.index, columns=df.columns)
     mkt_lower = df["Market"].astype(str).str.strip().str.lower()
-    is_region = mkt_lower.eq("middle east (subtotal)")
+    me_lbl = _MIDDLE_EAST_REGION_LABEL.strip().lower()
+    is_region = mkt_lower.eq(me_lbl) | mkt_lower.eq("middle east (subtotal)")
     is_grand = df[qcol].astype(str).str.strip().str.lower().eq("grand total")
     is_subtotal = is_region | is_grand
     non_me = ~is_region & ~is_grand
@@ -7062,6 +7063,13 @@ def _t3b3_view_style_css(df: pd.DataFrame) -> pd.DataFrame:
             ct_lo, ct_hi = float(s_ct.quantile(0.33)), float(s_ct.quantile(0.66))
         else:
             ct_lo, ct_hi = 5.0, 12.0
+    sql_lo = sql_hi = 20.0
+    if "SQL%" in df.columns:
+        s_sq = pd.to_numeric(df.loc[non_me, "SQL%"], errors="coerce").dropna()
+        if len(s_sq) >= 2:
+            sql_lo, sql_hi = float(s_sq.quantile(0.33)), float(s_sq.quantile(0.66))
+        else:
+            sql_lo, sql_hi = 15.0, 30.0
 
     cyan_cols = {"Spend", "CW (Inc Approved)", "CPCW", "1st Month LF", "Actual TCV"}
     for i in df.index:
@@ -7086,9 +7094,14 @@ def _t3b3_view_style_css(df: pd.DataFrame) -> pd.DataFrame:
             elif col in cyan_cols:
                 base = (cyan + sub_bold) if sub else cyan
                 css.loc[i, col] = _cell(base)
-            elif col == "Total Leads":
+            elif col in {"Total Leads", "Qualified"}:
                 base = (white + sub_bold) if sub else white
                 css.loc[i, col] = _cell(base)
+            elif col == "SQL%":
+                if sub:
+                    css.loc[i, col] = _cell(ratio_sub)
+                else:
+                    css.loc[i, col] = _rgy(df.loc[i, col], sql_lo, sql_hi)
             elif col == "CPCW:LF":
                 if sub:
                     css.loc[i, col] = _cell(ratio_sub)
@@ -7238,6 +7251,7 @@ def _t3b3_add_derived_from_sums(row: dict[str, Any]) -> None:
     lf = float(row.get("lf", 0) or 0)
     tcv = float(row.get("tcv", 0) or 0)
     leads = float(row.get("leads", 0) or 0)
+    qual = float(row.get("qualified", 0) or 0)
     row["CPCW"] = (sp / cw) if cw > 0 else float("nan")
     row["CPCW:LF"] = (sp / lf) if lf > 0 else float("nan")
     row["Cost/TCV%"] = (sp / tcv * 100) if tcv > 0 else float("nan")
@@ -7246,11 +7260,13 @@ def _t3b3_add_derived_from_sums(row: dict[str, Any]) -> None:
     row["1st Month LF"] = lf
     row["Actual TCV"] = tcv
     row["Total Leads"] = int(round(leads))
+    row["Qualified"] = int(round(qual))
+    row["SQL%"] = (qual / leads * 100) if leads > 0 else float("nan")
 
 
 def _t3b3_metric_dict_sum_frame(
     frame: pd.DataFrame,
-    cols: tuple[str, ...] = ("spend", "cw", "tcv", "lf", "leads"),
+    cols: tuple[str, ...] = ("spend", "cw", "tcv", "lf", "leads", "qualified"),
 ) -> dict[str, float]:
     out: dict[str, float] = {}
     for c in cols:
@@ -7266,6 +7282,7 @@ def _t3b3_dict_has_activity(d: dict[str, float]) -> bool:
         d.get("spend", 0) > 1e-6
         or d.get("cw", 0) > 0
         or d.get("leads", 0) > 0
+        or d.get("qualified", 0) > 0
         or d.get("tcv", 0) > 1e-6
         or d.get("lf", 0) > 1e-6
     )
@@ -7285,7 +7302,7 @@ def _t3b3_me_master_row_sum_for_quarter(gm: pd.DataFrame, yq: tuple[int, int]) -
 
 
 def _t3b3_detail_rows_from_gm(gm: pd.DataFrame) -> pd.DataFrame:
-    """Quarter × market grid; **Middle East (Subtotal)** uses the master **Middle East** row when present (fixes missing spend)."""
+    """Quarter × market grid; **Middle East** roll-up matches master; includes **Qualified** / **SQL%**."""
     cols = [
         "T3B3 Quarter",
         "Market",
@@ -7297,6 +7314,8 @@ def _t3b3_detail_rows_from_gm(gm: pd.DataFrame) -> pd.DataFrame:
         "CPCW:LF",
         "Cost/TCV%",
         "Total Leads",
+        "Qualified",
+        "SQL%",
     ]
     if gm.empty or "month" not in gm.columns or "Market" not in gm.columns:
         return pd.DataFrame(columns=cols)
@@ -7308,7 +7327,7 @@ def _t3b3_detail_rows_from_gm(gm: pd.DataFrame) -> pd.DataFrame:
     reg_lower = _REGION_SUBTOTAL_NAMES_LOWER
     src = gm_q.loc[~gm_q["Market"].astype(str).str.strip().str.lower().isin(reg_lower)].copy()
 
-    for c in ("spend", "cw", "tcv", "lf", "leads"):
+    for c in ("spend", "cw", "tcv", "lf", "leads", "qualified"):
         if c not in src.columns:
             src[c] = 0.0
         src[c] = pd.to_numeric(src[c], errors="coerce").fillna(0.0)
@@ -7319,6 +7338,7 @@ def _t3b3_detail_rows_from_gm(gm: pd.DataFrame) -> pd.DataFrame:
         tcv=("tcv", "sum"),
         lf=("lf", "sum"),
         leads=("leads", "sum"),
+        qualified=("qualified", "sum"),
     )
 
     priority = ["Bahrain", "Kuwait", "Saudi Arabia", "UAE"]
@@ -7338,7 +7358,7 @@ def _t3b3_detail_rows_from_gm(gm: pd.DataFrame) -> pd.DataFrame:
     if not quarters:
         return pd.DataFrame(columns=cols)
     out_rows: list[dict[str, Any]] = []
-    grand = {"spend": 0.0, "cw": 0.0, "tcv": 0.0, "lf": 0.0, "leads": 0.0}
+    grand = {"spend": 0.0, "cw": 0.0, "tcv": 0.0, "lf": 0.0, "leads": 0.0, "qualified": 0.0}
 
     for yq in quarters:
         sub = gq[gq["_yq"] == yq].copy()
@@ -7364,6 +7384,7 @@ def _t3b3_detail_rows_from_gm(gm: pd.DataFrame) -> pd.DataFrame:
             lf = float(r["lf"])
             tcv_v = float(r["tcv"])
             ld = float(r["leads"])
+            qf = float(r["qualified"])
             row: dict[str, Any] = {
                 "T3B3 Quarter": qlab,
                 "Market": mkt,
@@ -7372,12 +7393,13 @@ def _t3b3_detail_rows_from_gm(gm: pd.DataFrame) -> pd.DataFrame:
                 "lf": lf,
                 "tcv": tcv_v,
                 "leads": ld,
+                "qualified": qf,
             }
             _t3b3_add_derived_from_sums(row)
             out_rows.append(row)
 
         if _t3b3_dict_has_activity(me_tot):
-            row_me: dict[str, Any] = {"T3B3 Quarter": qlab, "Market": "Middle East (Subtotal)"}
+            row_me: dict[str, Any] = {"T3B3 Quarter": qlab, "Market": _MIDDLE_EAST_REGION_LABEL}
             row_me.update(me_tot)
             _t3b3_add_derived_from_sums(row_me)
             out_rows.append(row_me)
@@ -7405,12 +7427,14 @@ def _t3b3_kw_bh_rows_from_gm(gm: pd.DataFrame) -> pd.DataFrame:
         "CPCW:LF",
         "Cost/TCV%",
         "Total Leads",
+        "Qualified",
+        "SQL%",
     ]
     if src.empty:
         return pd.DataFrame(columns=cols)
     src["_yq"] = src["month"].map(_t3b3_quarter_tuple_from_month)
     src = src[src["_yq"].notna()].copy()
-    for c in ("spend", "cw", "tcv", "lf", "leads"):
+    for c in ("spend", "cw", "tcv", "lf", "leads", "qualified"):
         if c not in src.columns:
             src[c] = 0.0
         src[c] = pd.to_numeric(src[c], errors="coerce").fillna(0.0)
@@ -7420,6 +7444,7 @@ def _t3b3_kw_bh_rows_from_gm(gm: pd.DataFrame) -> pd.DataFrame:
         tcv=("tcv", "sum"),
         lf=("lf", "sum"),
         leads=("leads", "sum"),
+        qualified=("qualified", "sum"),
     )
     if gq.empty:
         return pd.DataFrame(columns=cols)
@@ -7434,6 +7459,7 @@ def _t3b3_kw_bh_rows_from_gm(gm: pd.DataFrame) -> pd.DataFrame:
             "tcv": float(r["tcv"]),
             "lf": float(r["lf"]),
             "leads": float(r["leads"]),
+            "qualified": float(r["qualified"]),
         }
         _t3b3_add_derived_from_sums(row)
         rows.append(row)
@@ -7448,9 +7474,9 @@ def _render_t3b3_quarter_sections(
     """T3B3 quarterly tables on Marketing performance (calendar quarters)."""
     st.markdown('<div class="looker-table-title">T3B3 view</div>', unsafe_allow_html=True)
     st.caption(
-        "Calendar-year quarters (Q1=Jan–Mar … Q4=Oct–Dec). **Middle East (Subtotal)** uses the same **Middle East** "
-        "roll-up row as the master table when the sheet puts regional totals there (so spend is not dropped). "
-        "Grand total = non–Middle East markets plus one Middle East total per quarter. Ratios from summed inputs."
+        "Calendar-year quarters (Q1=Jan–Mar … Q4=Oct–Dec). **Middle East** uses the same roll-up row as the master "
+        "table when regional totals sit there. **SQL%** = Qualified ÷ Total Leads. Grand total = non–ME markets plus "
+        "one Middle East total per quarter."
     )
     detail = _t3b3_detail_rows_from_gm(gm)
     kb = _t3b3_kw_bh_rows_from_gm(gm)
@@ -7467,8 +7493,10 @@ def _render_t3b3_quarter_sections(
                 return lambda x: f"{float(x):,.2f}" if pd.notna(x) else "—"
             if metric_name == "Cost/TCV%":
                 return lambda x: f"{float(x):.2f}%" if pd.notna(x) else "—"
-            if metric_name in {"CW (Inc Approved)", "Total Leads"}:
+            if metric_name in {"CW (Inc Approved)", "Total Leads", "Qualified"}:
                 return lambda x: f"{int(round(float(x))):,}" if pd.notna(x) else "—"
+            if metric_name == "SQL%":
+                return lambda x: f"{float(x):.2f}%" if pd.notna(x) else "—"
             return lambda x: f"{x}" if pd.notna(x) else "—"
 
         fmt_map: dict[str, Any] = {
