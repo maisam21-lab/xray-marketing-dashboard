@@ -26,7 +26,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
 # If the hosted app shows an older string, GitHub ``main`` (or the branch Streamlit uses) does not have your latest push yet.
-DASHBOARD_BUILD = "2026-04-14-push-oracle-app-to-streamlit-remote"
+DASHBOARD_BUILD = "2026-04-14-master-month-beside-me"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 ME_XRAY_SPEND_SHEET_URL = f"https://docs.google.com/spreadsheets/d/{DEFAULT_SHEET_ID}/edit"
@@ -4038,8 +4038,17 @@ def _master_view_append_middle_east_first(gm: pd.DataFrame) -> pd.DataFrame:
     return pd.concat(parts, ignore_index=True)
 
 
-def _master_view_style_css(df: pd.DataFrame) -> pd.DataFrame:
-    """Looker-like fills: cyan inputs, white leads, R/G/Y ratios; bold Middle East region row."""
+def _master_view_style_css(
+    df: pd.DataFrame,
+    *,
+    month_block_first: Optional[list[bool]] = None,
+    month_block_last: Optional[list[bool]] = None,
+) -> pd.DataFrame:
+    """Looker-like fills: cyan inputs, white leads, R/G/Y ratios; bold Middle East region row.
+
+    When ``month`` labels sit on **Middle East** only, pass ``month_block_first`` / ``month_block_last`` (one entry per
+    row in display order) so thick borders still separate calendar months.
+    """
     _align_c = "text-align: center; vertical-align: middle;"
     _align_l = "text-align: left; vertical-align: middle; padding-left: 8px;"
 
@@ -4101,7 +4110,15 @@ def _master_view_style_css(df: pd.DataFrame) -> pd.DataFrame:
     n = len(idx_list)
     month_first: list[bool] = []
     month_last: list[bool] = []
-    if "Month" in df.columns:
+    if (
+        month_block_first is not None
+        and month_block_last is not None
+        and len(month_block_first) == n
+        and len(month_block_last) == n
+    ):
+        month_first = list(month_block_first)
+        month_last = list(month_block_last)
+    elif "Month" in df.columns:
         for i in idx_list:
             v = df.loc[i, "Month"]
             month_first.append(bool(pd.notna(v) and str(v).strip() != ""))
@@ -7950,11 +7967,6 @@ def _render_master_view_pivot_from_gm(
         except Exception:
             return str(m)
 
-    for ml in sorted(pvt["_month_sort_lbl"].dropna().unique(), key=_month_label_sort_key, reverse=True):
-        ix = pvt.index[pvt["_month_sort_lbl"] == ml].tolist()
-        if ix:
-            raw_m = pvt.loc[ix[0], "month"]
-            pvt.loc[ix[0], "Month"] = _month_label_short(raw_m)
     # Enforce **newest calendar month first** (Spend-by-channel + master); **Middle East** subtotal last within each month.
     pvt["_sort_ts"] = pvt["month"].map(_mpo_month_ts_for_sort)
     _me_low = _MIDDLE_EAST_REGION_LABEL.strip().lower()
@@ -7965,6 +7977,29 @@ def _render_master_view_pivot_from_gm(
         kind="mergesort",
         na_position="last",
     )
+    # Month label in the **Month** column only on the **Middle East** row (same idea as T3B3 quarter beside ME).
+    for ml in sorted(pvt["_month_sort_lbl"].dropna().unique(), key=_month_label_sort_key, reverse=True):
+        ix = pvt.index[pvt["_month_sort_lbl"] == ml].tolist()
+        if not ix:
+            continue
+        raw_m = pvt.loc[ix[0], "month"]
+        lbl = _month_label_short(raw_m)
+        me_idx: Optional[Any] = None
+        for i in ix:
+            rn = str(pvt.loc[i, row_heading]).strip().lower()
+            if rn == _me_low or rn == "middle east (subtotal)":
+                me_idx = i
+                break
+        if me_idx is not None:
+            pvt.loc[me_idx, "Month"] = lbl
+        else:
+            pvt.loc[ix[0], "Month"] = lbl
+    idx_order = list(pvt.index)
+    _mk = [_month_norm_key(pvt.loc[i, "month"]) for i in idx_order]
+    month_block_first = [pos == 0 or _mk[pos] != _mk[pos - 1] for pos in range(len(idx_order))]
+    month_block_last = [
+        pos == len(idx_order) - 1 or _mk[pos] != _mk[pos + 1] for pos in range(len(idx_order))
+    ]
     pvt = pvt.drop(columns=["_sort_ts", "_me_last", "month", "_month_sort_lbl"], errors="ignore")
     out_cols = ["Month", row_heading] + [m for m in metrics if m in pvt.columns]
     pvt = pvt[out_cols]
@@ -8001,7 +8036,11 @@ def _render_master_view_pivot_from_gm(
             continue
         fmt_map[c] = _fmt_for_metric(c)
 
-    css_matrix = _master_view_style_css(pvt)
+    css_matrix = _master_view_style_css(
+        pvt,
+        month_block_first=month_block_first,
+        month_block_last=month_block_last,
+    )
     styler = pvt.style.format(fmt_map, na_rep="—")
     for col in css_matrix.columns:
         styler = styler.apply(
