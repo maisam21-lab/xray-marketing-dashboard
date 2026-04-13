@@ -7293,15 +7293,15 @@ def _t3b3_detail_rows_from_gm(gm: pd.DataFrame) -> pd.DataFrame:
         "Cost/TCV%",
         "Total Leads",
     ]
+    if gm.empty or "month" not in gm.columns or "Market" not in gm.columns:
+        return pd.DataFrame(columns=cols)
+    gm_q = gm.copy()
+    gm_q["_yq"] = gm_q["month"].map(_t3b3_quarter_tuple_from_month)
+    gm_q = gm_q[gm_q["_yq"].notna()].copy()
+    if gm_q.empty:
+        return pd.DataFrame(columns=cols)
     reg_lower = _REGION_SUBTOTAL_NAMES_LOWER
-    src = gm.loc[~gm["Market"].astype(str).str.strip().str.lower().isin(reg_lower)].copy()
-    if src.empty:
-        return pd.DataFrame(columns=cols)
-
-    src["_yq"] = src["month"].map(_t3b3_quarter_tuple_from_month)
-    src = src[src["_yq"].notna()].copy()
-    if src.empty:
-        return pd.DataFrame(columns=cols)
+    src = gm_q.loc[~gm_q["Market"].astype(str).str.strip().str.lower().isin(reg_lower)].copy()
 
     for c in ("spend", "cw", "tcv", "lf", "leads"):
         if c not in src.columns:
@@ -7324,7 +7324,14 @@ def _t3b3_detail_rows_from_gm(gm: pd.DataFrame) -> pd.DataFrame:
         except ValueError:
             return (50, str(mkt))
 
-    quarters = sorted({t for t in gq["_yq"].tolist() if t}, key=lambda t: (t[0], t[1]), reverse=True)
+    q_candidates = sorted({t for t in gm_q["_yq"].tolist() if t}, key=lambda t: (t[0], t[1]), reverse=True)
+    quarters: list[tuple[int, int]] = []
+    for yq in q_candidates:
+        probe = _t3b3_metric_dict_sum_frame(gm_q.loc[gm_q["_yq"] == yq])
+        if _t3b3_dict_has_activity(probe):
+            quarters.append(yq)
+    if not quarters:
+        return pd.DataFrame(columns=cols)
     out_rows: list[dict[str, Any]] = []
     grand = {"spend": 0.0, "cw": 0.0, "tcv": 0.0, "lf": 0.0, "leads": 0.0}
 
