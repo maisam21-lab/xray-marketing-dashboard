@@ -26,7 +26,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
 # If the hosted app shows an older string, GitHub ``main`` (or the branch Streamlit uses) does not have your latest push yet.
-DASHBOARD_BUILD = "2026-04-13-tight-scope-spacing"
+DASHBOARD_BUILD = "2026-04-14-friendly-loading-copy"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -9794,9 +9794,9 @@ def render_main_dashboard(
     _fp = _secret_fingerprint(_service_account_from_streamlit_secrets())
     _load_banner = st.empty()
     _load_banner.info(
-        "⏳ **Loading Google Sheets** — the app reads **every tab** in the workbook first; **1–2 minutes** on a large file is normal. "
-        "If Streamlit shows `load_first_matching_worksheet_normalized`, that step is still pulling named tabs (Spend / Leads / …). "
-        "**Stuck forever?** Share the spreadsheet with the service account from Secrets and reboot the app."
+        "⏳ **Loading your data** — We’re pulling the latest numbers from Google Sheets. "
+        "Big workbooks can take **about 1–2 minutes**; that’s normal. "
+        "If it never finishes, check that the spreadsheet is shared with the **service account** listed in your app **Secrets**, then refresh the page or restart the app."
     )
     try:
         # Source of truth is the entire spreadsheet; aggregate data across tabs.
