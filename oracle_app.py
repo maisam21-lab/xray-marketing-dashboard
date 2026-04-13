@@ -26,7 +26,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
 # If the hosted app shows an older string, GitHub ``main`` (or the branch Streamlit uses) does not have your latest push yet.
-DASHBOARD_BUILD = "2026-04-14-perf-charts-compact-row"
+DASHBOARD_BUILD = "2026-04-14-kpi-dense-charts-equal"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 ME_XRAY_SPEND_SHEET_URL = f"https://docs.google.com/spreadsheets/d/{DEFAULT_SHEET_ID}/edit"
@@ -6162,10 +6162,11 @@ def _render_mpo_trend_charts(
     leads_sliced = _mpo_slice_by_dashboard_ref(leads_df, df_ref_for_scope)
     post_sliced = _mpo_slice_by_dashboard_ref(post_df_kpi, df_ref_for_scope)
 
-    # Slightly shorter than before so the twin cards use less vertical space; Trends a bit wider than Breakdown.
+    # Same pixel height + margins for both charts so the two bordered cards match; equal column width.
     _chart_h = 470
+    _perf_plot_margin = dict(l=10, r=10, t=26, b=54)
 
-    col_left, col_right = st.columns([1.55, 1.0], gap="small")
+    col_left, col_right = st.columns([1, 1], gap="small")
 
     with col_left:
         with st.container(border=True):
@@ -6294,7 +6295,7 @@ def _render_mpo_trend_charts(
                     ),
                     hovermode="x unified",
                     hoverlabel=dict(font_size=12),
-                    margin=dict(l=10, r=10, t=28, b=56),
+                    margin={**_perf_plot_margin},
                 )
                 fig_t.update_annotations(font=dict(size=13, color="#0f172a"))
                 mom_c = _mpo_mom_pct_str(s_cost)
@@ -6370,8 +6371,8 @@ def _render_mpo_trend_charts(
                 )
                 fig_d.update_layout(
                     showlegend=True,
-                    legend=dict(orientation="h", yanchor="top", y=-0.18, xanchor="center", x=0.5, font=dict(size=11)),
-                    margin=dict(l=8, r=8, t=2, b=52),
+                    legend=dict(orientation="h", yanchor="top", y=-0.14, xanchor="center", x=0.5, font=dict(size=11)),
+                    margin={**_perf_plot_margin},
                     height=_chart_h,
                     paper_bgcolor="white",
                     hoverlabel=dict(font_size=12),
@@ -10031,8 +10032,8 @@ def main() -> None:
     }
     .mpo-kpi-shell {
         margin-top: 2px;
-        padding: 12px 10px 8px;
-        border-radius: 18px;
+        padding: 8px 8px 6px;
+        border-radius: 16px;
         background: linear-gradient(165deg, rgba(255, 255, 255, 0.65) 0%, rgba(248, 250, 252, 0.4) 100%);
         border: 1px solid rgba(15, 23, 42, 0.06);
         box-shadow: 0 16px 48px -28px rgba(15, 23, 42, 0.14);
@@ -10185,18 +10186,18 @@ def main() -> None:
     }
     /* Marketing funnel scorecards (Looker-style deltas + sub-metrics) */
     .kpi-funnel-wrap { display: flex; flex-direction: column; gap: 4px; }
-    .kpi-funnel-section--traffic-hero { margin-bottom: 10px; }
+    .kpi-funnel-section--traffic-hero { margin-bottom: 8px; }
     .kpi-funnel-grid--hero-3 {
         display: grid;
         grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 14px;
-        margin: 4px 0 4px 0;
+        gap: 10px;
+        margin: 2px 0 4px 0;
     }
     @media (max-width: 900px) {
         .kpi-funnel-grid--hero-3 { grid-template-columns: 1fr; }
     }
     .kpi-funnel-card--hero {
-        min-height: 128px;
+        min-height: 118px;
         background: linear-gradient(165deg, #ffffff 0%, #f8fafc 100%) !important;
         border: 1px solid #e8edf2 !important;
     }
@@ -10268,8 +10269,11 @@ def main() -> None:
     .kpi-funnel-grid {
         display: grid;
         grid-template-columns: repeat(4, minmax(0, 1fr));
-        gap: 14px;
-        margin: 4px 0 8px 0;
+        gap: 10px;
+        margin: 2px 0 6px 0;
+    }
+    @media (min-width: 1500px) {
+        .kpi-funnel-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
     }
     @media (max-width: 1200px) {
         .kpi-funnel-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -10279,9 +10283,9 @@ def main() -> None:
     }
     .kpi-funnel-card {
         position: relative;
-        border-radius: 16px;
-        padding: 14px 14px 12px;
-        min-height: 122px;
+        border-radius: 14px;
+        padding: 11px 12px 10px;
+        min-height: 112px;
         transition: box-shadow 0.25s ease, transform 0.25s ease, border-color 0.25s ease;
         animation: kpi-funnel-enter 0.55s cubic-bezier(0.22, 1, 0.36, 1) backwards;
         background: linear-gradient(165deg, #ffffff 0%, #f8fafc 100%);
