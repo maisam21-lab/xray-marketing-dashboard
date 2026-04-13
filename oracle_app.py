@@ -26,7 +26,10 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
 # If the hosted app shows an older string, GitHub ``main`` (or the branch Streamlit uses) does not have your latest push yet.
-DASHBOARD_BUILD = "2026-04-14-perf-single-frame-full-plot"
+DASHBOARD_BUILD = "2026-04-14-hide-cpcw-goals-captions"
+
+# T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
+_SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 ME_XRAY_SPEND_SHEET_URL = f"https://docs.google.com/spreadsheets/d/{DEFAULT_SHEET_ID}/edit"
@@ -6172,6 +6175,11 @@ def _render_mpo_trend_charts(
 
         with col_left:
             st.markdown('<p class="mpo-perf-chart-title">Trends</p>', unsafe_allow_html=True)
+            # Spacer matches Breakdown segmented-control height so both Plotly charts start on the same baseline.
+            st.markdown(
+                '<div class="mpo-perf-chart-control-slot" aria-hidden="true"></div>',
+                unsafe_allow_html=True,
+            )
 
             if g.empty or len(g["Month"]) == 0:
                 st.caption("Not enough monthly data in scope — widen the date range or relax filters.")
@@ -6184,14 +6192,6 @@ def _render_mpo_trend_charts(
                 s_cost = pd.to_numeric(g["cost"], errors="coerce").fillna(0.0)
                 s_clk = pd.to_numeric(g["clicks"], errors="coerce").fillna(0.0)
                 s_imp = pd.to_numeric(g["impressions"], errors="coerce").fillna(0.0)
-                n_mo = int(len(xs))
-                mom_c = _mpo_mom_pct_str(s_cost)
-                mom_k = _mpo_mom_pct_str(s_clk)
-                mom_i = _mpo_mom_pct_str(s_imp)
-                st.caption(
-                    f"{n_mo} months · Cost Σ {_mpo_format_trend_value('cost', float(s_cost.sum()))} (MoM {mom_c}) · "
-                    f"Clicks Σ {float(s_clk.sum()):,.0f} ({mom_k}) · Impr Σ {float(s_imp.sum()):,.0f} ({mom_i})"
-                )
                 fig_t = make_subplots(
                     rows=3,
                     cols=1,
@@ -6362,17 +6362,11 @@ def _render_mpo_trend_charts(
                         )
                     ]
                 )
-                _brk_label = (
-                    f"{len(labels)} platforms · Σ {total_v:,.0f} {basis_note.lower()}"
-                    if brk == "Traffic"
-                    else f"{len(labels)} segments · Σ {total_v:,.0f}"
-                )
                 _center_sub = (
                     basis_note
                     if brk == "Traffic"
                     else ("Qualified vs not" if brk == "Leads Conversion" else "Stages in scope")
                 )
-                st.caption(_brk_label)
                 fig_d.update_layout(
                     showlegend=True,
                     legend=dict(
@@ -7864,7 +7858,9 @@ def _render_t3b3_quarter_sections(
     )
     detail = _t3b3_detail_rows_from_gm(gm)
     kb = _t3b3_kw_bh_rows_from_gm(gm)
-    cpcw_goals = _t3b3_goal_cpcw_lf_rows_from_gm(gm)
+    cpcw_goals = (
+        _t3b3_goal_cpcw_lf_rows_from_gm(gm) if _SHOW_T3B3_CPCW_LF_GOALS_TABLE else pd.DataFrame()
+    )
 
     def _fmt_t3b3(pvt: pd.DataFrame) -> Any:
         def _fmt_for_metric(metric_name: str) -> Any:
@@ -7920,7 +7916,7 @@ def _render_t3b3_quarter_sections(
         st.markdown("##### Kuwait + Bahrain")
         st.dataframe(_fmt_t3b3(kb), width="stretch", hide_index=True, key=f"{key_suffix}_t3b3_kb")
 
-    if not cpcw_goals.empty:
+    if _SHOW_T3B3_CPCW_LF_GOALS_TABLE and not cpcw_goals.empty:
         st.markdown("##### CPCW:LF — goal markets (UAE · Saudi · Kuwait + Bahrain)")
         st.dataframe(_fmt_t3b3(cpcw_goals), width="stretch", hide_index=True, key=f"{key_suffix}_t3b3_cpcw_goals")
 
@@ -10072,6 +10068,11 @@ def main() -> None:
         font-weight: 800;
         letter-spacing: -0.02em;
         color: #0f172a;
+        min-height: 1.75rem;
+    }
+    .mpo-perf-chart-control-slot {
+        min-height: 44px;
+        margin: 0 0 4px 0;
     }
     .streamlit-expanderHeader {
         border-radius: 10px !important;
