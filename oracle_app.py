@@ -26,7 +26,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
 # If the hosted app shows an older string, GitHub ``main`` (or the branch Streamlit uses) does not have your latest push yet.
-DASHBOARD_BUILD = "2026-04-14-perf-charts-tidy-v2"
+DASHBOARD_BUILD = "2026-04-14-perf-single-frame-full-plot"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 ME_XRAY_SPEND_SHEET_URL = f"https://docs.google.com/spreadsheets/d/{DEFAULT_SHEET_ID}/edit"
@@ -6146,7 +6146,7 @@ def _render_mpo_trend_charts(
     post_df_kpi: pd.DataFrame,
     df_ref_for_scope: pd.DataFrame,
 ) -> None:
-    """Two symmetric cards: monthly **Cost + Clicks + Impressions** (stacked trends) and breakdown donut (view switcher)."""
+    """One bordered panel with two columns: **Cost + Clicks + Impressions** trends and breakdown donut (same chart height)."""
     _ = start_date, end_date  # window implied by filtered monthly series / scope
     st.markdown(
         '<div class="mpo-perf-charts-wrap">'
@@ -6162,15 +6162,15 @@ def _render_mpo_trend_charts(
     leads_sliced = _mpo_slice_by_dashboard_ref(leads_df, df_ref_for_scope)
     post_sliced = _mpo_slice_by_dashboard_ref(post_df_kpi, df_ref_for_scope)
 
-    # Same pixel height + margins for both charts; equal column width. Shared left margin fits y-axis titles.
-    _chart_h = 488
-    _perf_plot_margin = dict(l=56, r=12, t=18, b=52)
-    _perf_plot_margin_donut = dict(l=16, r=16, t=12, b=48)
+    # One outer frame avoids mismatched twin bordered heights. Generous margins so legends/labels are not clipped.
+    _chart_h = 452
+    _perf_plot_margin = dict(l=54, r=14, t=48, b=56)
+    _perf_plot_margin_donut = dict(l=8, r=8, t=8, b=72)
 
-    col_left, col_right = st.columns([1, 1], gap="small")
+    with st.container(border=True):
+        col_left, col_right = st.columns([1, 1], gap="medium")
 
-    with col_left:
-        with st.container(border=True):
+        with col_left:
             st.markdown('<p class="mpo-perf-chart-title">Trends</p>', unsafe_allow_html=True)
 
             if g.empty or len(g["Month"]) == 0:
@@ -6300,8 +6300,9 @@ def _render_mpo_trend_charts(
                     showlegend=True,
                     legend=dict(
                         orientation="h",
-                        yanchor="top",
-                        y=-0.04,
+                        yanchor="bottom",
+                        y=1.02,
+                        yref="paper",
                         xanchor="center",
                         x=0.5,
                         font=dict(size=10),
@@ -6314,8 +6315,7 @@ def _render_mpo_trend_charts(
                     st.caption("Clicks/impressions are zero in this slice — check Supermetrics / filters.")
                 st.plotly_chart(fig_t, width="stretch", key=f"{key_suffix}_pl_mpo_perf_trends")
 
-    with col_right:
-        with st.container(border=True):
+        with col_right:
             st.markdown('<p class="mpo-perf-chart-title">Breakdown</p>', unsafe_allow_html=True)
             brk = _mpo_segmented_or_radio(
                 "breakdown",
@@ -6350,7 +6350,7 @@ def _render_mpo_trend_charts(
                             labels=labels,
                             values=values,
                             hole=0.48,
-                            domain=dict(x=[0.02, 0.98], y=[0.02, 0.90]),
+                            domain=dict(x=[0.04, 0.96], y=[0.06, 0.88]),
                             marker=dict(colors=cols, line=dict(color="#fff", width=1.5)),
                             textinfo="label+percent",
                             textposition="auto",
@@ -6372,20 +6372,14 @@ def _render_mpo_trend_charts(
                     if brk == "Traffic"
                     else ("Qualified vs not" if brk == "Leads Conversion" else "Stages in scope")
                 )
+                st.caption(_brk_label)
                 fig_d.update_layout(
-                    title=dict(
-                        text=_brk_label,
-                        x=0.5,
-                        xanchor="center",
-                        y=0.995,
-                        yanchor="top",
-                        font=dict(size=12, color="#334155"),
-                    ),
                     showlegend=True,
                     legend=dict(
                         orientation="h",
                         yanchor="top",
-                        y=-0.08,
+                        y=-0.02,
+                        yref="paper",
                         xanchor="center",
                         x=0.5,
                         font=dict(size=10),
@@ -6400,11 +6394,11 @@ def _render_mpo_trend_charts(
                             xref="paper",
                             yref="paper",
                             x=0.5,
-                            y=0.48,
+                            y=0.47,
                             xanchor="center",
                             yanchor="middle",
                             showarrow=False,
-                            font=dict(size=18, color="#0f172a"),
+                            font=dict(size=17, color="#0f172a"),
                         ),
                     ],
                 )
