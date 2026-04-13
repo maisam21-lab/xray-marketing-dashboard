@@ -25,7 +25,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
-DASHBOARD_BUILD = "2026-04-13-t3b3-no-future-empty-quarters"
+DASHBOARD_BUILD = "2026-04-13-me-subtotal-below-master-coalesce-cw"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 ME_XRAY_SPEND_SHEET_URL = f"https://docs.google.com/spreadsheets/d/{DEFAULT_SHEET_ID}/edit"
@@ -1064,6 +1064,22 @@ def _normalize_master_merge_frame(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _master_df_coalesce_month_country(master_df: pd.DataFrame) -> pd.DataFrame:
+    """Sum duplicate rows that share the same canonical ``month`` × ``country`` (outer-merge key drift across tabs)."""
+    if master_df.empty or "month" not in master_df.columns or "country" not in master_df.columns:
+        return master_df
+    m = master_df.copy()
+    m["month"] = m["month"].map(lambda x: _month_norm_key(x) if pd.notna(x) else "")
+    m = m.loc[m["month"].astype(str).str.strip().ne("")]
+    if m.empty:
+        return master_df
+    try:
+        out = m.groupby(["month", "country"], as_index=False, dropna=False).sum(numeric_only=True)
+    except TypeError:
+        out = m.groupby(["month", "country"], as_index=False, dropna=False).sum()
+    return out
+
+
 # Reject Unix-epoch / Excel-zero style dates (shows as **Jan 1970** in the grid).
 _MIN_DASHBOARD_PERIOD = pd.Period("2000-01", freq="M")
 
@@ -1629,8 +1645,8 @@ _REGION_SUBTOTAL_NAMES = frozenset(
     {_MIDDLE_EAST_REGION_LABEL, "middle east", "mena", "mea", "gcc", "gulf"}
 )
 _REGION_SUBTOTAL_NAMES_LOWER = frozenset(str(x).strip().lower() for x in _REGION_SUBTOTAL_NAMES)
-# Sheet-level metrics to move from regional aggregate rows onto ME country rows when detail spend is missing.
-_REGIONAL_ROLL_METRICS = frozenset({"spend", "clicks", "impressions"})
+# Sheet-level metrics to move from regional aggregate rows onto ME country rows when country-level sums are zero.
+_REGIONAL_ROLL_METRICS = frozenset({"spend", "clicks", "impressions", "cw", "tcv", "lf"})
 
 
 def _tab_subset_by_patterns(frame: pd.DataFrame, tab_keywords: list[str]) -> pd.DataFrame:
@@ -3896,7 +3912,7 @@ def _master_view_drop_empty_months(gm: pd.DataFrame) -> pd.DataFrame:
 
 
 def _master_view_append_middle_east_first(gm: pd.DataFrame) -> pd.DataFrame:
-    """Per month: **Middle East** aggregate row first (ME countries only), then markets by spend (high → low)."""
+    """Per month: country markets (by spend high → low), then **Middle East** subtotal row last."""
     if gm.empty:
         return gm
     parts: list[pd.DataFrame] = []
@@ -3972,6 +3988,9 @@ def _master_view_append_middle_east_first(gm: pd.DataFrame) -> pd.DataFrame:
         me_slice = country_block[me_mask] if not country_block.empty else country_block.iloc[0:0]
 
         blocks: list[pd.DataFrame] = []
+        if not country_block.empty:
+            blocks.append(country_block)
+
         if not me_slice.empty:
             # Middle East row: spend = regional/sheet total for the month when countries have no spend; else sum of countries.
             row: dict[str, Any] = {"month": month, "Market": _MIDDLE_EAST_REGION_LABEL}
@@ -4001,9 +4020,6 @@ def _master_view_append_middle_east_first(gm: pd.DataFrame) -> pd.DataFrame:
                     row[c] = reg_totals.get(c, 0.0)
             mena_df = pd.DataFrame([row])[gm.columns]
             blocks.append(mena_df)
-
-        if not country_block.empty:
-            blocks.append(country_block)
         if blocks:
             parts.append(pd.concat(blocks, ignore_index=True))
     if not parts:
@@ -7664,15 +7680,17 @@ def _render_master_view_pivot_from_gm(
         if ix:
             raw_m = pvt.loc[ix[0], "month"]
             pvt.loc[ix[0], "Month"] = _month_label_short(raw_m)
-    # Enforce **newest calendar month first** (Spend-by-channel + master); groupby order is not guaranteed stable.
+    # Enforce **newest calendar month first** (Spend-by-channel + master); **Middle East** subtotal last within each month.
     pvt["_sort_ts"] = pvt["month"].map(_mpo_month_ts_for_sort)
+    _me_low = _MIDDLE_EAST_REGION_LABEL.strip().lower()
+    pvt["_me_last"] = pvt[row_heading].map(lambda x: 1 if str(x).strip().lower() == _me_low else 0)
     pvt = pvt.sort_values(
-        ["_sort_ts", row_heading],
-        ascending=[False, True],
+        ["_sort_ts", "_me_last", row_heading],
+        ascending=[False, True, True],
         kind="mergesort",
         na_position="last",
     )
-    pvt = pvt.drop(columns=["_sort_ts", "month", "_month_sort_lbl"], errors="ignore")
+    pvt = pvt.drop(columns=["_sort_ts", "_me_last", "month", "_month_sort_lbl"], errors="ignore")
     out_cols = ["Month", row_heading] + [m for m in metrics if m in pvt.columns]
     pvt = pvt[out_cols]
     cell_metric_allowlist = list(metrics)
@@ -8296,6 +8314,7 @@ def render_page_marketing_performance(
     master_df = master_df.merge(post_g, on=["month", "country"], how="outer")
     master_df = master_df.merge(cw_g, on=["month", "country"], how="outer")
     master_df = master_df.fillna(0)
+    master_df = _master_df_coalesce_month_country(master_df)
     if "cw_tab_cost" in master_df.columns:
         _c_sp = pd.to_numeric(master_df["cost"], errors="coerce").fillna(0)
         _c_cw = pd.to_numeric(master_df["cw_tab_cost"], errors="coerce").fillna(0)
