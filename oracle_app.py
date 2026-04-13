@@ -26,7 +26,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-15-no-data-scope-ribbon"
+DASHBOARD_BUILD = "2026-04-15-mom-spend-parity"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -4484,6 +4484,110 @@ def _apply_marketing_performance_filters(
     return df, df.copy()
 
 
+def _mpo_dataframe_from_session_filters(
+    df_date: pd.DataFrame,
+    *,
+    key_suffix: str = "mpo",
+) -> pd.DataFrame:
+    """Apply **Markets & countries** + **Month** session state (same rules as the Marketing performance tab) without rendering widgets."""
+    df = df_date.copy()
+    selected_markets = st.session_state.get(f"{key_suffix}_market", [_MPO_ALL_GEO_SENTINEL])
+    selected_months = st.session_state.get(f"{key_suffix}_month", [_MPO_ALL_MONTHS_SENTINEL])
+    _geo_picks = _mpo_market_scope_countries_only(selected_markets)
+    if _geo_picks:
+        df = df[df["country"].isin(_geo_picks)]
+    if not _mpo_month_multiselect_is_all(selected_months):
+        _mo_pick = _mpo_month_multiselect_explicit(selected_months)
+        if _mo_pick and "month" in df.columns:
+            allow_k = {str(_month_norm_key(m)) for m in _mo_pick if _month_norm_key(m)}
+            if allow_k:
+                km = df["month"].map(_month_norm_key)
+                df = df[km.isin(allow_k) | (km == "")]
+    return df
+
+
+def _mpo_load_spend_sheet_for_kpis(
+    df_loaded: pd.DataFrame,
+    df_date: pd.DataFrame,
+    start_date: date,
+    end_date: date,
+) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str, str]:
+    """Blend paid-media spend pools, optional gid fallbacks, merge Supermetrics clicks/impressions — same path as Marketing performance KPIs.
+
+    Returns ``(spend_sheet_for_kpis, spend_sheet_master, spend_pool_full, sheet_id, fingerprint)``.
+    """
+    sheet_id, _ = _workbook_id_resolution()
+    _fp_mpo = _secret_fingerprint(_service_account_from_streamlit_secrets())
+    df_spend_scope_primary = _rows_for_workbook_id(df_date, sheet_id)
+    spend_blended_primary = _mpo_blend_paid_media_for_master_df(df_spend_scope_primary)
+    spend_blended_all = _mpo_blend_paid_media_for_master_df(df_date)
+    sum_primary = _normalized_spend_cost_sum(spend_blended_primary)
+    sum_all = _normalized_spend_cost_sum(spend_blended_all)
+    spend_blended = spend_blended_all.copy() if sum_all > sum_primary else spend_blended_primary.copy()
+    if spend_blended.empty and not df_loaded.empty:
+        _dl_primary = _rows_for_workbook_id(df_loaded, sheet_id)
+        spend_blended_primary = _mpo_blend_paid_media_for_master_df(_dl_primary) if not _dl_primary.empty else pd.DataFrame()
+        spend_blended_all = _mpo_blend_paid_media_for_master_df(df_loaded)
+        sum_primary = _normalized_spend_cost_sum(spend_blended_primary)
+        sum_all = _normalized_spend_cost_sum(spend_blended_all)
+        spend_blended = spend_blended_all.copy() if sum_all > sum_primary else spend_blended_primary.copy()
+        if not spend_blended.empty:
+            spend_blended = _filter_by_date_range(spend_blended, start_date, end_date)
+    if not spend_blended.empty:
+        spend_sheet_master = _filter_spend_for_dashboard(spend_blended, start_date, end_date)
+        if spend_sheet_master.empty:
+            spend_sheet_master = spend_blended.copy()
+        spend_pool_full = spend_blended.copy()
+    else:
+        spend_gid0_wks = load_spend_gid0_normalized(sheet_id, _fp_mpo)
+        spend_pool_full = spend_gid0_wks.copy() if not spend_gid0_wks.empty else pd.DataFrame()
+        spend_sheet_master = _filter_spend_for_dashboard(spend_gid0_wks, start_date, end_date)
+        if spend_sheet_master.empty and "worksheet_gid" in df_loaded.columns:
+            _g0 = df_loaded.loc[pd.to_numeric(df_loaded["worksheet_gid"], errors="coerce") == 0].copy()
+            if "spreadsheet_id" in _g0.columns:
+                _g0 = _g0.loc[_g0["spreadsheet_id"].astype(str) == str(sheet_id)]
+            if not _g0.empty:
+                spend_sheet_master = _filter_spend_for_dashboard(_g0, start_date, end_date)
+        if _normalized_spend_cost_sum(spend_sheet_master) == 0.0:
+            alt_spend = load_first_matching_worksheet_normalized(
+                sheet_id,
+                (r"^spend$", r"raw\s*spend", r"sum\s*spend"),
+                _fp_mpo,
+            )
+            if not alt_spend.empty and _normalized_spend_cost_sum(alt_spend) > _normalized_spend_cost_sum(spend_pool_full):
+                spend_pool_full = alt_spend.copy()
+            alt_f = _filter_spend_for_dashboard(alt_spend, start_date, end_date)
+            if _normalized_spend_cost_sum(alt_f) > 0.0:
+                spend_sheet_master = alt_f
+        if _normalized_spend_cost_sum(spend_sheet_master) == 0.0:
+            fb_spend = load_spend_worksheet_fallback(sheet_id, _fp_mpo)
+            if not fb_spend.empty and _normalized_spend_cost_sum(fb_spend) > _normalized_spend_cost_sum(spend_pool_full):
+                spend_pool_full = fb_spend.copy()
+            fb_f = _filter_spend_for_dashboard(fb_spend, start_date, end_date)
+            if _normalized_spend_cost_sum(fb_f) > 0.0:
+                spend_sheet_master = fb_f
+
+        if _normalized_spend_cost_sum(spend_pool_full) < 1e-9:
+            _rec_loaded = _best_spend_pool_from_df_loaded(df_loaded, primary_sheet_id=sheet_id)
+            if not _rec_loaded.empty:
+                spend_pool_full = _rec_loaded.copy()
+            else:
+                _scan_best = _scan_workbook_for_best_spend_frame(sheet_id, _fp_mpo)
+                if not _scan_best.empty:
+                    spend_pool_full = _scan_best.copy()
+            if _normalized_spend_cost_sum(spend_pool_full) > 1e-9 and _normalized_spend_cost_sum(spend_sheet_master) < 1e-9:
+                spend_sheet_master = _filter_spend_for_dashboard(spend_pool_full, start_date, end_date)
+                if _normalized_spend_cost_sum(spend_sheet_master) < 1e-9:
+                    spend_sheet_master = spend_pool_full.copy()
+
+    spend_sheet_for_kpis = _mpo_merge_pool_clicks_impressions_onto_spend(
+        spend_sheet_master,
+        df_loaded,
+        primary_sheet_id=sheet_id,
+    )
+    return spend_sheet_for_kpis, spend_sheet_master, spend_pool_full, sheet_id, _fp_mpo
+
+
 def _apply_channel_tab_data_scope(
     spend_df: pd.DataFrame,
     *,
@@ -8376,76 +8480,11 @@ def render_page_marketing_performance(
         reporting_end=end_date,
     )
 
-    sheet_id, _ = _workbook_id_resolution()
-    _fp_mpo = _secret_fingerprint(_service_account_from_streamlit_secrets())
-    # Spend from paid-media rows: compare primary-workbook scope vs combined stacked scope,
-    # then keep the richer pool so T3B3/master do not miss spend parked on stacked workbook rows.
-    df_spend_scope_primary = _rows_for_workbook_id(df_date, sheet_id)
-    spend_blended_primary = _mpo_blend_paid_media_for_master_df(df_spend_scope_primary)
-    spend_blended_all = _mpo_blend_paid_media_for_master_df(df_date)
-    sum_primary = _normalized_spend_cost_sum(spend_blended_primary)
-    sum_all = _normalized_spend_cost_sum(spend_blended_all)
-    spend_blended = spend_blended_all.copy() if sum_all > sum_primary else spend_blended_primary.copy()
-    if spend_blended.empty and not df_loaded.empty:
-        _dl_primary = _rows_for_workbook_id(df_loaded, sheet_id)
-        spend_blended_primary = _mpo_blend_paid_media_for_master_df(_dl_primary) if not _dl_primary.empty else pd.DataFrame()
-        spend_blended_all = _mpo_blend_paid_media_for_master_df(df_loaded)
-        sum_primary = _normalized_spend_cost_sum(spend_blended_primary)
-        sum_all = _normalized_spend_cost_sum(spend_blended_all)
-        spend_blended = spend_blended_all.copy() if sum_all > sum_primary else spend_blended_primary.copy()
-        if not spend_blended.empty:
-            spend_blended = _filter_by_date_range(spend_blended, start_date, end_date)
-    if not spend_blended.empty:
-        spend_sheet_master = _filter_spend_for_dashboard(spend_blended, start_date, end_date)
-        if spend_sheet_master.empty:
-            spend_sheet_master = spend_blended.copy()
-        spend_pool_full = spend_blended.copy()
-    else:
-        spend_gid0_wks = load_spend_gid0_normalized(sheet_id, _fp_mpo)
-        spend_pool_full = spend_gid0_wks.copy() if not spend_gid0_wks.empty else pd.DataFrame()
-        spend_sheet_master = _filter_spend_for_dashboard(spend_gid0_wks, start_date, end_date)
-        if spend_sheet_master.empty and "worksheet_gid" in df_loaded.columns:
-            _g0 = df_loaded.loc[pd.to_numeric(df_loaded["worksheet_gid"], errors="coerce") == 0].copy()
-            if "spreadsheet_id" in _g0.columns:
-                _g0 = _g0.loc[_g0["spreadsheet_id"].astype(str) == str(sheet_id)]
-            if not _g0.empty:
-                spend_sheet_master = _filter_spend_for_dashboard(_g0, start_date, end_date)
-        if _normalized_spend_cost_sum(spend_sheet_master) == 0.0:
-            alt_spend = load_first_matching_worksheet_normalized(
-                sheet_id,
-                (r"^spend$", r"raw\s*spend", r"sum\s*spend"),
-                _fp_mpo,
-            )
-            if not alt_spend.empty and _normalized_spend_cost_sum(alt_spend) > _normalized_spend_cost_sum(spend_pool_full):
-                spend_pool_full = alt_spend.copy()
-            alt_f = _filter_spend_for_dashboard(alt_spend, start_date, end_date)
-            if _normalized_spend_cost_sum(alt_f) > 0.0:
-                spend_sheet_master = alt_f
-        if _normalized_spend_cost_sum(spend_sheet_master) == 0.0:
-            fb_spend = load_spend_worksheet_fallback(sheet_id, _fp_mpo)
-            if not fb_spend.empty and _normalized_spend_cost_sum(fb_spend) > _normalized_spend_cost_sum(spend_pool_full):
-                spend_pool_full = fb_spend.copy()
-            fb_f = _filter_spend_for_dashboard(fb_spend, start_date, end_date)
-            if _normalized_spend_cost_sum(fb_f) > 0.0:
-                spend_sheet_master = fb_f
-
-        if _normalized_spend_cost_sum(spend_pool_full) < 1e-9:
-            _rec_loaded = _best_spend_pool_from_df_loaded(df_loaded, primary_sheet_id=sheet_id)
-            if not _rec_loaded.empty:
-                spend_pool_full = _rec_loaded.copy()
-            else:
-                _scan_best = _scan_workbook_for_best_spend_frame(sheet_id, _fp_mpo)
-                if not _scan_best.empty:
-                    spend_pool_full = _scan_best.copy()
-            if _normalized_spend_cost_sum(spend_pool_full) > 1e-9 and _normalized_spend_cost_sum(spend_sheet_master) < 1e-9:
-                spend_sheet_master = _filter_spend_for_dashboard(spend_pool_full, start_date, end_date)
-                if _normalized_spend_cost_sum(spend_sheet_master) < 1e-9:
-                    spend_sheet_master = spend_pool_full.copy()
-
-    spend_sheet_for_kpis = _mpo_merge_pool_clicks_impressions_onto_spend(
-        spend_sheet_master,
+    spend_sheet_for_kpis, spend_sheet_master, spend_pool_full, sheet_id, _fp_mpo = _mpo_load_spend_sheet_for_kpis(
         df_loaded,
-        primary_sheet_id=sheet_id,
+        df_date,
+        start_date,
+        end_date,
     )
     spend_df = _spend_slice_for_dashboard_filters(spend_sheet_for_kpis, df)
 
@@ -8886,8 +8925,12 @@ def render_page_marketing_performance(
     )
 
 
-def _mom_monthly_series(df: pd.DataFrame) -> pd.DataFrame:
-    """Month-level aggregates for Market MoM charts (spend, funnel counts, rates)."""
+def _mom_monthly_series(df: pd.DataFrame, spend_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+    """Month-level aggregates for Market MoM charts (spend, funnel counts, rates).
+
+    When ``spend_df`` is set (sliced paid-media spend, same path as Marketing performance), monthly **spend**
+    uses ``_mpo_spend_activity_for_month`` so totals match the main tab; otherwise spend comes from ``df['cost']``.
+    """
     if df.empty or "month" not in df.columns:
         return pd.DataFrame()
     d = df.copy()
@@ -8895,23 +8938,20 @@ def _mom_monthly_series(df: pd.DataFrame) -> pd.DataFrame:
         d["closed_won"] = 0
     if "qualified" not in d.columns:
         d["qualified"] = 0
-    if "cost" in d.columns:
-        monthly = (
-            d.groupby("month", as_index=False)
-            .agg(
-                cw=("closed_won", "sum"),
-                qualified=("qualified", "sum"),
-                spend=("cost", "sum"),
-            )
-            .sort_values("month")
+    monthly = (
+        d.groupby("month", as_index=False)
+        .agg(cw=("closed_won", "sum"), qualified=("qualified", "sum"))
+        .sort_values("month")
+    )
+    if spend_df is not None and not spend_df.empty and "cost" in spend_df.columns:
+        monthly["spend"] = monthly["month"].map(
+            lambda m: float(_mpo_spend_activity_for_month(spend_df, str(_month_norm_key(m)))[0])
         )
+    elif "cost" in d.columns:
+        _sp = d.groupby("month", as_index=False).agg(spend=("cost", "sum"))
+        monthly = monthly.merge(_sp, on="month", how="left")
         monthly["spend"] = pd.to_numeric(monthly["spend"], errors="coerce").fillna(0.0)
     else:
-        monthly = (
-            d.groupby("month", as_index=False)
-            .agg(cw=("closed_won", "sum"), qualified=("qualified", "sum"))
-            .sort_values("month")
-        )
         monthly["spend"] = 0.0
     monthly["cw"] = pd.to_numeric(monthly["cw"], errors="coerce").fillna(0).astype(int)
     monthly["qualified"] = pd.to_numeric(monthly["qualified"], errors="coerce").fillna(0.0)
@@ -8961,6 +9001,15 @@ def render_page_market_mom(
         unsafe_allow_html=True,
     )
 
+    df_mpo = _mpo_dataframe_from_session_filters(df_date, key_suffix="mpo")
+    spend_sheet_for_kpis, _, _, _, _ = _mpo_load_spend_sheet_for_kpis(
+        df_loaded,
+        df_date,
+        start_date,
+        end_date,
+    )
+    spend_df_mpo = _spend_slice_for_dashboard_filters(spend_sheet_for_kpis, df_mpo)
+
     df, _ = _apply_sheet_filters(df_date, key_suffix=key_suffix, filters_in_row=True)
     mk_opts = sorted([x for x in df_date["country"].dropna().unique().tolist() if x and x != "Unknown"])
     ctl1, ctl2 = st.columns((1, 1.15), gap="medium", vertical_alignment="center")
@@ -8988,7 +9037,24 @@ def render_page_market_mom(
     st.markdown('<div class="mom-page-wrap">', unsafe_allow_html=True)
 
     scope_lbl = pick if pick != "All markets" else "All markets (portfolio)"
-    total_spend = float(pd.to_numeric(df["cost"], errors="coerce").fillna(0).sum()) if "cost" in df.columns else 0.0
+    _hk_mom = _mpo_headline_month_keys_for_scope(
+        pd.DataFrame(),
+        df_mpo,
+        "mpo",
+        reporting_start=start_date,
+        reporting_end=end_date,
+    )
+    if not _hk_mom:
+        _fb_m = _mpo_month_keys_sorted_master(df_mpo)
+        _hk_mom = _fb_m[-1:] if _fb_m else []
+    if _hk_mom:
+        total_spend = float(sum(_mpo_spend_activity_for_month(spend_df_mpo, mk)[0] for mk in _hk_mom))
+    else:
+        total_spend = (
+            float(pd.to_numeric(spend_df_mpo["cost"], errors="coerce").fillna(0).sum())
+            if (not spend_df_mpo.empty and "cost" in spend_df_mpo.columns)
+            else 0.0
+        )
     total_cw = int(pd.to_numeric(df["closed_won"], errors="coerce").fillna(0).sum()) if "closed_won" in df.columns else 0
     total_leads = _lead_rows_count(df)
     total_qual = int(pd.to_numeric(df["qualified"], errors="coerce").fillna(0).sum()) if "qualified" in df.columns else 0
@@ -9007,8 +9073,12 @@ def render_page_market_mom(
         ),
         unsafe_allow_html=True,
     )
+    st.caption(
+        "Total spend and paid spend by month use the **same spend source** as **Marketing performance**, "
+        "with **Markets & countries** and **Month** from that tab (sidebar dates still bound the load)."
+    )
 
-    monthly = _mom_monthly_series(df)
+    monthly = _mom_monthly_series(df, spend_df=spend_df_mpo)
     if monthly.empty:
         st.info("No calendar months in this slice — check filters and month columns.")
         _master_performance_table(df, key_suffix=f"{key_suffix}_mom", section_title="Month × market detail")
@@ -9123,7 +9193,10 @@ def render_page_market_mom(
         st.markdown('<div class="dash-chart-stack">', unsafe_allow_html=True)
         with st.container(border=True):
             st.markdown('<div class="looker-table-title" style="margin-top:0;">Unit economics (estimated)</div>', unsafe_allow_html=True)
-            st.caption("CPL and CPSQL from blended spend in this slice — use for directional efficiency, not GAAP.")
+            st.caption(
+                "CPL and CPSQL use the same paid-media spend as Marketing performance (per month above); "
+                "lead and qualified counts stay on this tab’s slice — directional only, not GAAP."
+            )
             fig_ue = go.Figure()
             fig_ue.add_trace(
                 go.Scatter(
