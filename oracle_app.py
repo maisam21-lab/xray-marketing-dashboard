@@ -7899,15 +7899,23 @@ def render_page_marketing_performance(
 
     sheet_id, _ = _workbook_id_resolution()
     _fp_mpo = _secret_fingerprint(_service_account_from_streamlit_secrets())
-    # **Spend** = ME X-Ray workbook only. **Clicks / impressions** merged later from Supermetrics (see merge helper).
-    df_spend_scope = _rows_for_workbook_id(df_date, sheet_id)
-    spend_blended = _mpo_blend_paid_media_for_master_df(df_spend_scope)
+    # Spend from paid-media rows: compare primary-workbook scope vs combined stacked scope,
+    # then keep the richer pool so T3B3/master do not miss spend parked on stacked workbook rows.
+    df_spend_scope_primary = _rows_for_workbook_id(df_date, sheet_id)
+    spend_blended_primary = _mpo_blend_paid_media_for_master_df(df_spend_scope_primary)
+    spend_blended_all = _mpo_blend_paid_media_for_master_df(df_date)
+    sum_primary = _normalized_spend_cost_sum(spend_blended_primary)
+    sum_all = _normalized_spend_cost_sum(spend_blended_all)
+    spend_blended = spend_blended_all.copy() if sum_all > sum_primary else spend_blended_primary.copy()
     if spend_blended.empty and not df_loaded.empty:
-        _dl = _rows_for_workbook_id(df_loaded, sheet_id)
-        if not _dl.empty:
-            spend_blended = _mpo_blend_paid_media_for_master_df(_dl)
-            if not spend_blended.empty:
-                spend_blended = _filter_by_date_range(spend_blended, start_date, end_date)
+        _dl_primary = _rows_for_workbook_id(df_loaded, sheet_id)
+        spend_blended_primary = _mpo_blend_paid_media_for_master_df(_dl_primary) if not _dl_primary.empty else pd.DataFrame()
+        spend_blended_all = _mpo_blend_paid_media_for_master_df(df_loaded)
+        sum_primary = _normalized_spend_cost_sum(spend_blended_primary)
+        sum_all = _normalized_spend_cost_sum(spend_blended_all)
+        spend_blended = spend_blended_all.copy() if sum_all > sum_primary else spend_blended_primary.copy()
+        if not spend_blended.empty:
+            spend_blended = _filter_by_date_range(spend_blended, start_date, end_date)
     if not spend_blended.empty:
         spend_sheet_master = _filter_spend_for_dashboard(spend_blended, start_date, end_date)
         if spend_sheet_master.empty:
