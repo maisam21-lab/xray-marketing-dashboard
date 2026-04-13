@@ -25,7 +25,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
-DASHBOARD_BUILD = "2026-04-13-me-subtotal-below-master-coalesce-cw"
+DASHBOARD_BUILD = "2026-04-13-t3b3-offset-quarters-cpcw-lf-goals"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 ME_XRAY_SPEND_SHEET_URL = f"https://docs.google.com/spreadsheets/d/{DEFAULT_SHEET_ID}/edit"
@@ -7075,21 +7075,121 @@ def _render_mpo_master_metric_detail_card(
 
 
 def _t3b3_quarter_tuple_from_month(m: Any) -> Optional[tuple[int, int]]:
-    """Calendar-year quarter (Q1=Jan–Mar … Q4=Oct–Dec) for T3B3 labelling."""
+    """T3B3 quarter with **one-month negative offset** from calendar quarters (trailing-close buffer).
+
+    **Q1** = Dec, Jan, Feb **Q2** = Mar, Apr, May **Q3** = Jun, Jul, Aug **Q4** = Sep, Oct, Nov
+
+    The label **year** is the calendar year that owns **Jan–Nov**; **December** maps to **Q1 of the following
+    T3B3 year** (e.g. Dec-2025 → ``(2026, 1)`` with Jan-2026 and Feb-2026).
+    """
     k = _month_norm_key(m)
     if not k:
         return None
     try:
         per = pd.Period(k, freq="M")
-        q = (int(per.month) - 1) // 3 + 1
-        return (int(per.year), q)
+        y, mo = int(per.year), int(per.month)
     except Exception:
         return None
+    if mo == 12:
+        return (y + 1, 1)
+    if mo in (1, 2):
+        return (y, 1)
+    if mo in (3, 4, 5):
+        return (y, 2)
+    if mo in (6, 7, 8):
+        return (y, 3)
+    if mo in (9, 10, 11):
+        return (y, 4)
+    return None
 
 
 def _t3b3_quarter_label_from_tuple(yq: tuple[int, int]) -> str:
     y, q = yq
     return f"{y} - T3B3 Q{q}"
+
+
+def _t3b3_goal_cpcw_lf_rows_from_gm(gm: pd.DataFrame) -> pd.DataFrame:
+    """CPCW:LF **goal** lines: (1) UAE, (2) Saudi Arabia, (3) Kuwait + Bahrain combined — same T3B3 quarters."""
+    cols = [
+        "T3B3 Quarter",
+        "CPCW:LF goal scope",
+        "Spend",
+        "CW (Inc Approved)",
+        "CPCW",
+        "1st Month LF",
+        "Actual TCV",
+        "CPCW:LF",
+        "Cost/TCV%",
+        "Total Leads",
+        "Qualified",
+        "SQL%",
+    ]
+    if gm.empty or "month" not in gm.columns or "Market" not in gm.columns:
+        return pd.DataFrame(columns=cols)
+    reg_lower = _REGION_SUBTOTAL_NAMES_LOWER
+    src = gm.loc[~gm["Market"].astype(str).str.strip().str.lower().isin(reg_lower)].copy()
+    if src.empty:
+        return pd.DataFrame(columns=cols)
+    src = src.copy()
+    src["_jk"] = src["Market"].map(lambda m: _country_join_key(str(m)))
+    src["_yq"] = src["month"].map(_t3b3_quarter_tuple_from_month)
+    src = src[src["_yq"].notna()].copy()
+    for c in ("spend", "cw", "tcv", "lf", "leads", "qualified"):
+        if c not in src.columns:
+            src[c] = 0.0
+        src[c] = pd.to_numeric(src[c], errors="coerce").fillna(0.0)
+
+    yq_list = sorted(
+        {t for t in src["_yq"].dropna().unique().tolist() if t},
+        key=lambda t: (int(t[0]), int(t[1])),
+        reverse=True,
+    )
+    rows_out: list[dict[str, Any]] = []
+    for yq in yq_list:
+        sub = src.loc[src["_yq"] == yq]
+        if sub.empty:
+            continue
+        qlab = _t3b3_quarter_label_from_tuple((int(yq[0]), int(yq[1])))
+        uae = sub.loc[sub["_jk"].eq("united arab emirates")]
+        saudi = sub.loc[sub["_jk"].eq("saudi arabia")]
+        kw_bh = sub.loc[sub["_jk"].isin({"kuwait", "bahrain"})]
+        for label, chunk in (
+            ("UAE", uae),
+            ("Saudi Arabia", saudi),
+            ("Kuwait + Bahrain", kw_bh),
+        ):
+            if chunk.empty:
+                continue
+            d = _t3b3_metric_dict_sum_frame(chunk)
+            raw: dict[str, Any] = {
+                "spend": d.get("spend", 0.0),
+                "cw": d.get("cw", 0.0),
+                "tcv": d.get("tcv", 0.0),
+                "lf": d.get("lf", 0.0),
+                "leads": d.get("leads", 0.0),
+                "qualified": d.get("qualified", 0.0),
+            }
+            _t3b3_add_derived_from_sums(raw)
+            rows_out.append(
+                {
+                    "T3B3 Quarter": qlab,
+                    "CPCW:LF goal scope": label,
+                    "Spend": raw.get("Spend"),
+                    "CW (Inc Approved)": raw.get("CW (Inc Approved)"),
+                    "CPCW": raw.get("CPCW"),
+                    "1st Month LF": raw.get("1st Month LF"),
+                    "Actual TCV": raw.get("Actual TCV"),
+                    "CPCW:LF": raw.get("CPCW:LF"),
+                    "Cost/TCV%": raw.get("Cost/TCV%"),
+                    "Total Leads": raw.get("Total Leads"),
+                    "Qualified": raw.get("Qualified"),
+                    "SQL%": raw.get("SQL%"),
+                }
+            )
+
+    if not rows_out:
+        return pd.DataFrame(columns=cols)
+    return pd.DataFrame(rows_out)[cols]
 
 
 def _t3b3_view_style_css(df: pd.DataFrame) -> pd.DataFrame:
@@ -7104,7 +7204,11 @@ def _t3b3_view_style_css(df: pd.DataFrame) -> pd.DataFrame:
 
     qcol = "T3B3 Quarter"
     css = pd.DataFrame("", index=df.index, columns=df.columns)
-    mkt_lower = df["Market"].astype(str).str.strip().str.lower()
+    _label_col = "Market" if "Market" in df.columns else ("CPCW:LF goal scope" if "CPCW:LF goal scope" in df.columns else None)
+    if _label_col:
+        mkt_lower = df[_label_col].astype(str).str.strip().str.lower()
+    else:
+        mkt_lower = pd.Series("", index=df.index)
     me_lbl = _MIDDLE_EAST_REGION_LABEL.strip().lower()
     is_region = mkt_lower.eq(me_lbl) | mkt_lower.eq("middle east (subtotal)")
     is_grand = df[qcol].astype(str).str.strip().str.lower().eq("grand total")
@@ -7168,7 +7272,7 @@ def _t3b3_view_style_css(df: pd.DataFrame) -> pd.DataFrame:
                     css.loc[i, col] = _cell(
                         "background-color: #f1f5f9; font-weight: 600; color: #334155; border-bottom: 1px solid #e2e8f0;"
                     )
-            elif col == "Market":
+            elif col in {"Market", "CPCW:LF goal scope"}:
                 base = (sub_bold + " background-color: #ffffff; color: #0f172a;") if sub else white
                 css.loc[i, col] = _cell(base, center=False)
             elif col in cyan_cols:
@@ -7572,16 +7676,20 @@ def _render_t3b3_quarter_sections(
     *,
     key_suffix: str,
 ) -> None:
-    """T3B3 quarterly tables on Marketing performance (calendar quarters)."""
+    """T3B3 quarterly tables (offset quarter definition + CPCW:LF goal scopes)."""
     st.markdown('<div class="looker-table-title">T3B3 view</div>', unsafe_allow_html=True)
     st.caption(
-        "Calendar-year quarters (Q1=Jan–Mar … Q4=Oct–Dec). **Middle East** uses the same roll-up row as the master "
-        "table when regional totals sit there. **SQL%** = Qualified ÷ Total Leads. Grand total = non–ME markets plus "
-        "one Middle East total per quarter. Only quarters with **real activity in the master grid** are listed "
-        "(e.g. April source rows roll into **Q2**); empty future quarters are omitted."
+        "**T3B3 quarters** use a **one-month negative offset** from calendar quarters (trailing-close buffer): "
+        "**Q1** = Dec–Feb, **Q2** = Mar–May, **Q3** = Jun–Aug, **Q4** = Sep–Nov. "
+        "December belongs to **Q1 of the next T3B3 label year** (e.g. Dec-2025 + Jan/Feb-2026 → ``2026 - T3B3 Q1``). "
+        "**Middle East** uses the master regional roll-up. **SQL%** = Qualified ÷ Total Leads. "
+        "Grand total = non–ME markets plus one Middle East total per quarter. "
+        "**CPCW:LF goals** are tracked separately for **UAE**, **Saudi Arabia**, and **Kuwait + Bahrain** combined "
+        "(same table as Looker — no double-count in the main ME total)."
     )
     detail = _t3b3_detail_rows_from_gm(gm)
     kb = _t3b3_kw_bh_rows_from_gm(gm)
+    cpcw_goals = _t3b3_goal_cpcw_lf_rows_from_gm(gm)
 
     def _fmt_t3b3(pvt: pd.DataFrame) -> Any:
         def _fmt_for_metric(metric_name: str) -> Any:
@@ -7601,12 +7709,14 @@ def _render_t3b3_quarter_sections(
                 return lambda x: f"{float(x):.2f}%" if pd.notna(x) else "—"
             return lambda x: f"{x}" if pd.notna(x) else "—"
 
+        _lbl = lambda x: str(x) if pd.notna(x) and str(x).strip() else ""
         fmt_map: dict[str, Any] = {
             "T3B3 Quarter": lambda x: "" if x == "" or (isinstance(x, float) and pd.isna(x)) else str(x),
-            "Market": lambda x: str(x) if pd.notna(x) and str(x).strip() else "",
+            "Market": _lbl,
+            "CPCW:LF goal scope": _lbl,
         }
         for c in pvt.columns:
-            if c in {"T3B3 Quarter", "Market"}:
+            if c in {"T3B3 Quarter", "Market", "CPCW:LF goal scope"}:
                 continue
             fmt_map[c] = _fmt_for_metric(c)
         css_matrix = _t3b3_view_style_css(pvt)
@@ -7628,6 +7738,10 @@ def _render_t3b3_quarter_sections(
     if not kb.empty:
         st.markdown("##### Kuwait + Bahrain")
         st.dataframe(_fmt_t3b3(kb), use_container_width=True, hide_index=True, key=f"{key_suffix}_t3b3_kb")
+
+    if not cpcw_goals.empty:
+        st.markdown("##### CPCW:LF — goal markets (UAE · Saudi · Kuwait + Bahrain)")
+        st.dataframe(_fmt_t3b3(cpcw_goals), use_container_width=True, hide_index=True, key=f"{key_suffix}_t3b3_cpcw_goals")
 
 
 def _render_master_view_pivot_from_gm(
