@@ -26,7 +26,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-15-scope-strip-simple"
+DASHBOARD_BUILD = "2026-04-15-mpo-header-kicker"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -4244,15 +4244,20 @@ def _apply_sheet_filters(
     return df, df_for_tabs
 
 
-def _dashboard_tab_page_header(heading: str) -> None:
-    """Same tab chrome as **Marketing performance**: kicker + title (matches main dashboard tabs)."""
-    st.markdown(
-        '<div class="dash-tab-head-cluster">'
-        '<p class="dash-tab-kicker">Marketing · RevOps</p>'
-        f'<p class="dash-tab-heading">{html.escape(heading)}</p>'
-        "</div>",
-        unsafe_allow_html=True,
+def _dashboard_tab_page_header(heading: Optional[str] = None) -> None:
+    """Kicker (Marketing · RevOps) and optional bold tab title — omit ``heading`` to show kicker only."""
+    _kicker = (
+        '<p class="dash-tab-kicker">'
+        '<span class="dash-tab-kicker-marketing">Marketing</span>'
+        '<span class="dash-tab-kicker-sep"> · </span>'
+        '<span class="dash-tab-kicker-revops">RevOps</span>'
+        "</p>"
     )
+    _parts: list[str] = ['<div class="dash-tab-head-cluster">', _kicker]
+    if heading and str(heading).strip():
+        _parts.append(f'<p class="dash-tab-heading">{html.escape(str(heading).strip())}</p>')
+    _parts.append("</div>")
+    st.markdown("".join(_parts), unsafe_allow_html=True)
 
 
 # Marketing Performance: one multiselect token per dimension = full data (no slice on that dimension).
@@ -8376,7 +8381,7 @@ def render_page_marketing_performance(
         st.info("No rows in the selected date range.")
         return
 
-    _dashboard_tab_page_header("Marketing performance")
+    _dashboard_tab_page_header()
     df, _ = _apply_marketing_performance_filters(
         df_date,
         key_suffix=key_suffix,
@@ -10017,6 +10022,14 @@ def main() -> None:
         color: #64748b;
         margin: 0 0 1px 0;
         line-height: 1.25;
+    }
+    .dash-tab-kicker-revops {
+        font-size: 0.58rem;
+        font-weight: 500;
+        letter-spacing: 0.05em;
+        text-transform: uppercase;
+        color: #94a3b8;
+        vertical-align: 0.05em;
     }
     .dash-tab-heading {
         font-size: 1.22rem;
