@@ -25,7 +25,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
-DASHBOARD_BUILD = "2026-04-09-pmc-spend-only-march"
+DASHBOARD_BUILD = "2026-04-13-pmc-recent-month-first"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 ME_XRAY_SPEND_SHEET_URL = f"https://docs.google.com/spreadsheets/d/{DEFAULT_SHEET_ID}/edit"
@@ -7158,7 +7158,15 @@ def _master_performance_table(
         if ix:
             raw_m = pvt.loc[ix[0], "month"]
             pvt.loc[ix[0], "Month"] = _month_label_short(raw_m)
-    pvt = pvt.drop(columns=["month", "_month_sort_lbl"], errors="ignore")
+    # Enforce **newest calendar month first** (Spend-by-channel + master); groupby order is not guaranteed stable.
+    pvt["_sort_ts"] = pvt["month"].map(_mpo_month_ts_for_sort)
+    pvt = pvt.sort_values(
+        ["_sort_ts", row_heading],
+        ascending=[False, True],
+        kind="mergesort",
+        na_position="last",
+    )
+    pvt = pvt.drop(columns=["_sort_ts", "month", "_month_sort_lbl"], errors="ignore")
     out_cols = ["Month", row_heading] + [m for m in metrics if m in pvt.columns]
     pvt = pvt[out_cols]
     cell_metric_allowlist = list(metrics)
