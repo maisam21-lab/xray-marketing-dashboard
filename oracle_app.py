@@ -26,7 +26,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
 # If the hosted app shows an older string, GitHub ``main`` (or the branch Streamlit uses) does not have your latest push yet.
-DASHBOARD_BUILD = "2026-04-14-scorecards-biz-signal-colors"
+DASHBOARD_BUILD = "2026-04-14-scorecards-signal-wash-pattern"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -10389,57 +10389,72 @@ def main() -> None:
         background: linear-gradient(152deg, #f5f3ff 0%, #ddd6fe 44%, #ede9fe 100%);
     }
     /*
-     * Business psychology — period vs reference (MoM/YoY): each metric ``domain`` gets its own hue language.
-     * reach: cooling slate when demand softens (not “panic red” at top of funnel).
-     * efficiency: teal wins vs amber pressure (budget heat ≠ revenue miss).
-     * growth / demand: emerald / blue wins vs rose-orange misses.
-     * velocity (pipeline): violet motion vs deeper purple caution.
-     * leakage: teal when losses shrink; brick when they spike.
-     * quality: deep green vs amber when win-rate slips.
+     * Period signal (MoM/YoY): **thick bar + diagonal wash** on top of each row’s base gradient — old thin inset
+     * disappeared against pastel fills. Domains use **distinct hues** (cyan / cobalt / emerald / jade / violet / …).
      */
     .kpi-funnel-card[class*="--biz-"] {
         --biz-bar: #64748b;
-        --biz-glow: rgba(100, 116, 139, 0.1);
-        box-shadow:
-            inset 4px 0 0 0 var(--biz-bar),
-            0 1px 2px rgba(15, 23, 42, 0.05),
-            0 8px 22px var(--biz-glow);
+        --biz-glow: rgba(100, 116, 139, 0.2);
+        --biz-wash: rgba(148, 163, 184, 0.35);
+        border-left: 6px solid var(--biz-bar) !important;
+        border-right: 1px solid rgba(15, 23, 42, 0.07);
+        border-top: 1px solid rgba(15, 23, 42, 0.06);
+        border-bottom: 1px solid rgba(15, 23, 42, 0.06);
+        box-shadow: 0 6px 24px var(--biz-glow);
+    }
+    .kpi-funnel-card--pastel-cw[class*="--biz-"] {
+        background-image:
+            linear-gradient(118deg, var(--biz-wash) 0%, rgba(255, 255, 255, 0.55) 38%, rgba(255, 255, 255, 0.95) 100%),
+            linear-gradient(152deg, #ecfdf5 0%, #a7f3d0 44%, #d1fae5 100%);
+    }
+    .kpi-funnel-card--pastel-leads[class*="--biz-"] {
+        background-image:
+            linear-gradient(118deg, var(--biz-wash) 0%, rgba(255, 255, 255, 0.55) 38%, rgba(255, 255, 255, 0.95) 100%),
+            linear-gradient(152deg, #eff6ff 0%, #bfdbfe 44%, #e0f2fe 100%);
+    }
+    .kpi-funnel-card--pastel-pipe[class*="--biz-"] {
+        background-image:
+            linear-gradient(118deg, var(--biz-wash) 0%, rgba(255, 255, 255, 0.55) 38%, rgba(255, 255, 255, 0.95) 100%),
+            linear-gradient(152deg, #f5f3ff 0%, #ddd6fe 44%, #ede9fe 100%);
+    }
+    .kpi-funnel-card--hero[class*="--biz-"] {
+        background-image:
+            linear-gradient(118deg, var(--biz-wash) 0%, rgba(255, 255, 255, 0.78) 45%, #f1f5f9 100%) !important;
+        border: 1px solid rgba(15, 23, 42, 0.08) !important;
+        border-left: 6px solid var(--biz-bar) !important;
+        box-shadow: 0 8px 26px var(--biz-glow) !important;
     }
     .kpi-funnel-card[class*="--biz-"]:hover {
-        border-color: transparent;
-        box-shadow:
-            inset 5px 0 0 0 var(--biz-bar),
-            0 12px 34px rgba(15, 23, 42, 0.11),
-            0 8px 26px var(--biz-glow);
+        box-shadow: 0 10px 36px var(--biz-glow);
         transform: translateY(-2px);
     }
-    .kpi-funnel-card--biz-reach--favorable { --biz-bar: #0284c7; --biz-glow: rgba(2, 132, 199, 0.11); }
-    .kpi-funnel-card--biz-reach--unfavorable { --biz-bar: #64748b; --biz-glow: rgba(71, 85, 105, 0.1); }
-    .kpi-funnel-card--biz-reach--flat { --biz-bar: #94a3b8; --biz-glow: rgba(148, 163, 184, 0.08); }
-    .kpi-funnel-card--biz-engagement--favorable { --biz-bar: #2563eb; --biz-glow: rgba(37, 99, 235, 0.11); }
-    .kpi-funnel-card--biz-engagement--unfavorable { --biz-bar: #e11d48; --biz-glow: rgba(225, 29, 72, 0.09); }
-    .kpi-funnel-card--biz-engagement--flat { --biz-bar: #94a3b8; --biz-glow: rgba(148, 163, 184, 0.08); }
-    .kpi-funnel-card--biz-growth--favorable { --biz-bar: #059669; --biz-glow: rgba(5, 150, 105, 0.12); }
-    .kpi-funnel-card--biz-growth--unfavorable { --biz-bar: #be123c; --biz-glow: rgba(190, 18, 60, 0.09); }
-    .kpi-funnel-card--biz-growth--flat { --biz-bar: #94a3b8; --biz-glow: rgba(148, 163, 184, 0.08); }
-    .kpi-funnel-card--biz-efficiency--favorable { --biz-bar: #0d9488; --biz-glow: rgba(13, 148, 136, 0.11); }
-    .kpi-funnel-card--biz-efficiency--unfavorable { --biz-bar: #d97706; --biz-glow: rgba(217, 119, 6, 0.12); }
-    .kpi-funnel-card--biz-efficiency--flat { --biz-bar: #94a3b8; --biz-glow: rgba(148, 163, 184, 0.08); }
-    .kpi-funnel-card--biz-demand--favorable { --biz-bar: #2563eb; --biz-glow: rgba(37, 99, 235, 0.11); }
-    .kpi-funnel-card--biz-demand--unfavorable { --biz-bar: #ea580c; --biz-glow: rgba(234, 88, 12, 0.1); }
-    .kpi-funnel-card--biz-demand--flat { --biz-bar: #94a3b8; --biz-glow: rgba(148, 163, 184, 0.08); }
-    .kpi-funnel-card--biz-conversion--favorable { --biz-bar: #4f46e5; --biz-glow: rgba(79, 70, 229, 0.11); }
-    .kpi-funnel-card--biz-conversion--unfavorable { --biz-bar: #c026d3; --biz-glow: rgba(192, 38, 211, 0.09); }
-    .kpi-funnel-card--biz-conversion--flat { --biz-bar: #94a3b8; --biz-glow: rgba(148, 163, 184, 0.08); }
-    .kpi-funnel-card--biz-velocity--favorable { --biz-bar: #7c3aed; --biz-glow: rgba(124, 58, 237, 0.12); }
-    .kpi-funnel-card--biz-velocity--unfavorable { --biz-bar: #6b21a8; --biz-glow: rgba(107, 33, 168, 0.1); }
-    .kpi-funnel-card--biz-velocity--flat { --biz-bar: #94a3b8; --biz-glow: rgba(148, 163, 184, 0.08); }
-    .kpi-funnel-card--biz-leakage--favorable { --biz-bar: #0f766e; --biz-glow: rgba(15, 118, 110, 0.11); }
-    .kpi-funnel-card--biz-leakage--unfavorable { --biz-bar: #b91c1c; --biz-glow: rgba(185, 28, 28, 0.1); }
-    .kpi-funnel-card--biz-leakage--flat { --biz-bar: #94a3b8; --biz-glow: rgba(148, 163, 184, 0.08); }
-    .kpi-funnel-card--biz-quality--favorable { --biz-bar: #166534; --biz-glow: rgba(22, 101, 52, 0.11); }
-    .kpi-funnel-card--biz-quality--unfavorable { --biz-bar: #b45309; --biz-glow: rgba(180, 83, 9, 0.11); }
-    .kpi-funnel-card--biz-quality--flat { --biz-bar: #94a3b8; --biz-glow: rgba(148, 163, 184, 0.08); }
+    .kpi-funnel-card--biz-reach--favorable { --biz-bar: #0891b2; --biz-glow: rgba(8, 145, 178, 0.28); --biz-wash: rgba(6, 182, 212, 0.55); }
+    .kpi-funnel-card--biz-reach--unfavorable { --biz-bar: #475569; --biz-glow: rgba(71, 85, 105, 0.22); --biz-wash: rgba(100, 116, 139, 0.45); }
+    .kpi-funnel-card--biz-reach--flat { --biz-bar: #94a3b8; --biz-glow: rgba(148, 163, 184, 0.14); --biz-wash: rgba(148, 163, 184, 0.22); }
+    .kpi-funnel-card--biz-engagement--favorable { --biz-bar: #1d4ed8; --biz-glow: rgba(29, 78, 216, 0.26); --biz-wash: rgba(59, 130, 246, 0.5); }
+    .kpi-funnel-card--biz-engagement--unfavorable { --biz-bar: #e11d48; --biz-glow: rgba(225, 29, 72, 0.22); --biz-wash: rgba(251, 113, 133, 0.42); }
+    .kpi-funnel-card--biz-engagement--flat { --biz-bar: #94a3b8; --biz-glow: rgba(148, 163, 184, 0.14); --biz-wash: rgba(148, 163, 184, 0.22); }
+    .kpi-funnel-card--biz-growth--favorable { --biz-bar: #059669; --biz-glow: rgba(5, 150, 105, 0.3); --biz-wash: rgba(52, 211, 153, 0.52); }
+    .kpi-funnel-card--biz-growth--unfavorable { --biz-bar: #be123c; --biz-glow: rgba(190, 18, 60, 0.24); --biz-wash: rgba(251, 113, 133, 0.38); }
+    .kpi-funnel-card--biz-growth--flat { --biz-bar: #94a3b8; --biz-glow: rgba(148, 163, 184, 0.14); --biz-wash: rgba(148, 163, 184, 0.22); }
+    .kpi-funnel-card--biz-efficiency--favorable { --biz-bar: #0f766e; --biz-glow: rgba(15, 118, 110, 0.28); --biz-wash: rgba(45, 212, 191, 0.48); }
+    .kpi-funnel-card--biz-efficiency--unfavorable { --biz-bar: #ea580c; --biz-glow: rgba(234, 88, 12, 0.28); --biz-wash: rgba(253, 186, 116, 0.55); }
+    .kpi-funnel-card--biz-efficiency--flat { --biz-bar: #94a3b8; --biz-glow: rgba(148, 163, 184, 0.14); --biz-wash: rgba(148, 163, 184, 0.22); }
+    .kpi-funnel-card--biz-demand--favorable { --biz-bar: #7c3aed; --biz-glow: rgba(124, 58, 237, 0.26); --biz-wash: rgba(167, 139, 250, 0.48); }
+    .kpi-funnel-card--biz-demand--unfavorable { --biz-bar: #c2410c; --biz-glow: rgba(194, 65, 12, 0.24); --biz-wash: rgba(251, 146, 60, 0.42); }
+    .kpi-funnel-card--biz-demand--flat { --biz-bar: #94a3b8; --biz-glow: rgba(148, 163, 184, 0.14); --biz-wash: rgba(148, 163, 184, 0.22); }
+    .kpi-funnel-card--biz-conversion--favorable { --biz-bar: #4338ca; --biz-glow: rgba(67, 56, 202, 0.26); --biz-wash: rgba(129, 140, 248, 0.48); }
+    .kpi-funnel-card--biz-conversion--unfavorable { --biz-bar: #a21caf; --biz-glow: rgba(162, 28, 175, 0.22); --biz-wash: rgba(240, 171, 252, 0.42); }
+    .kpi-funnel-card--biz-conversion--flat { --biz-bar: #94a3b8; --biz-glow: rgba(148, 163, 184, 0.14); --biz-wash: rgba(148, 163, 184, 0.22); }
+    .kpi-funnel-card--biz-velocity--favorable { --biz-bar: #9333ea; --biz-glow: rgba(147, 51, 234, 0.28); --biz-wash: rgba(192, 132, 252, 0.45); }
+    .kpi-funnel-card--biz-velocity--unfavorable { --biz-bar: #5b21b6; --biz-glow: rgba(91, 33, 182, 0.26); --biz-wash: rgba(167, 139, 250, 0.38); }
+    .kpi-funnel-card--biz-velocity--flat { --biz-bar: #94a3b8; --biz-glow: rgba(148, 163, 184, 0.14); --biz-wash: rgba(148, 163, 184, 0.22); }
+    .kpi-funnel-card--biz-leakage--favorable { --biz-bar: #0d9488; --biz-glow: rgba(13, 148, 136, 0.26); --biz-wash: rgba(45, 212, 191, 0.42); }
+    .kpi-funnel-card--biz-leakage--unfavorable { --biz-bar: #dc2626; --biz-glow: rgba(220, 38, 38, 0.28); --biz-wash: rgba(252, 165, 165, 0.48); }
+    .kpi-funnel-card--biz-leakage--flat { --biz-bar: #94a3b8; --biz-glow: rgba(148, 163, 184, 0.14); --biz-wash: rgba(148, 163, 184, 0.22); }
+    .kpi-funnel-card--biz-quality--favorable { --biz-bar: #166534; --biz-glow: rgba(22, 101, 52, 0.24); --biz-wash: rgba(74, 222, 128, 0.42); }
+    .kpi-funnel-card--biz-quality--unfavorable { --biz-bar: #b45309; --biz-glow: rgba(180, 83, 9, 0.26); --biz-wash: rgba(252, 211, 77, 0.45); }
+    .kpi-funnel-card--biz-quality--flat { --biz-bar: #94a3b8; --biz-glow: rgba(148, 163, 184, 0.14); --biz-wash: rgba(148, 163, 184, 0.22); }
     .kpi-funnel-card:hover:not([class*="--biz-"]) {
         box-shadow: 0 10px 28px rgba(15, 23, 42, 0.1);
         border-color: #cbd5e1;
