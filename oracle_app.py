@@ -25,7 +25,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
-DASHBOARD_BUILD = "2026-04-13-mpo-t3b3-tables"
+DASHBOARD_BUILD = "2026-04-13-mpo-t3b3-below-master"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 ME_XRAY_SPEND_SHEET_URL = f"https://docs.google.com/spreadsheets/d/{DEFAULT_SHEET_ID}/edit"
@@ -8348,9 +8348,6 @@ def render_page_marketing_performance(
         prior=_kpi_prior,
     )
 
-    gm_t3b3 = _master_build_gm_with_metrics(master_df, _spend_for_master_ui)
-    _render_t3b3_quarter_sections(gm_t3b3, key_suffix=f"{key_suffix}_t3b3")
-
     _master_performance_table(
         master_df,
         key_suffix=key_suffix,
@@ -8362,6 +8359,9 @@ def render_page_marketing_performance(
             "cw": cw_kpi,
         },
     )
+
+    gm_t3b3 = _master_build_gm_with_metrics(master_df, _spend_for_master_ui)
+    _render_t3b3_quarter_sections(gm_t3b3, key_suffix=f"{key_suffix}_t3b3")
 
     _render_mpo_trend_charts(
         start_date=start_date,
