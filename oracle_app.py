@@ -25,7 +25,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
-DASHBOARD_BUILD = "2026-04-13-t3b3-me-rollup-align"
+DASHBOARD_BUILD = "2026-04-14-me-xray-source-of-truth"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 ME_XRAY_SPEND_SHEET_URL = f"https://docs.google.com/spreadsheets/d/{DEFAULT_SHEET_ID}/edit"
@@ -50,6 +50,11 @@ DEFAULT_PAID_MEDIA_PLATFORM_GIDS: tuple[int, ...] = (
     279936880,
 )
 DEFAULT_SOURCE_TRUTH_GID = 8109573
+# Canonical **source of truth** tab for ME X-Ray (Marketing performance). Same workbook as ``DEFAULT_SHEET_ID``.
+# https://docs.google.com/spreadsheets/d/1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8/edit?gid=8109573
+ME_XRAY_SOURCE_OF_TRUTH_URL = (
+    f"https://docs.google.com/spreadsheets/d/{DEFAULT_SHEET_ID}/edit?gid={DEFAULT_SOURCE_TRUTH_GID}"
+)
 DEFAULT_LEADS_WORKSHEET_GID = 743065354
 # Default empty on Streamlit Cloud; set `XRAY_EXCEL_PATH` in secrets or `XRAY_EXCEL_PATH_DEFAULT` locally.
 DEFAULT_LOCAL_EXCEL_PATH = (os.environ.get("XRAY_EXCEL_PATH_DEFAULT") or "").strip()
@@ -7904,7 +7909,15 @@ def render_page_marketing_performance(
         reporting_end=end_date,
     )
 
-    sheet_id, _ = _workbook_id_resolution()
+    sheet_id, sheet_id_src = _workbook_id_resolution()
+    _truth_gid = _default_truth_gid_from_secrets()
+    _truth_tab_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit?gid={_truth_gid}"
+    st.caption(
+        f"**Source of truth:** [open loaded workbook (truth tab)]({_truth_tab_url}) · id `{sheet_id}`, gid **{_truth_gid}**. "
+        f"Canonical ME X-Ray: [truth tab (default)]({ME_XRAY_SOURCE_OF_TRUTH_URL}). "
+        f"Resolved workbook: **{sheet_id_src}**. "
+        "Unset Streamlit secrets **`XRAY_SHEET_ID`** / **`XRAY_TRUTH_GID`** if the app must use only these defaults."
+    )
     _fp_mpo = _secret_fingerprint(_service_account_from_streamlit_secrets())
     # Spend from paid-media rows: compare primary-workbook scope vs combined stacked scope,
     # then keep the richer pool so T3B3/master do not miss spend parked on stacked workbook rows.
