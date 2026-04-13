@@ -26,7 +26,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
 # If the hosted app shows an older string, GitHub ``main`` (or the branch Streamlit uses) does not have your latest push yet.
-DASHBOARD_BUILD = "2026-04-14-hide-cpcw-goals-captions"
+DASHBOARD_BUILD = "2026-04-14-scorecards-tighter"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -10028,9 +10028,9 @@ def main() -> None:
         font-weight: 500;
     }
     .mpo-kpi-shell {
-        margin-top: 2px;
-        padding: 8px 8px 6px;
-        border-radius: 16px;
+        margin-top: 0;
+        padding: 4px 6px 3px;
+        border-radius: 14px;
         background: linear-gradient(165deg, rgba(255, 255, 255, 0.65) 0%, rgba(248, 250, 252, 0.4) 100%);
         border: 1px solid rgba(15, 23, 42, 0.06);
         box-shadow: 0 16px 48px -28px rgba(15, 23, 42, 0.14);
@@ -10187,19 +10187,19 @@ def main() -> None:
         .mpo-toolbar-rule { text-align: left; width: 100%; }
     }
     /* Marketing funnel scorecards (Looker-style deltas + sub-metrics) */
-    .kpi-funnel-wrap { display: flex; flex-direction: column; gap: 4px; }
-    .kpi-funnel-section--traffic-hero { margin-bottom: 8px; }
+    .kpi-funnel-wrap { display: flex; flex-direction: column; gap: 2px; }
+    .kpi-funnel-section--traffic-hero { margin-bottom: 4px; }
     .kpi-funnel-grid--hero-3 {
         display: grid;
         grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 10px;
-        margin: 2px 0 4px 0;
+        gap: 6px;
+        margin: 0 0 2px 0;
     }
     @media (max-width: 900px) {
         .kpi-funnel-grid--hero-3 { grid-template-columns: 1fr; }
     }
     .kpi-funnel-card--hero {
-        min-height: 118px;
+        min-height: 102px;
         background: linear-gradient(165deg, #ffffff 0%, #f8fafc 100%) !important;
         border: 1px solid #e8edf2 !important;
     }
@@ -10212,10 +10212,10 @@ def main() -> None:
     }
     .kpi-funnel-card--hero .kpi-funnel-icon {
         opacity: 1 !important;
-        top: 14px;
-        right: 14px;
-        width: 36px;
-        height: 36px;
+        top: 10px;
+        right: 10px;
+        width: 32px;
+        height: 32px;
         display: inline-flex;
         align-items: center;
         justify-content: center;
@@ -10229,14 +10229,14 @@ def main() -> None:
         display: flex;
         flex-wrap: wrap;
         align-items: center;
-        gap: 8px 10px;
-        margin-bottom: 6px;
+        gap: 6px 8px;
+        margin-bottom: 3px;
     }
     .kpi-funnel-delta-pill {
         display: inline-block;
-        font-size: 12px;
+        font-size: 11px;
         font-weight: 700;
-        padding: 4px 10px;
+        padding: 3px 8px;
         border-radius: 999px;
         line-height: 1.35;
         font-variant-numeric: tabular-nums;
@@ -10255,24 +10255,24 @@ def main() -> None:
         margin-top: 0 !important;
         min-height: 0;
     }
-    .kpi-funnel-section { margin-bottom: 6px; }
+    .kpi-funnel-section { margin-bottom: 3px; }
     .kpi-funnel-section-title {
-        font-size: 0.92rem;
+        font-size: 0.88rem;
         font-weight: 700;
-        margin: 16px 0 10px 0;
-        padding-bottom: 8px;
+        margin: 8px 0 5px 0;
+        padding-bottom: 4px;
         letter-spacing: -0.02em;
         border-bottom: 2px solid #cbd5e1;
     }
     .kpi-funnel-section-title--cw { color: #0f766e; border-bottom-color: #4f8483; }
     .kpi-funnel-section-title--leads { color: #1d4ed8; border-bottom-color: #3b82f6; }
     .kpi-funnel-section-title--pipe { color: #5b21b6; border-bottom-color: #8b5cf6; }
-    .kpi-funnel-section:first-child .kpi-funnel-section-title { margin-top: 2px; }
+    .kpi-funnel-section:first-child .kpi-funnel-section-title { margin-top: 0; }
     .kpi-funnel-grid {
         display: grid;
         grid-template-columns: repeat(4, minmax(0, 1fr));
-        gap: 10px;
-        margin: 2px 0 6px 0;
+        gap: 6px;
+        margin: 0 0 3px 0;
     }
     @media (min-width: 1500px) {
         .kpi-funnel-grid { grid-template-columns: repeat(5, minmax(0, 1fr)); }
@@ -10285,9 +10285,9 @@ def main() -> None:
     }
     .kpi-funnel-card {
         position: relative;
-        border-radius: 14px;
-        padding: 11px 12px 10px;
-        min-height: 112px;
+        border-radius: 12px;
+        padding: 7px 9px 6px;
+        min-height: 98px;
         transition: box-shadow 0.25s ease, transform 0.25s ease, border-color 0.25s ease;
         animation: kpi-funnel-enter 0.55s cubic-bezier(0.22, 1, 0.36, 1) backwards;
         background: linear-gradient(165deg, #ffffff 0%, #f8fafc 100%);
@@ -10321,8 +10321,8 @@ def main() -> None:
     }
     .kpi-funnel-icon {
         position: absolute;
-        top: 12px;
-        right: 12px;
+        top: 8px;
+        right: 8px;
         font-size: 1.15rem;
         line-height: 1;
         opacity: 0.88;
@@ -10332,23 +10332,23 @@ def main() -> None:
         font-size: 0.95rem;
     }
     .kpi-funnel-title {
-        font-size: 10px;
+        font-size: 9.5px;
         font-weight: 700;
         color: #64748b;
         text-transform: uppercase;
         letter-spacing: 0.055em;
-        margin: 0 28px 6px 0;
-        line-height: 1.3;
+        margin: 0 24px 3px 0;
+        line-height: 1.25;
     }
     .kpi-funnel-card--pastel-cw .kpi-funnel-title { color: #047857; }
     .kpi-funnel-card--pastel-leads .kpi-funnel-title { color: #1d4ed8; }
     .kpi-funnel-card--pastel-pipe .kpi-funnel-title { color: #6d28d9; }
     .kpi-funnel-value {
-        font-size: clamp(1.12rem, 2.1vw, 1.48rem);
+        font-size: clamp(1.05rem, 2vw, 1.38rem);
         font-weight: 700;
         color: #0f172a;
-        line-height: 1.15;
-        margin-bottom: 4px;
+        line-height: 1.12;
+        margin-bottom: 2px;
         font-variant-numeric: tabular-nums;
     }
     .kpi-funnel-wrap--pastel-scorecard .kpi-funnel-title {
@@ -10358,12 +10358,12 @@ def main() -> None:
         font-weight: 600;
     }
     .kpi-funnel-wrap--pastel-scorecard .kpi-funnel-value {
-        font-size: clamp(1.22rem, 2.35vw, 1.68rem);
+        font-size: clamp(1.12rem, 2.15vw, 1.52rem);
         font-weight: 800;
         color: #0a0a0a;
         letter-spacing: -0.035em;
     }
-    .kpi-funnel-delta { font-size: 12px; font-weight: 600; margin-bottom: 8px; line-height: 1.4; }
+    .kpi-funnel-delta { font-size: 11px; font-weight: 600; margin-bottom: 4px; line-height: 1.35; }
     .kpi-funnel-delta--up { color: #15803d; }
     .kpi-funnel-delta--down { color: #dc2626; }
     .kpi-funnel-delta--flat { color: #64748b; }
@@ -10371,8 +10371,8 @@ def main() -> None:
     .kpi-funnel-delta--off { display: none !important; height: 0 !important; margin: 0 !important; padding: 0 !important; overflow: hidden !important; }
     .kpi-funnel-sub {
         border-top: 1px solid #f1f5f9;
-        padding-top: 8px;
-        margin-top: 2px;
+        padding-top: 5px;
+        margin-top: 1px;
     }
     .kpi-funnel-card--pastel-cw .kpi-funnel-sub { border-top-color: rgba(4, 120, 87, 0.14); }
     .kpi-funnel-card--pastel-leads .kpi-funnel-sub { border-top-color: rgba(29, 78, 216, 0.14); }
@@ -10381,10 +10381,10 @@ def main() -> None:
         display: flex;
         justify-content: space-between;
         align-items: baseline;
-        gap: 8px;
-        margin-top: 3px;
-        font-size: 10px;
-        line-height: 1.4;
+        gap: 6px;
+        margin-top: 2px;
+        font-size: 9.5px;
+        line-height: 1.35;
     }
     .kpi-funnel-sub-lbl { color: #64748b; font-weight: 500; }
     .kpi-funnel-sub-val { font-weight: 600; color: #1e293b; font-variant-numeric: tabular-nums; }
@@ -10394,14 +10394,14 @@ def main() -> None:
     .kpi-funnel-card--pastel-leads .kpi-funnel-sub-val { color: #1e3a8a; }
     .kpi-funnel-card--pastel-pipe .kpi-funnel-sub-lbl { color: #7c3aed; }
     .kpi-funnel-card--pastel-pipe .kpi-funnel-sub-val { color: #5b21b6; }
-    .kpi-funnel-wrap--pastel-scorecard .kpi-funnel-sub-row { font-size: 10.5px; }
+    .kpi-funnel-wrap--pastel-scorecard .kpi-funnel-sub-row { font-size: 10px; }
     .kpi-funnel-wrap--pastel-scorecard .kpi-funnel-section-title {
-        margin: 18px 0 12px 0;
-        padding-bottom: 8px;
+        margin: 10px 0 6px 0;
+        padding-bottom: 4px;
         border-bottom-width: 1px;
-        font-size: 0.9rem;
+        font-size: 0.86rem;
     }
-    .kpi-funnel-wrap--pastel-scorecard .kpi-funnel-section:first-child .kpi-funnel-section-title { margin-top: 2px; }
+    .kpi-funnel-wrap--pastel-scorecard .kpi-funnel-section:first-child .kpi-funnel-section-title { margin-top: 0; }
     @keyframes kpi-funnel-enter {
         from { opacity: 0; transform: translateY(12px); }
         to { opacity: 1; transform: translateY(0); }
