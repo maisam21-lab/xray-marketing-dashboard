@@ -26,7 +26,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
 # If the hosted app shows an older string, GitHub ``main`` (or the branch Streamlit uses) does not have your latest push yet.
-DASHBOARD_BUILD = "2026-04-14-scorecards-signal-wash-pattern"
+DASHBOARD_BUILD = "2026-04-14-scorecards-base-row-palette"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -10278,8 +10278,8 @@ def main() -> None:
     }
     .kpi-funnel-card--hero {
         min-height: 102px;
-        background: linear-gradient(165deg, #ffffff 0%, #f8fafc 100%) !important;
-        border: 1px solid #e8edf2 !important;
+        background: linear-gradient(155deg, #f8fbff 0%, #eef4fc 48%, #f7f9fc 100%) !important;
+        border: 1px solid rgba(148, 163, 184, 0.35) !important;
     }
     .kpi-funnel-card--hero .kpi-funnel-title {
         font-size: 11px;
@@ -10298,8 +10298,8 @@ def main() -> None:
         align-items: center;
         justify-content: center;
         border-radius: 999px;
-        background: #e8f0fe;
-        color: #1a73e8;
+        background: #dbeafe;
+        color: #1d4ed8;
         font-size: 1rem;
         line-height: 1;
     }
@@ -10379,14 +10379,18 @@ def main() -> None:
             0 1px 2px rgba(15, 23, 42, 0.04),
             0 8px 24px rgba(15, 23, 42, 0.06);
     }
+    /* Row bases: muted “surface” fills so MoM signal wash + bar stay legible (shared with biz overlay). */
     .kpi-funnel-card--pastel-cw {
-        background: linear-gradient(152deg, #ecfdf5 0%, #a7f3d0 44%, #d1fae5 100%);
+        --kpi-row-bg: linear-gradient(156deg, #f3fcf8 0%, #dff3ea 40%, #eef8f3 100%);
+        background: var(--kpi-row-bg);
     }
     .kpi-funnel-card--pastel-leads {
-        background: linear-gradient(152deg, #eff6ff 0%, #bfdbfe 44%, #e0f2fe 100%);
+        --kpi-row-bg: linear-gradient(156deg, #f5f8fd 0%, #e2e9f8 40%, #eef2fb 100%);
+        background: var(--kpi-row-bg);
     }
     .kpi-funnel-card--pastel-pipe {
-        background: linear-gradient(152deg, #f5f3ff 0%, #ddd6fe 44%, #ede9fe 100%);
+        --kpi-row-bg: linear-gradient(156deg, #faf7ff 0%, #ebe4fb 40%, #f4f0fc 100%);
+        background: var(--kpi-row-bg);
     }
     /*
      * Period signal (MoM/YoY): **thick bar + diagonal wash** on top of each row’s base gradient — old thin inset
@@ -10404,22 +10408,22 @@ def main() -> None:
     }
     .kpi-funnel-card--pastel-cw[class*="--biz-"] {
         background-image:
-            linear-gradient(118deg, var(--biz-wash) 0%, rgba(255, 255, 255, 0.55) 38%, rgba(255, 255, 255, 0.95) 100%),
-            linear-gradient(152deg, #ecfdf5 0%, #a7f3d0 44%, #d1fae5 100%);
+            linear-gradient(118deg, var(--biz-wash) 0%, rgba(255, 255, 255, 0.5) 38%, rgba(255, 255, 255, 0.92) 100%),
+            var(--kpi-row-bg);
     }
     .kpi-funnel-card--pastel-leads[class*="--biz-"] {
         background-image:
-            linear-gradient(118deg, var(--biz-wash) 0%, rgba(255, 255, 255, 0.55) 38%, rgba(255, 255, 255, 0.95) 100%),
-            linear-gradient(152deg, #eff6ff 0%, #bfdbfe 44%, #e0f2fe 100%);
+            linear-gradient(118deg, var(--biz-wash) 0%, rgba(255, 255, 255, 0.5) 38%, rgba(255, 255, 255, 0.92) 100%),
+            var(--kpi-row-bg);
     }
     .kpi-funnel-card--pastel-pipe[class*="--biz-"] {
         background-image:
-            linear-gradient(118deg, var(--biz-wash) 0%, rgba(255, 255, 255, 0.55) 38%, rgba(255, 255, 255, 0.95) 100%),
-            linear-gradient(152deg, #f5f3ff 0%, #ddd6fe 44%, #ede9fe 100%);
+            linear-gradient(118deg, var(--biz-wash) 0%, rgba(255, 255, 255, 0.5) 38%, rgba(255, 255, 255, 0.92) 100%),
+            var(--kpi-row-bg);
     }
     .kpi-funnel-card--hero[class*="--biz-"] {
         background-image:
-            linear-gradient(118deg, var(--biz-wash) 0%, rgba(255, 255, 255, 0.78) 45%, #f1f5f9 100%) !important;
+            linear-gradient(118deg, var(--biz-wash) 0%, rgba(255, 255, 255, 0.72) 42%, #eef2f8 100%) !important;
         border: 1px solid rgba(15, 23, 42, 0.08) !important;
         border-left: 6px solid var(--biz-bar) !important;
         box-shadow: 0 8px 26px var(--biz-glow) !important;
@@ -10485,9 +10489,9 @@ def main() -> None:
         margin: 0 24px 3px 0;
         line-height: 1.25;
     }
-    .kpi-funnel-card--pastel-cw .kpi-funnel-title { color: #047857; }
-    .kpi-funnel-card--pastel-leads .kpi-funnel-title { color: #1d4ed8; }
-    .kpi-funnel-card--pastel-pipe .kpi-funnel-title { color: #6d28d9; }
+    .kpi-funnel-card--pastel-cw .kpi-funnel-title { color: #0f5d4a; }
+    .kpi-funnel-card--pastel-leads .kpi-funnel-title { color: #1e40af; }
+    .kpi-funnel-card--pastel-pipe .kpi-funnel-title { color: #5b21b6; }
     .kpi-funnel-value {
         font-size: clamp(1.05rem, 2vw, 1.38rem);
         font-weight: 700;
@@ -10519,9 +10523,9 @@ def main() -> None:
         padding-top: 5px;
         margin-top: 1px;
     }
-    .kpi-funnel-card--pastel-cw .kpi-funnel-sub { border-top-color: rgba(4, 120, 87, 0.14); }
-    .kpi-funnel-card--pastel-leads .kpi-funnel-sub { border-top-color: rgba(29, 78, 216, 0.14); }
-    .kpi-funnel-card--pastel-pipe .kpi-funnel-sub { border-top-color: rgba(109, 40, 217, 0.14); }
+    .kpi-funnel-card--pastel-cw .kpi-funnel-sub { border-top-color: rgba(15, 93, 74, 0.16); }
+    .kpi-funnel-card--pastel-leads .kpi-funnel-sub { border-top-color: rgba(30, 64, 175, 0.14); }
+    .kpi-funnel-card--pastel-pipe .kpi-funnel-sub { border-top-color: rgba(91, 33, 182, 0.14); }
     .kpi-funnel-sub-row {
         display: flex;
         justify-content: space-between;
@@ -10533,12 +10537,12 @@ def main() -> None:
     }
     .kpi-funnel-sub-lbl { color: #64748b; font-weight: 500; }
     .kpi-funnel-sub-val { font-weight: 600; color: #1e293b; font-variant-numeric: tabular-nums; }
-    .kpi-funnel-card--pastel-cw .kpi-funnel-sub-lbl { color: #059669; }
-    .kpi-funnel-card--pastel-cw .kpi-funnel-sub-val { color: #065f46; }
+    .kpi-funnel-card--pastel-cw .kpi-funnel-sub-lbl { color: #0d8060; }
+    .kpi-funnel-card--pastel-cw .kpi-funnel-sub-val { color: #064e3b; }
     .kpi-funnel-card--pastel-leads .kpi-funnel-sub-lbl { color: #2563eb; }
-    .kpi-funnel-card--pastel-leads .kpi-funnel-sub-val { color: #1e3a8a; }
-    .kpi-funnel-card--pastel-pipe .kpi-funnel-sub-lbl { color: #7c3aed; }
-    .kpi-funnel-card--pastel-pipe .kpi-funnel-sub-val { color: #5b21b6; }
+    .kpi-funnel-card--pastel-leads .kpi-funnel-sub-val { color: #172554; }
+    .kpi-funnel-card--pastel-pipe .kpi-funnel-sub-lbl { color: #6d28d9; }
+    .kpi-funnel-card--pastel-pipe .kpi-funnel-sub-val { color: #4c1d95; }
     .kpi-funnel-wrap--pastel-scorecard .kpi-funnel-sub-row { font-size: 10px; }
     .kpi-funnel-wrap--pastel-scorecard .kpi-funnel-section-title {
         margin: 10px 0 6px 0;
