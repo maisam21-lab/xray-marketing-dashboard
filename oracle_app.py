@@ -26,7 +26,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
 # If the hosted app shows an older string, GitHub ``main`` (or the branch Streamlit uses) does not have your latest push yet.
-DASHBOARD_BUILD = "2026-04-13-mom-tab-mpo-styling"
+DASHBOARD_BUILD = "2026-04-13-mom-html-scorecards"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -5540,6 +5540,129 @@ def _kpi_funnel_sub_row(label: str, value: str) -> str:
     )
 
 
+def _kpi_funnel_pastel_card_html(
+    *,
+    icon: str,
+    title: str,
+    value_s: str,
+    delta_html: str,
+    sub_html: str,
+    delay: float,
+    hue: str = "cw",
+    extra_class: str = "",
+    biz_signal: str = "na",
+) -> str:
+    """Single pastel funnel scorecard tile — same markup as ``_kpi_block`` ``_card`` (Marketing performance)."""
+    h = html.escape(hue, quote=True)
+    xc = html.escape(extra_class.strip(), quote=True) if extra_class.strip() else ""
+    xcls = f" {xc}" if xc else ""
+    b = str(biz_signal).strip().lower()
+    biz_cls = f" kpi-funnel-card--{html.escape(b, quote=True)}" if b not in ("", "na") else ""
+    return (
+        f'<div class="kpi-funnel-card kpi-funnel-card--pastel kpi-funnel-card--pastel-{h}{xcls}{biz_cls}" '
+        f'style="animation-delay:{delay:.2f}s">'
+        f'<span class="kpi-funnel-icon" aria-hidden="true">{icon}</span>'
+        f'<div class="kpi-funnel-title">{html.escape(title)}</div>'
+        f'<div class="kpi-funnel-value">{html.escape(value_s)}</div>'
+        f"{delta_html}"
+        f'<div class="kpi-funnel-sub">{sub_html}</div></div>'
+    )
+
+
+def _mom_executive_snapshot_scorecards_html(
+    *,
+    scope_lbl: str,
+    total_spend: float,
+    total_cw: int,
+    total_leads: int,
+    total_qual: int,
+    sql_pct: float,
+    qwin_pct: float,
+) -> str:
+    """Market MoM headline tiles — **same card components** as Marketing performance (no period comparison)."""
+    _delta_off = _kpi_funnel_delta_html(0.0, 0.0, disabled=True)
+    d = 0.0
+
+    def _step() -> float:
+        nonlocal d
+        d += 0.035
+        return d
+
+    cpl = (total_spend / total_leads) if total_leads else 0.0
+    cpsql = (total_spend / total_qual) if total_qual else 0.0
+    cpl_s = f"${cpl:,.2f}" if total_leads and total_spend else "—"
+    cpsql_s = f"${cpsql:,.2f}" if total_qual and total_spend else "—"
+    cpcw_s = f"${(total_spend / total_cw):,.2f}" if total_cw else "—"
+    spend_k = _format_spend_k(total_spend) if total_spend else "$0"
+
+    sub_spend = _kpi_funnel_sub_row("CPL (Σ slice)", cpl_s) + _kpi_funnel_sub_row("CPSQL (Σ slice)", cpsql_s)
+    sub_cw = _kpi_funnel_sub_row("CPCW", cpcw_s) + _kpi_funnel_sub_row("Spend (Σ)", spend_k)
+    sub_tl = _kpi_funnel_sub_row("Qualified", f"{total_qual:,}") + _kpi_funnel_sub_row("SQL %", f"{sql_pct:.2f}%")
+    sub_sql = _kpi_funnel_sub_row("Qualified", f"{total_qual:,}") + _kpi_funnel_sub_row("Total leads", f"{total_leads:,}")
+    sub_qwin = _kpi_funnel_sub_row("Qualified (denom.)", f"{total_qual:,}") + _kpi_funnel_sub_row("CW (num.)", f"{total_cw:,}")
+
+    card_spend = _kpi_funnel_pastel_card_html(
+        icon="💲",
+        title="Total Spend",
+        value_s=spend_k,
+        delta_html=_delta_off,
+        sub_html=sub_spend,
+        delay=_step(),
+        hue="cw",
+        biz_signal="na",
+    )
+    card_cw = _kpi_funnel_pastel_card_html(
+        icon="◎",
+        title="CW (inc. approved)",
+        value_s=f"{total_cw:,}",
+        delta_html=_delta_off,
+        sub_html=sub_cw,
+        delay=_step(),
+        hue="cw",
+        biz_signal="na",
+    )
+    card_leads = _kpi_funnel_pastel_card_html(
+        icon="👥",
+        title="Total leads",
+        value_s=f"{total_leads:,}",
+        delta_html=_delta_off,
+        sub_html=sub_tl,
+        delay=_step(),
+        hue="leads",
+        biz_signal="na",
+    )
+    card_sql = _kpi_funnel_pastel_card_html(
+        icon="‰",
+        title="SQL %",
+        value_s=f"{sql_pct:.2f}%",
+        delta_html=_delta_off,
+        sub_html=sub_sql,
+        delay=_step(),
+        hue="leads",
+        biz_signal="na",
+    )
+    card_qwin = _kpi_funnel_pastel_card_html(
+        icon="%",
+        title="Q win rate %",
+        value_s=f"{qwin_pct:.2f}%",
+        delta_html=_delta_off,
+        sub_html=sub_qwin,
+        delay=_step(),
+        hue="pipe",
+        biz_signal="na",
+    )
+
+    title_esc = html.escape(f"Executive snapshot — {scope_lbl}")
+    return (
+        f'<div class="kpi-funnel-wrap kpi-funnel-wrap--pastel-scorecard mpo-kpi-shell">'
+        f'<div class="kpi-funnel-section">'
+        f'<div class="kpi-funnel-section-title kpi-funnel-section-title--cw">{title_esc}</div>'
+        f'<div class="kpi-funnel-grid">'
+        f"{card_spend}{card_cw}{card_leads}{card_sql}{card_qwin}"
+        f"</div></div></div>"
+    )
+
+
 def _kpi_block(
     *,
     total_spend: float,
@@ -5590,19 +5713,16 @@ def _kpi_block(
         extra_class: str = "",
         biz_signal: str = "na",
     ) -> str:
-        h = html.escape(hue, quote=True)
-        xc = html.escape(extra_class.strip(), quote=True) if extra_class.strip() else ""
-        xcls = f" {xc}" if xc else ""
-        b = str(biz_signal).strip().lower()
-        biz_cls = f" kpi-funnel-card--{html.escape(b, quote=True)}" if b not in ("", "na") else ""
-        return (
-            f'<div class="kpi-funnel-card kpi-funnel-card--pastel kpi-funnel-card--pastel-{h}{xcls}{biz_cls}" '
-            f'style="animation-delay:{delay:.2f}s">'
-            f'<span class="kpi-funnel-icon" aria-hidden="true">{icon}</span>'
-            f'<div class="kpi-funnel-title">{html.escape(title)}</div>'
-            f'<div class="kpi-funnel-value">{html.escape(value_s)}</div>'
-            f"{delta_html}"
-            f'<div class="kpi-funnel-sub">{sub_html}</div></div>'
+        return _kpi_funnel_pastel_card_html(
+            icon=icon,
+            title=title,
+            value_s=value_s,
+            delta_html=delta_html,
+            sub_html=sub_html,
+            delay=delay,
+            hue=hue,
+            extra_class=extra_class,
+            biz_signal=biz_signal,
         )
 
     def _section(title: str, accent: str, cards: list[str]) -> str:
@@ -8903,20 +9023,17 @@ def render_page_market_mom(
     qwin_all = (total_cw / total_qual * 100.0) if total_qual else 0.0
 
     st.markdown(
-        '<div class="kpi-funnel-wrap kpi-funnel-wrap--pastel-scorecard mpo-kpi-shell">',
+        _mom_executive_snapshot_scorecards_html(
+            scope_lbl=scope_lbl,
+            total_spend=total_spend,
+            total_cw=total_cw,
+            total_leads=total_leads,
+            total_qual=total_qual,
+            sql_pct=sql_all,
+            qwin_pct=qwin_all,
+        ),
         unsafe_allow_html=True,
     )
-    st.markdown(
-        f'<div class="looker-table-title" style="margin-top:0;">Executive snapshot — {html.escape(scope_lbl)}</div>',
-        unsafe_allow_html=True,
-    )
-    m1, m2, m3, m4, m5 = st.columns(5)
-    m1.metric("Spend (Σ)", _format_spend_k(total_spend) if total_spend else "$0")
-    m2.metric("Closed won (Σ)", f"{total_cw:,}")
-    m3.metric("Lead rows (Σ)", f"{total_leads:,}")
-    m4.metric("SQL %", f"{sql_all:.1f}%")
-    m5.metric("Q win %", f"{qwin_all:.1f}%")
-    st.markdown("</div>", unsafe_allow_html=True)
 
     monthly = _mom_monthly_series(df)
     if monthly.empty:
