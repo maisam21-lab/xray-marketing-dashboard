@@ -26,7 +26,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
 # If the hosted app shows an older string, GitHub ``main`` (or the branch Streamlit uses) does not have your latest push yet.
-DASHBOARD_BUILD = "2026-04-14-market-mom-exec-layout"
+DASHBOARD_BUILD = "2026-04-13-mom-tab-mpo-styling"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -4419,7 +4419,7 @@ def _apply_marketing_performance_filters(
     reporting_start: date,
     reporting_end: date,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Performance-tab filters: market × month, plus **Scorecard comparison** (MoM vs YoY) in an expander."""
+    """Performance-tab filters: **market** × **month** (Data scope ribbon)."""
 
     mk_raw = [x for x in df_date["country"].dropna().unique().tolist() if x and x != "Unknown"]
     if "cost" in df_date.columns and mk_raw:
@@ -4434,7 +4434,6 @@ def _apply_marketing_performance_filters(
         market_opts = sorted(mk_raw)
     month_opts = _mpo_month_picker_options(df_date, reporting_start=reporting_start, reporting_end=reporting_end)
 
-    _mpo_ensure_scorecard_compare_session(key_suffix)
     _k_mpo_market = f"{key_suffix}_market"
     _k_mpo_month = f"{key_suffix}_month"
     if _k_mpo_market not in st.session_state:
@@ -4469,82 +4468,6 @@ def _apply_marketing_performance_filters(
                 key=_k_mpo_month,
             )
         st.markdown("</div>", unsafe_allow_html=True)
-
-        _mko = _mpo_sorted_month_key_list(month_opts)
-        _years = sorted({pd.Period(str(x), freq="M").year for x in _mko}) if _mko else [date.today().year]
-        _k_mom_cur = f"{key_suffix}_cmp_mom_cur"
-        _k_mom_ref = f"{key_suffix}_cmp_mom_ref"
-        _k_y1 = f"{key_suffix}_cmp_yoy_y1"
-        _k_y2 = f"{key_suffix}_cmp_yoy_y2"
-        _k_ym = f"{key_suffix}_cmp_yoy_month"
-        if _mko:
-            if _k_mom_cur not in st.session_state:
-                st.session_state[_k_mom_cur] = _mko[-1]
-            if _k_mom_ref not in st.session_state:
-                st.session_state[_k_mom_ref] = _mko[-2] if len(_mko) >= 2 else _mko[-1]
-        if _k_y1 not in st.session_state:
-            st.session_state[_k_y1] = int(_years[-1])
-        if _k_y2 not in st.session_state:
-            st.session_state[_k_y2] = int(_years[-2]) if len(_years) >= 2 else int(_years[-1])
-        if _k_ym not in st.session_state:
-            st.session_state[_k_ym] = int(pd.Period(str(_mko[-1]), freq="M").month) if _mko else 1
-
-        try:
-            _cmp_panel = st.expander("Scorecard comparison (% change)", expanded=False)
-        except TypeError:
-            _cmp_panel = st.expander("Scorecard comparison (% change)")
-        with _cmp_panel:
-            st.markdown(
-                '<div class="mpo-cmp-panel-intro">'
-                "Headline values follow <strong>Data scope</strong> above. "
-                "Use the dropdown below only for <strong>% change</strong> on the scorecard."
-                "</div>",
-                unsafe_allow_html=True,
-            )
-            st.selectbox(
-                "Compare % changes using",
-                options=["mom", "yoy"],
-                format_func=_mpo_scorecard_compare_label,
-                key=f"{key_suffix}_scorecard_compare",
-            )
-            _cmp_mode = str(st.session_state.get(f"{key_suffix}_scorecard_compare", "mom") or "mom")
-            if _mko and _cmp_mode == "mom":
-                _r1, _r2 = st.columns(2)
-                with _r1:
-                    st.selectbox(
-                        "Month (current)",
-                        options=_mko,
-                        format_func=_month_label_short,
-                        key=_k_mom_cur,
-                    )
-                with _r2:
-                    st.selectbox(
-                        "Month (compare to)",
-                        options=_mko,
-                        format_func=_month_label_short,
-                        key=_k_mom_ref,
-                    )
-            elif _cmp_mode == "yoy":
-                _y1c, _y2c, _ymc = st.columns(3)
-                with _y1c:
-                    st.selectbox(
-                        "Year (current)",
-                        options=_years,
-                        key=_k_y1,
-                    )
-                with _y2c:
-                    st.selectbox(
-                        "Year (compare to)",
-                        options=_years,
-                        key=_k_y2,
-                    )
-                with _ymc:
-                    st.selectbox(
-                        "Calendar month",
-                        options=list(range(1, 13)),
-                        format_func=lambda m: pd.Timestamp(2020, int(m), 1).strftime("%B"),
-                        key=_k_ym,
-                    )
         st.markdown("</div>", unsafe_allow_html=True)
 
     selected_markets = st.session_state.get(f"{key_suffix}_market", [_MPO_ALL_GEO_SENTINEL])
@@ -8742,12 +8665,6 @@ def render_page_marketing_performance(
     if _normalized_spend_cost_sum(_spend_for_master_ui) < 1e-6 and _normalized_spend_cost_sum(spend_pool_full) > 1e-6:
         _spend_for_master_ui = _spend_sheet_pivot_by_month_country(spend_pool_full)
 
-    df_mkt = _mpo_apply_market_only(df_date, key_suffix)
-    # Compare-month % deltas need market-wide rows (``df_mkt``) so reference months stay available.
-    spend_cmp = _spend_slice_for_dashboard_filters(spend_sheet_for_kpis, df_mkt)
-    cw_cmp = _cw_dataframe_for_kpis(_resolve_cw_tcv_dataframe(df_loaded, df_mkt), df_mkt)
-    ck, rk, cmp_kind = _mpo_compare_month_keys(master_df, key_suffix=key_suffix, table_df=df)
-
     _headline_keys = _mpo_headline_month_keys_for_scope(
         master_df,
         df,
@@ -8759,21 +8676,9 @@ def render_page_marketing_performance(
         _fb = _mpo_month_keys_sorted_master(master_df)
         _headline_keys = _fb[-1:] if _fb else []
 
-    _kpi_prior = _kpi_two_month_compare_dict(
-        ck,
-        rk,
-        spend_df=spend_cmp,
-        leads_df=leads_df,
-        post_df_kpi=post_df_kpi,
-        cw_kpi=cw_cmp,
-    )
-    if cmp_kind == "yoy":
-        _kpi_prior["_delta_label"] = "the compare year (same calendar month)"
-    else:
-        _kpi_prior["_delta_label"] = "the compare month"
+    _kpi_prior: dict[str, Any] = {"_comparison_off": True}
 
     # Headline KPIs: **sum** across months in scope — same **Data scope** as the multiselects (``spend_df``, ``cw_kpi``).
-    # ``spend_cmp`` / ``cw_cmp`` stay market-only for scorecard MoM/YoY pairs above.
     _hm = (
         _mpo_scorecard_headline_totals_for_months(
             _headline_keys,
@@ -8952,8 +8857,17 @@ def render_page_market_mom(
         unsafe_allow_html=True,
     )
 
-    df, _ = _apply_sheet_filters(df_date, key_suffix=key_suffix)
-
+    st.markdown('<div class="mpo-data-surface">', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="mpo-filter-ribbon">'
+        '<span class="mpo-filter-ribbon-title">Data scope</span>'
+        "</div>",
+        unsafe_allow_html=True,
+    )
+    st.markdown('<div class="mpo-top-toolbar">', unsafe_allow_html=True)
+    df, _ = _apply_sheet_filters(df_date, key_suffix=key_suffix, filters_in_row=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown('<div class="mpo-top-toolbar">', unsafe_allow_html=True)
     mk_opts = sorted([x for x in df_date["country"].dropna().unique().tolist() if x and x != "Unknown"])
     ctl1, ctl2 = st.columns((1, 2))
     with ctl1:
@@ -8968,6 +8882,8 @@ def render_page_market_mom(
             f"Reporting window **{start_date:%d %b %Y}** → **{end_date:%d %b %Y}** · "
             "Filters above apply to every chart and the operating table."
         )
+    st.markdown("</div>", unsafe_allow_html=True)
+    st.markdown("</div>", unsafe_allow_html=True)
 
     if pick != "All markets":
         df = df[df["country"] == pick].copy()
@@ -8975,6 +8891,8 @@ def render_page_market_mom(
     if df.empty:
         st.warning("No rows match the current filters — widen the date range or clear sheet filters.")
         return
+
+    st.markdown('<div class="mom-page-wrap">', unsafe_allow_html=True)
 
     scope_lbl = pick if pick != "All markets" else "All markets (portfolio)"
     total_spend = float(pd.to_numeric(df["cost"], errors="coerce").fillna(0).sum()) if "cost" in df.columns else 0.0
@@ -8984,27 +8902,33 @@ def render_page_market_mom(
     sql_all = (total_qual / total_leads * 100.0) if total_leads else 0.0
     qwin_all = (total_cw / total_qual * 100.0) if total_qual else 0.0
 
-    with st.container(border=True):
-        st.markdown(
-            f'<div class="looker-table-title" style="margin-top:0;">Executive snapshot — {html.escape(scope_lbl)}</div>',
-            unsafe_allow_html=True,
-        )
-        m1, m2, m3, m4, m5 = st.columns(5)
-        m1.metric("Spend (Σ)", _format_spend_k(total_spend) if total_spend else "$0")
-        m2.metric("Closed won (Σ)", f"{total_cw:,}")
-        m3.metric("Lead rows (Σ)", f"{total_leads:,}")
-        m4.metric("SQL %", f"{sql_all:.1f}%")
-        m5.metric("Q win %", f"{qwin_all:.1f}%")
+    st.markdown(
+        '<div class="kpi-funnel-wrap kpi-funnel-wrap--pastel-scorecard mpo-kpi-shell">',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        f'<div class="looker-table-title" style="margin-top:0;">Executive snapshot — {html.escape(scope_lbl)}</div>',
+        unsafe_allow_html=True,
+    )
+    m1, m2, m3, m4, m5 = st.columns(5)
+    m1.metric("Spend (Σ)", _format_spend_k(total_spend) if total_spend else "$0")
+    m2.metric("Closed won (Σ)", f"{total_cw:,}")
+    m3.metric("Lead rows (Σ)", f"{total_leads:,}")
+    m4.metric("SQL %", f"{sql_all:.1f}%")
+    m5.metric("Q win %", f"{qwin_all:.1f}%")
+    st.markdown("</div>", unsafe_allow_html=True)
 
     monthly = _mom_monthly_series(df)
     if monthly.empty:
         st.info("No calendar months in this slice — check filters and month columns.")
         _master_performance_table(df, key_suffix=f"{key_suffix}_mom", section_title="Month × market detail")
+        st.markdown("</div>", unsafe_allow_html=True)
         return
 
     _plot_mom = dict(template="plotly_white", paper_bgcolor="white", plot_bgcolor="white", font=dict(size=12))
     _xaxis = dict(showgrid=True, gridcolor="rgba(148,163,184,0.25)", title="")
 
+    st.markdown('<div class="dash-chart-stack">', unsafe_allow_html=True)
     with st.container(border=True):
         st.markdown('<div class="looker-table-title" style="margin-top:0;">Demand & spend trajectory</div>', unsafe_allow_html=True)
         st.caption("Are we funding enough reach, and is demand holding month to month?")
@@ -9066,6 +8990,9 @@ def render_page_market_mom(
             )
             st.plotly_chart(fig_v, width="stretch", key=f"{key_suffix}_pl_volume")
 
+    st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown('<div class="dash-chart-stack">', unsafe_allow_html=True)
     with st.container(border=True):
         st.markdown('<div class="looker-table-title" style="margin-top:0;">Conversion quality</div>', unsafe_allow_html=True)
         st.caption("SQL % and qualified-stage win rate — are we improving qualification and downstream wins?")
@@ -9100,7 +9027,10 @@ def render_page_market_mom(
         )
         st.plotly_chart(fig_q, width="stretch", key=f"{key_suffix}_pl_quality")
 
+    st.markdown("</div>", unsafe_allow_html=True)
+
     if monthly["spend"].sum() > 1e-9 and (monthly["cpl"].notna().any() or monthly["cpsql"].notna().any()):
+        st.markdown('<div class="dash-chart-stack">', unsafe_allow_html=True)
         with st.container(border=True):
             st.markdown('<div class="looker-table-title" style="margin-top:0;">Unit economics (estimated)</div>', unsafe_allow_html=True)
             st.caption("CPL and CPSQL from blended spend in this slice — use for directional efficiency, not GAAP.")
@@ -9134,6 +9064,7 @@ def render_page_market_mom(
                 xaxis=_xaxis,
             )
             st.plotly_chart(fig_ue, width="stretch", key=f"{key_suffix}_pl_ue")
+        st.markdown("</div>", unsafe_allow_html=True)
 
     with st.expander("Month × market operating detail (full pivot)", expanded=False):
         _master_performance_table(df, key_suffix=f"{key_suffix}_mom", section_title="")
@@ -9153,6 +9084,8 @@ def render_page_market_mom(
     )
     with st.expander("Export-friendly totals (this slice)", expanded=False):
         st.dataframe(grand, width="stretch", hide_index=True, key=f"{key_suffix}_df_grand")
+
+    st.markdown("</div>", unsafe_allow_html=True)
 
 
 def _pmc_normalize_channel_label(raw: str) -> str:
@@ -9990,6 +9923,9 @@ def main() -> None:
         padding: 4px 0 0 0;
     }
     .dash-chart-stack .looker-table-title { margin-top: 4px !important; }
+    .mom-page-wrap {
+        margin: 4px 0 0 0;
+    }
     /* KPI scorecards: glass panels, staggered entrance, hover lift */
     .kpi-section {
         min-width: 0;
