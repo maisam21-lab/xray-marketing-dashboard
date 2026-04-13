@@ -25,7 +25,8 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
-DASHBOARD_BUILD = "2026-04-13-t3b3-offset-quarters-cpcw-lf-goals"
+# If the hosted app shows an older string, GitHub ``main`` (or the branch Streamlit uses) does not have your latest push yet.
+DASHBOARD_BUILD = "2026-04-14-push-oracle-app-to-streamlit-remote"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 ME_XRAY_SPEND_SHEET_URL = f"https://docs.google.com/spreadsheets/d/{DEFAULT_SHEET_ID}/edit"
@@ -3642,14 +3643,13 @@ def load_spend_gid0_raw_sum(sheet_id: str, _secret_fp: str) -> float:
     return best
 
 
-@st.cache_data(ttl=300)
-def load_first_matching_worksheet_normalized(
+def _load_first_matching_worksheet_from_meta(
     sheet_id: str,
     name_patterns: tuple[str, ...],
     _secret_fp: str,
+    meta: list[tuple[str, int]],
 ) -> pd.DataFrame:
-    """Load first worksheet whose title matches any regex pattern."""
-    meta = list_worksheet_meta(sheet_id, _secret_fp)
+    """Load first worksheet whose title matches any regex pattern; pass ``meta`` from ``list_worksheet_meta`` to avoid duplicate API calls."""
     secret_creds = _service_account_from_streamlit_secrets()
     if not secret_creds:
         return pd.DataFrame()
@@ -3689,6 +3689,17 @@ def load_first_matching_worksheet_normalized(
     out["source_tab"] = str(title)
     out["worksheet_gid"] = int(ws_gid)
     return out
+
+
+@st.cache_data(ttl=300)
+def load_first_matching_worksheet_normalized(
+    sheet_id: str,
+    name_patterns: tuple[str, ...],
+    _secret_fp: str,
+) -> pd.DataFrame:
+    """Load first worksheet whose title matches any regex pattern."""
+    meta = list_worksheet_meta(sheet_id, _secret_fp)
+    return _load_first_matching_worksheet_from_meta(sheet_id, name_patterns, _secret_fp, meta)
 
 
 @st.cache_data(ttl=300)
@@ -4086,47 +4097,79 @@ def _master_view_style_css(df: pd.DataFrame) -> pd.DataFrame:
             ct_lo, ct_hi = 5.0, 12.0
 
     cyan_cols = {"Spend", "CW (Inc Approved)", "CPCW", "1st Month LF", "Actual TCV"}
-    for i in df.index:
+    idx_list = list(df.index)
+    n = len(idx_list)
+    month_first: list[bool] = []
+    month_last: list[bool] = []
+    if "Month" in df.columns:
+        for i in idx_list:
+            v = df.loc[i, "Month"]
+            month_first.append(bool(pd.notna(v) and str(v).strip() != ""))
+        for pos in range(n):
+            month_last.append(pos == n - 1 or (month_first[pos + 1] if pos + 1 < n else False))
+    else:
+        month_first = [p == 0 for p in range(n)]
+        month_last = [p == n - 1 for p in range(n)]
+
+    for pos, i in enumerate(idx_list):
         me = bool(is_region.loc[i])
+        row_edge = ""
+        if month_first[pos] and pos > 0:
+            row_edge = "border-top: 4px solid #64748b"
+        if month_last[pos]:
+            row_edge = (row_edge + "; " if row_edge else "") + "border-bottom: 4px solid #64748b"
+
+        def _rx(s: str) -> str:
+            if not row_edge:
+                return s
+            return f"{s.rstrip().rstrip(';')}; {row_edge}"
+
+        def _ew(st: str) -> str:
+            if not row_edge:
+                return st
+            return f"{st.rstrip().rstrip(';')}; {row_edge}"
+
         for col in df.columns:
             if col in {"Month", "Unified Date"}:
                 v = df.loc[i, col]
                 if v == "" or (isinstance(v, str) and not str(v).strip()):
-                    css.loc[i, col] = _cell(empty_cell)
+                    css.loc[i, col] = _cell(_rx(empty_cell))
                 else:
                     css.loc[i, col] = _cell(
-                        "background-color: #f1f5f9; font-weight: 600; color: #334155; border-bottom: 1px solid #e2e8f0;"
+                        _rx(
+                            "background-color: #f1f5f9; font-weight: 600; color: #334155; border-bottom: 1px solid #e2e8f0;"
+                        )
                     )
             elif col == "Market":
                 base = (me_bold + " background-color: #ffffff; color: #0f172a;") if me else white
-                css.loc[i, col] = _cell(base, center=False)
+                css.loc[i, col] = _cell(_rx(base), center=False)
             elif col == "Country / platform":
                 base = (me_bold + " background-color: #ffffff; color: #0f172a;") if me else white
-                css.loc[i, col] = _cell(base, center=False)
+                css.loc[i, col] = _cell(_rx(base), center=False)
             elif col == "Channel":
                 base = (me_bold + " background-color: #ffffff; color: #0f172a;") if me else white
-                css.loc[i, col] = _cell(base, center=False)
+                css.loc[i, col] = _cell(_rx(base), center=False)
             elif col == "Unified Channel":
                 base = (me_bold + " background-color: #ffffff; color: #0f172a;") if me else white
-                css.loc[i, col] = _cell(base, center=False)
+                css.loc[i, col] = _cell(_rx(base), center=False)
             elif col in cyan_cols:
                 base = (cyan + me_bold) if me else cyan
-                css.loc[i, col] = _cell(base)
+                css.loc[i, col] = _cell(_rx(base))
             elif col in {"Total Leads", "Qualified"}:
                 base = (white + me_bold) if me else white
-                css.loc[i, col] = _cell(base)
+                css.loc[i, col] = _cell(_rx(base))
             elif col == "CPCW:LF":
                 if me:
-                    css.loc[i, col] = _cell(ratio_me)
+                    css.loc[i, col] = _cell(_rx(ratio_me))
                 else:
-                    css.loc[i, col] = _rgy(df.loc[i, col], lf_lo, lf_hi)
+                    css.loc[i, col] = _ew(_rgy(df.loc[i, col], lf_lo, lf_hi))
             elif col == "Cost/TCV%":
                 if me:
-                    css.loc[i, col] = _cell(ratio_me)
+                    css.loc[i, col] = _cell(_rx(ratio_me))
                 else:
-                    css.loc[i, col] = _rgy(df.loc[i, col], ct_lo, ct_hi)
+                    css.loc[i, col] = _ew(_rgy(df.loc[i, col], ct_lo, ct_hi))
             else:
-                css.loc[i, col] = _cell(white)
+                css.loc[i, col] = _cell(_rx(white))
     return css
 
 
@@ -5039,7 +5082,7 @@ def _mpo_render_paid_media_by_platform_summary(
         )
         st.dataframe(
             tab_df,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             key=f"{key_suffix}_df_platform_kpi",
         )
@@ -5153,7 +5196,7 @@ def _mpo_render_supermetrics_debug_pane(
                 }
             )
         dbg = pd.DataFrame(rows_out)
-        st.dataframe(dbg, use_container_width=True, hide_index=True, key=f"{key_suffix}_df_sm_debug")
+        st.dataframe(dbg, width="stretch", hide_index=True, key=f"{key_suffix}_df_sm_debug")
         st.caption(
             "Compare **gid load** (fresh `load_worksheet_by_gid_preprocessed`) vs **merged** (rows in `df_loaded` after concat + date filter). "
             "Large gaps usually mean date/month filtering dropped rows or duplicate header parsing differed between full-workbook load and gid reload. "
@@ -6245,7 +6288,7 @@ def _render_mpo_trend_charts(
                 )
                 if float(s_clk.sum()) < 1e-6 and float(s_imp.sum()) < 1e-6:
                     st.caption("Clicks/impressions are zero in this slice — check Supermetrics / filters.")
-                st.plotly_chart(fig_t, use_container_width=True, key=f"{key_suffix}_pl_mpo_perf_trends")
+                st.plotly_chart(fig_t, width="stretch", key=f"{key_suffix}_pl_mpo_perf_trends")
 
     with col_right:
         with st.container(border=True):
@@ -6339,7 +6382,7 @@ def _render_mpo_trend_charts(
                         ),
                     ],
                 )
-                st.plotly_chart(fig_d, use_container_width=True, key=f"{key_suffix}_pl_mpo_perf_breakdown")
+                st.plotly_chart(fig_d, width="stretch", key=f"{key_suffix}_pl_mpo_perf_breakdown")
 
 
 def _master_view_spend_authoritative_from_grid(spend_grid: pd.DataFrame) -> pd.DataFrame:
@@ -7020,7 +7063,7 @@ def _render_mpo_master_metric_detail_card(
                 )
                 st.dataframe(
                     sp_rec,
-                    use_container_width=True,
+                    width="stretch",
                     hide_index=True,
                     height=min(420, max(140, 56 + _cn * 28)),
                     key=f"mpo_spend_rec_{month_key}_{market_label}_{_ci}",
@@ -7033,7 +7076,7 @@ def _render_mpo_master_metric_detail_card(
         else:
             st.dataframe(
                 drill,
-                use_container_width=True,
+                width="stretch",
                 hide_index=True,
                 key=f"mpo_spend_drill_{month_key}_{market_label}",
             )
@@ -7057,7 +7100,7 @@ def _render_mpo_master_metric_detail_card(
     st.markdown("##### Calculation trail (inputs → final value)")
     st.dataframe(
         trail_df,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
         key=f"mpo_trail_{metric_name}_{market_label}_{month_label}",
     )
@@ -7068,7 +7111,7 @@ def _render_mpo_master_metric_detail_card(
         st.markdown("##### Source check (only rows that feed this metric)")
         st.dataframe(
             src_df,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             key=f"mpo_src_metric_{metric_name}_{market_label}_{month_label}",
         )
@@ -7192,7 +7235,87 @@ def _t3b3_goal_cpcw_lf_rows_from_gm(gm: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(rows_out)[cols]
 
 
-def _t3b3_view_style_css(df: pd.DataFrame) -> pd.DataFrame:
+def _t3b3_quarter_display_and_edges(
+    df: pd.DataFrame,
+    *,
+    qcol: str = "T3B3 Quarter",
+) -> tuple[pd.DataFrame, list[bool], list[bool], list[bool]]:
+    """Show quarter label on **Middle East** subtotal only (detailed table); goals table last scope per quarter; else sensible fallbacks."""
+    out = df.copy()
+    n = len(out)
+    if n == 0 or qcol not in out.columns:
+        return out, [], [], []
+    labs_orig = [str(out[qcol].iloc[i]).strip() for i in range(n)]
+    label_col = "Market" if "Market" in out.columns else ("CPCW:LF goal scope" if "CPCW:LF goal scope" in out.columns else None)
+    mlabels: Optional[list[str]] = None
+    if label_col:
+        mlabels = [str(out[label_col].iloc[i]).strip().lower() for i in range(n)]
+    me_lbl = _MIDDLE_EAST_REGION_LABEL.strip().lower()
+    is_goals = "CPCW:LF goal scope" in out.columns
+
+    def _is_me_row(idx: int) -> bool:
+        if not mlabels:
+            return False
+        t = mlabels[idx]
+        return t == me_lbl or t == "middle east (subtotal)"
+
+    is_first = [False] * n
+    is_last = [False] * n
+    shade_alt = [False] * n
+    gid = 0
+    for pos in range(n):
+        cur = labs_orig[pos]
+        cl = cur.lower()
+        if cl == "grand total":
+            is_first[pos] = pos == 0 or str(labs_orig[pos - 1]).lower() != "grand total"
+            is_last[pos] = True
+            shade_alt[pos] = False
+            continue
+        if pos == 0:
+            is_first[pos] = True
+        else:
+            is_first[pos] = labs_orig[pos] != labs_orig[pos - 1]
+        if pos == n - 1:
+            is_last[pos] = True
+        else:
+            is_last[pos] = labs_orig[pos] != labs_orig[pos + 1]
+        if pos == 0 or labs_orig[pos] != labs_orig[pos - 1]:
+            gid += 1
+        shade_alt[pos] = gid % 2 == 0
+
+    qi = out.columns.get_loc(qcol)
+    i = 0
+    while i < n:
+        lab = labs_orig[i]
+        if lab.lower() == "grand total":
+            out.iat[i, qi] = lab
+            i += 1
+            continue
+        j = i
+        while j + 1 < n and labs_orig[j + 1] == lab:
+            j += 1
+        span = list(range(i, j + 1))
+        me_idxs = [p for p in span if _is_me_row(p)]
+        if me_idxs:
+            show_p = me_idxs[0]
+        elif len(span) == 1:
+            show_p = span[0]
+        else:
+            show_p = span[-1] if is_goals else span[0]
+        for p in span:
+            out.iat[p, qi] = lab if p == show_p else ""
+        i = j + 1
+
+    return out, is_first, is_last, shade_alt
+
+
+def _t3b3_view_style_css(
+    df: pd.DataFrame,
+    *,
+    quarter_first: Optional[list[bool]] = None,
+    quarter_last: Optional[list[bool]] = None,
+    shade_alt: Optional[list[bool]] = None,
+) -> pd.DataFrame:
     """Same palette as master view; ``T3B3 Quarter`` column + bold subtotals / grand total."""
     _align_c = "text-align: center; vertical-align: middle;"
     _align_l = "text-align: left; vertical-align: middle; padding-left: 8px;"
@@ -7256,48 +7379,80 @@ def _t3b3_view_style_css(df: pd.DataFrame) -> pd.DataFrame:
             sql_lo, sql_hi = 15.0, 30.0
 
     cyan_cols = {"Spend", "CW (Inc Approved)", "CPCW", "1st Month LF", "Actual TCV"}
-    for i in df.index:
+    idx_list = list(df.index)
+    for pos, i in enumerate(idx_list):
         sub = bool(is_subtotal.loc[i])
         gr = bool(is_grand.loc[i])
+        sh = bool(shade_alt[pos]) if shade_alt and pos < len(shade_alt) else False
+        _bg_plain = "#f8fafc" if sh and not sub else "#ffffff"
+        if sub:
+            bg_mkt = sub_bold + f" background-color: {_bg_plain}; color: #0f172a;"
+        else:
+            bg_mkt = f"background-color: {_bg_plain}; color: #0f172a;"
+        c_hex = "#d8eaf1" if sh else "#e8f4f8"
+        bg_cyan = f"background-color: {c_hex}; color: #0f172a;" + (sub_bold if sub else "")
+        bg_lf = "#f8fafc" if sh and not sub else "#ffffff"
+        row_edge = ""
+        if gr:
+            row_edge = "border-top: 4px solid #334155"
+        elif quarter_first and pos < len(quarter_first) and quarter_first[pos] and pos > 0:
+            row_edge = "border-top: 4px solid #64748b"
+        if quarter_last and pos < len(quarter_last) and quarter_last[pos]:
+            row_edge = (row_edge + "; " if row_edge else "") + "border-bottom: 4px solid #64748b"
+
+        def _rx(s: str) -> str:
+            if not row_edge:
+                return s
+            return f"{s.rstrip().rstrip(';')}; {row_edge}"
+
+        def _ew(st: str) -> str:
+            if not row_edge:
+                return st
+            return f"{st.rstrip().rstrip(';')}; {row_edge}"
+
         for col in df.columns:
             if col == qcol:
                 v = df.loc[i, col]
+                qcell_bg = "#eef2f7" if sh and str(v).strip() == "" else None
                 if v == "" or (isinstance(v, float) and pd.isna(v)):
-                    css.loc[i, col] = _cell(empty_cell)
+                    eb = f"background-color: {qcell_bg or '#fafafa'}; color: #94a3b8"
+                    css.loc[i, col] = _cell(_rx(eb))
                 elif gr or sub:
                     css.loc[i, col] = _cell(
-                        "background-color: #f1f5f9; font-weight: 700; color: #334155; border-bottom: 1px solid #e2e8f0;"
+                        _rx(
+                            "background-color: #f1f5f9; font-weight: 700; color: #334155; border-bottom: 1px solid #e2e8f0"
+                        )
                     )
                 else:
                     css.loc[i, col] = _cell(
-                        "background-color: #f1f5f9; font-weight: 600; color: #334155; border-bottom: 1px solid #e2e8f0;"
+                        _rx(
+                            "background-color: #f1f5f9; font-weight: 600; color: #334155; border-bottom: 1px solid #e2e8f0"
+                        )
                     )
             elif col in {"Market", "CPCW:LF goal scope"}:
-                base = (sub_bold + " background-color: #ffffff; color: #0f172a;") if sub else white
-                css.loc[i, col] = _cell(base, center=False)
+                css.loc[i, col] = _cell(_rx(bg_mkt), center=False)
             elif col in cyan_cols:
-                base = (cyan + sub_bold) if sub else cyan
-                css.loc[i, col] = _cell(base)
+                css.loc[i, col] = _cell(_rx(bg_cyan))
             elif col in {"Total Leads", "Qualified"}:
-                base = (white + sub_bold) if sub else white
-                css.loc[i, col] = _cell(base)
+                base = (f"background-color: {bg_lf}; color: #0f172a;" + sub_bold) if sub else f"background-color: {bg_lf}; color: #0f172a;"
+                css.loc[i, col] = _cell(_rx(base))
             elif col == "SQL%":
                 if sub:
-                    css.loc[i, col] = _cell(ratio_sub)
+                    css.loc[i, col] = _cell(_rx(ratio_sub))
                 else:
-                    css.loc[i, col] = _rgy(df.loc[i, col], sql_lo, sql_hi)
+                    css.loc[i, col] = _ew(_rgy(df.loc[i, col], sql_lo, sql_hi))
             elif col == "CPCW:LF":
                 if sub:
-                    css.loc[i, col] = _cell(ratio_sub)
+                    css.loc[i, col] = _cell(_rx(ratio_sub))
                 else:
-                    css.loc[i, col] = _rgy(df.loc[i, col], lf_lo, lf_hi)
+                    css.loc[i, col] = _ew(_rgy(df.loc[i, col], lf_lo, lf_hi))
             elif col == "Cost/TCV%":
                 if sub:
-                    css.loc[i, col] = _cell(ratio_sub)
+                    css.loc[i, col] = _cell(_rx(ratio_sub))
                 else:
-                    css.loc[i, col] = _rgy(df.loc[i, col], ct_lo, ct_hi)
+                    css.loc[i, col] = _ew(_rgy(df.loc[i, col], ct_lo, ct_hi))
             else:
-                css.loc[i, col] = _cell(white)
+                css.loc[i, col] = _cell(_rx(white))
     return css
 
 
@@ -7719,8 +7874,14 @@ def _render_t3b3_quarter_sections(
             if c in {"T3B3 Quarter", "Market", "CPCW:LF goal scope"}:
                 continue
             fmt_map[c] = _fmt_for_metric(c)
-        css_matrix = _t3b3_view_style_css(pvt)
-        styler = pvt.style.format(fmt_map, na_rep="—")
+        pvt_disp, q_first, q_last, q_shade = _t3b3_quarter_display_and_edges(pvt)
+        css_matrix = _t3b3_view_style_css(
+            pvt_disp,
+            quarter_first=q_first or None,
+            quarter_last=q_last or None,
+            shade_alt=q_shade or None,
+        )
+        styler = pvt_disp.style.format(fmt_map, na_rep="—")
         for col in css_matrix.columns:
             styler = styler.apply(
                 lambda s, c=col: css_matrix.loc[s.index, c],
@@ -7733,15 +7894,15 @@ def _render_t3b3_quarter_sections(
         st.info("No quarter-level rows to show for T3B3 (check months in range and filters).")
     else:
         st.markdown("##### Detailed market performance")
-        st.dataframe(_fmt_t3b3(detail), use_container_width=True, hide_index=True, key=f"{key_suffix}_t3b3_detail")
+        st.dataframe(_fmt_t3b3(detail), width="stretch", hide_index=True, key=f"{key_suffix}_t3b3_detail")
 
     if not kb.empty:
         st.markdown("##### Kuwait + Bahrain")
-        st.dataframe(_fmt_t3b3(kb), use_container_width=True, hide_index=True, key=f"{key_suffix}_t3b3_kb")
+        st.dataframe(_fmt_t3b3(kb), width="stretch", hide_index=True, key=f"{key_suffix}_t3b3_kb")
 
     if not cpcw_goals.empty:
         st.markdown("##### CPCW:LF — goal markets (UAE · Saudi · Kuwait + Bahrain)")
-        st.dataframe(_fmt_t3b3(cpcw_goals), use_container_width=True, hide_index=True, key=f"{key_suffix}_t3b3_cpcw_goals")
+        st.dataframe(_fmt_t3b3(cpcw_goals), width="stretch", hide_index=True, key=f"{key_suffix}_t3b3_cpcw_goals")
 
 
 def _render_master_view_pivot_from_gm(
@@ -7852,14 +8013,14 @@ def _render_master_view_pivot_from_gm(
     try:
         detail_state = st.dataframe(
             styler,
-            use_container_width=True,
+            width="stretch",
             hide_index=True,
             key=f"{key_suffix}_df_master_pivot",
             on_select="rerun",
             selection_mode="single-cell",
         )
     except TypeError:
-        st.dataframe(styler, use_container_width=True, hide_index=True, key=f"{key_suffix}_df_master_pivot")
+        st.dataframe(styler, width="stretch", hide_index=True, key=f"{key_suffix}_df_master_pivot")
 
     _detail_base = f"{key_suffix}_master_metric_detail"
     _payload_k = f"{_detail_base}_payload"
@@ -8634,7 +8795,7 @@ def render_page_market_mom(
         ]
     )
     st.caption("Grand total (filtered)")
-    st.dataframe(grand, use_container_width=True, hide_index=True, key=f"{key_suffix}_df_grand")
+    st.dataframe(grand, width="stretch", hide_index=True, key=f"{key_suffix}_df_grand")
 
     monthly = (
         df.groupby("month", as_index=False)
@@ -8665,7 +8826,7 @@ def render_page_market_mom(
             title="CW vs leads vs qualified (by month)",
         )
         fig.update_layout(plot_bgcolor="white", paper_bgcolor="white", margin=dict(l=8, r=8, t=45, b=8))
-        st.plotly_chart(fig, use_container_width=True, key=f"{key_suffix}_pl_combo")
+        st.plotly_chart(fig, width="stretch", key=f"{key_suffix}_pl_combo")
     with ch2:
         fig2 = px.line(
             monthly,
@@ -8675,7 +8836,7 @@ def render_page_market_mom(
             title="SQL % and Q Win % (CW ÷ Qualified, by month)",
         )
         fig2.update_layout(plot_bgcolor="white", paper_bgcolor="white", margin=dict(l=8, r=8, t=45, b=8))
-        st.plotly_chart(fig2, use_container_width=True, key=f"{key_suffix}_pl_lines")
+        st.plotly_chart(fig2, width="stretch", key=f"{key_suffix}_pl_lines")
 
 
 def _pmc_normalize_channel_label(raw: str) -> str:
@@ -8973,7 +9134,7 @@ def _pmc_render_charts(by_ch: pd.DataFrame, key_suffix: str) -> None:
         secondary_y=True,
     )
     fig1.update_xaxes(title_text="Unified Channel", tickangle=-12, showgrid=False)
-    st.plotly_chart(fig1, use_container_width=True, key=f"{key_suffix}_pmc_vol")
+    st.plotly_chart(fig1, width="stretch", key=f"{key_suffix}_pmc_vol")
 
     # --- 2) Spend bars (left) + Actual TCV line (right) — single panel
     st.markdown('<p class="mpo-perf-chart-title">Paid Channel Spend × TCV</p>', unsafe_allow_html=True)
@@ -9024,7 +9185,7 @@ def _pmc_render_charts(by_ch: pd.DataFrame, key_suffix: str) -> None:
         secondary_y=True,
     )
     fig2.update_xaxes(title_text="Unified Channel", tickangle=-12, showgrid=False)
-    st.plotly_chart(fig2, use_container_width=True, key=f"{key_suffix}_pmc_spend_tcv")
+    st.plotly_chart(fig2, width="stretch", key=f"{key_suffix}_pmc_spend_tcv")
 
     # --- 3) Bubble matrix: CPL × SQL % (labels on hover only — avoids overlap clutter)
     st.markdown('<p class="mpo-perf-chart-title">Paid Channel Lead Quality Matrix</p>', unsafe_allow_html=True)
@@ -9077,7 +9238,7 @@ def _pmc_render_charts(by_ch: pd.DataFrame, key_suffix: str) -> None:
         ),
         **_paper,
     )
-    st.plotly_chart(fig3, use_container_width=True, key=f"{key_suffix}_pmc_matrix")
+    st.plotly_chart(fig3, width="stretch", key=f"{key_suffix}_pmc_matrix")
 
 
 def _render_page_performance_marketing_channels(
@@ -9202,7 +9363,7 @@ def render_page_channels(df_loaded: pd.DataFrame, start_date: date, end_date: da
 
     st.markdown('<div class="dash-master-surface">', unsafe_allow_html=True)
     st.markdown('<div class="looker-table-title">Channel master view</div>', unsafe_allow_html=True)
-    st.dataframe(agg, use_container_width=True, hide_index=True, key=f"{key_suffix}_df_ch")
+    st.dataframe(agg, width="stretch", hide_index=True, key=f"{key_suffix}_df_ch")
     st.markdown("</div>", unsafe_allow_html=True)
 
     st.markdown('<div class="dash-chart-stack">', unsafe_allow_html=True)
@@ -9212,7 +9373,7 @@ def render_page_channels(df_loaded: pd.DataFrame, start_date: date, end_date: da
         fig = px.bar(agg.head(20), x=group_col, y="spend", title="Spend by source")
         fig.update_traces(marker_color="#4f8483")
         fig.update_layout(plot_bgcolor="white", paper_bgcolor="white", margin=dict(l=8, r=8, t=45, b=8))
-        st.plotly_chart(fig, use_container_width=True, key=f"{key_suffix}_pl_spend")
+        st.plotly_chart(fig, width="stretch", key=f"{key_suffix}_pl_spend")
     with m2:
         trend = (
             df.groupby(["month", group_col], as_index=False)
@@ -9223,7 +9384,7 @@ def render_page_channels(df_loaded: pd.DataFrame, start_date: date, end_date: da
         trend = trend[trend[group_col].isin(top)]
         fig2 = px.line(trend, x="month", y="spend", color=group_col, markers=True, title="Spend trend (top groups)")
         fig2.update_layout(plot_bgcolor="white", paper_bgcolor="white", margin=dict(l=8, r=8, t=45, b=8))
-        st.plotly_chart(fig2, use_container_width=True, key=f"{key_suffix}_pl_trend")
+        st.plotly_chart(fig2, width="stretch", key=f"{key_suffix}_pl_trend")
     st.markdown("</div>", unsafe_allow_html=True)
 
 
@@ -9263,6 +9424,12 @@ def render_main_dashboard(
     df_loaded = pd.DataFrame()
     sheet_id, _ = _workbook_id_resolution()
     _fp = _secret_fingerprint(_service_account_from_streamlit_secrets())
+    _load_banner = st.empty()
+    _load_banner.info(
+        "⏳ **Loading Google Sheets** — the app reads **every tab** in the workbook first; **1–2 minutes** on a large file is normal. "
+        "If Streamlit shows `load_first_matching_worksheet_normalized`, that step is still pulling named tabs (Spend / Leads / …). "
+        "**Stuck forever?** Share the spreadsheet with the service account from Secrets and reboot the app."
+    )
     try:
         # Source of truth is the entire spreadsheet; aggregate data across tabs.
         df_loaded = load_all_worksheets_combined(sheet_id, _fp)
@@ -9297,18 +9464,25 @@ def render_main_dashboard(
             else:
                 df_loaded = pd.concat([df_loaded, spend_gid0], ignore_index=True)
 
-        # Explicitly ensure core business tabs are loaded by title-match.
-        spend_named = load_first_matching_worksheet_normalized(sheet_id, (r"^spend$", r"raw\s*spend", r"sum\s*spend"), _fp)
-        leads_named = load_first_matching_worksheet_normalized(sheet_id, (r"^leads?$", r"raw\s*leads?"), _fp)
-        post_named = load_first_matching_worksheet_normalized(
+        # Explicitly ensure core business tabs are loaded by title-match (one worksheet list + four reads).
+        _ws_meta = list_worksheet_meta(sheet_id, _fp)
+        spend_named = _load_first_matching_worksheet_from_meta(
+            sheet_id, (r"^spend$", r"raw\s*spend", r"sum\s*spend"), _fp, _ws_meta
+        )
+        leads_named = _load_first_matching_worksheet_from_meta(
+            sheet_id, (r"^leads?$", r"raw\s*leads?"), _fp, _ws_meta
+        )
+        post_named = _load_first_matching_worksheet_from_meta(
             sheet_id,
             (r"post\s*leads?", r"raw.*post.*qual", r"post\s+qual", r"post.*qualif"),
             _fp,
+            _ws_meta,
         )
-        cw_named = load_first_matching_worksheet_normalized(
+        cw_named = _load_first_matching_worksheet_from_meta(
             sheet_id,
             tuple(_RAW_CW_TAB_PATTERNS),
             _fp,
+            _ws_meta,
         )
         extras = [x for x in (spend_named, leads_named, post_named, cw_named) if not x.empty]
         extras = _extras_skip_tabs_already_loaded(df_loaded, extras)
@@ -9343,6 +9517,11 @@ def render_main_dashboard(
                     df_loaded = pd.concat([df_loaded, df_ads], ignore_index=True)
     except Exception as exc:
         load_error = str(exc)
+    finally:
+        try:
+            _load_banner.empty()
+        except Exception:
+            pass
 
     if not load_error and not df_loaded.empty:
         try:
@@ -9365,6 +9544,10 @@ def render_main_dashboard(
         st.warning(_no_data_msg)
         return
 
+    st.caption(
+        f"**Build `{DASHBOARD_BUILD}`** — The `width=\"stretch\"` change matches old `use_container_width=True` (no layout change; fewer log warnings). "
+        "If this exact build string is missing or old, the hosted app has not deployed your latest GitHub push yet."
+    )
     tab_mpo, tab_mom, tab_inb, tab_pmc = st.tabs(_DASH_NAV_OPTIONS)
     with tab_mpo:
         render_page_marketing_performance(df_loaded, start_date, end_date)
@@ -9436,14 +9619,19 @@ def main() -> None:
     }
     .refresh-note { color: #6b7280; font-size: 10px; }
     .deploy-build {
-        font-size: 10px;
+        display: inline-block;
+        flex-shrink: 0;
+        white-space: nowrap;
+        font-size: 12px;
+        font-weight: 600;
         font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-        color: #334155;
-        background: #e2e8f0;
-        padding: 2px 8px;
-        border-radius: 6px;
-        margin-left: 6px;
-        border: 1px solid #cbd5e1;
+        color: #0f172a;
+        background: linear-gradient(180deg, #f1f5f9 0%, #e2e8f0 100%);
+        padding: 4px 10px;
+        border-radius: 8px;
+        margin-left: 4px;
+        border: 2px solid #4f8483;
+        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.06);
     }
     .stButton > button {
         border: 1px solid #b7d9d5;
@@ -10323,8 +10511,8 @@ def main() -> None:
     [data-testid="stWidgetLabelHelp"] { display: none !important; }
     .stDataFrame {
         border-radius: 12px;
-        box-shadow: 0 2px 8px rgba(15, 23, 42, 0.05);
-        border: 1px solid rgba(15, 23, 42, 0.08);
+        box-shadow: 0 2px 12px rgba(15, 23, 42, 0.07);
+        border: 2px solid rgba(71, 85, 105, 0.42);
     }
     .mpo-modal-hero {
         margin: 0 0 14px 0;
@@ -10519,12 +10707,12 @@ def main() -> None:
     with hl:
         st.markdown(
             f"""
-        <div style="display:flex;align-items:center;gap:8px;">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;row-gap:6px;">
           {logo_html}
           <h1 class="looker-header-title">KitchenPark Marketing Dashboard</h1>
           <span class="live-pill">● Live</span>
           <span class="refresh-note">{refreshed_text}</span>
-          <span class="deploy-build" title="If this string is old or missing, Streamlit Cloud is not on latest GitHub main — check app repo settings and reboot.">{html.escape(DASHBOARD_BUILD)}</span>
+          <span class="deploy-build" title="Deploy / cache bust string. If this does not match the latest commit, Streamlit Cloud may not have pulled GitHub yet — redeploy or reboot the app.">Build: {html.escape(DASHBOARD_BUILD)}</span>
         </div>
         """,
             unsafe_allow_html=True,

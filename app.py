@@ -254,22 +254,22 @@ if page == "Dashboard":
             legend=dict(orientation="h", yanchor="bottom", y=1.02),
             height=400,
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
     c1, c2 = st.columns(2)
     with c1:
         if not agg_f.empty:
             by_market = agg_f.groupby("market").agg({"spend": "sum", "cw_inc_approved": "sum", "actual_tcv": "sum"}).reset_index()
             fig2 = px.bar(by_market, x="market", y="spend", title="Spend by market", color="spend", color_continuous_scale="Blues")
-            st.plotly_chart(fig2, use_container_width=True)
+            st.plotly_chart(fig2, width="stretch")
     with c2:
         if not spend_f.empty and "platform" in spend_f.columns:
             by_platform = spend_f.groupby("platform")["spend"].sum().reset_index()
             fig3 = px.pie(by_platform, values="spend", names="platform", title="Spend by platform")
-            st.plotly_chart(fig3, use_container_width=True)
+            st.plotly_chart(fig3, width="stretch")
 
     with st.expander("View aggregated data (month × market)"):
-        st.dataframe(agg_f.head(100), use_container_width=True)
+        st.dataframe(agg_f.head(100), width="stretch")
 
 # ---------------------------------------------------------------------------
 # Regional Analysis (CpCW:LF style)
@@ -302,9 +302,9 @@ elif page == "Regional Analysis":
                 fmt["sql_pct"] = "{:.1f}%"
         except Exception:
             pass
-        st.dataframe(by_market.style.format(fmt, na_rep="—"), use_container_width=True)
+        st.dataframe(by_market.style.format(fmt, na_rep="—"), width="stretch")
         fig = px.bar(by_market, x="market", y="cpcw", title="Cost per Closed Won (CpCW) by market", color="cpcw", color_continuous_scale="Viridis")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
 # ---------------------------------------------------------------------------
 # TCV Analysis
@@ -316,16 +316,16 @@ elif page == "TCV Analysis":
     if opp_f.empty and "actual_tcv" in agg_f.columns:
         tcv_by_month_market = agg_f.groupby(["unified_date", "market"])["actual_tcv"].sum().reset_index()
         fig = px.bar(tcv_by_month_market, x="unified_date", y="actual_tcv", color="market", title="TCV by month and market", barmode="stack")
-        st.plotly_chart(fig, use_container_width=True)
-        st.dataframe(agg_f[["unified_date", "market", "actual_tcv", "cw_inc_approved"]].drop_duplicates(), use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
+        st.dataframe(agg_f[["unified_date", "market", "actual_tcv", "cw_inc_approved"]].drop_duplicates(), width="stretch")
     elif not opp_f.empty:
         opp_f = opp_f.copy()
         opp_f["close_date"] = pd.to_datetime(opp_f["close_date"], errors="coerce")
         opp_f["month"] = opp_f["close_date"].dt.to_period("M").astype(str)
         tcv_table = opp_f.groupby(["month", "kitchen_country"]).agg(tcv_usd=("tcv_usd", "sum"), count=("opportunity_name", "count")).reset_index()
         fig = px.bar(tcv_table, x="month", y="tcv_usd", color="kitchen_country", title="TCV by month and market", barmode="stack")
-        st.plotly_chart(fig, use_container_width=True)
-        st.dataframe(tcv_table, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
+        st.dataframe(tcv_table, width="stretch")
     else:
         st.warning("No opportunity data available.")
 
@@ -351,8 +351,8 @@ elif page == "Sales Funnel":
     if funnel_data:
         funnel_df = pd.DataFrame(funnel_data)
         fig = px.funnel(funnel_df, x="Value", y="Stage", title="Funnel overview")
-        st.plotly_chart(fig, use_container_width=True)
-        st.dataframe(funnel_df, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
+        st.dataframe(funnel_df, width="stretch")
     else:
         st.warning("No data for funnel.")
 
@@ -365,7 +365,7 @@ elif page == "Lost Analysis":
     if not opp_f.empty and "stage" in opp_f.columns:
         lost = opp_f[opp_f["stage"].astype(str).str.lower().str.contains("lost", na=False)]
         if not lost.empty:
-            st.dataframe(lost, use_container_width=True)
+            st.dataframe(lost, width="stretch")
         else:
             st.caption("Current data contains only won opportunities. Add a query for lost opportunities to populate this view.")
 
@@ -378,4 +378,4 @@ elif page == "Marketing Budgets":
     if not agg_f.empty:
         by_month = agg_f.groupby("unified_date")["spend"].sum().reset_index()
         fig = px.bar(by_month, x="unified_date", y="spend", title="Actual spend by month (budget comparison when available)")
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
