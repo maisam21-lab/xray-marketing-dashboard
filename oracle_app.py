@@ -26,7 +26,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
 # If the hosted app shows an older string, GitHub ``main`` (or the branch Streamlit uses) does not have your latest push yet.
-DASHBOARD_BUILD = "2026-04-13-mom-html-scorecards"
+DASHBOARD_BUILD = "2026-04-13-tight-scope-spacing"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -4204,7 +4204,7 @@ def _apply_sheet_filters(
     platform_opts = sorted([x for x in df_date["platform"].dropna().unique().tolist() if x and x != "Unknown"])
 
     if filters_in_row:
-        fc, fp = st.columns(2, gap="medium")
+        fc, fp = st.columns(2, gap="small")
         with fc:
             selected_countries = st.multiselect(
                 "Country / market",
@@ -4246,9 +4246,11 @@ def _apply_sheet_filters(
 
 def _dashboard_tab_page_header(heading: str) -> None:
     """Same tab chrome as **Marketing performance**: kicker + title (matches main dashboard tabs)."""
-    st.caption("Marketing · RevOps")
     st.markdown(
-        f'<p class="dash-tab-heading">{html.escape(heading)}</p>',
+        '<div class="dash-tab-head-cluster">'
+        '<p class="dash-tab-kicker">Marketing · RevOps</p>'
+        f'<p class="dash-tab-heading">{html.escape(heading)}</p>'
+        "</div>",
         unsafe_allow_html=True,
     )
 
@@ -4444,7 +4446,7 @@ def _apply_marketing_performance_filters(
     _mpo_normalize_month_multiselect_state(key_suffix)
     _mpo_filter_panel = st.container()
     with _mpo_filter_panel:
-        st.markdown('<div class="mpo-data-surface">', unsafe_allow_html=True)
+        st.markdown('<div class="mpo-data-surface mpo-scope-filters">', unsafe_allow_html=True)
         st.markdown(
             '<div class="mpo-filter-ribbon">'
             '<span class="mpo-filter-ribbon-title">Data scope</span>'
@@ -4452,7 +4454,8 @@ def _apply_marketing_performance_filters(
             unsafe_allow_html=True,
         )
         st.markdown('<div class="mpo-top-toolbar">', unsafe_allow_html=True)
-        _c_mk, _c_div, _c_mo = st.columns([1, 0.03, 1], gap="small")
+        # Capped column widths (CSS) keep multiselects from stretching full-bleed — less dead space.
+        _c_mk, _c_div, _c_mo = st.columns([1.12, 0.02, 0.88], gap="small")
         with _c_mk:
             st.multiselect(
                 "Markets & countries",
@@ -4529,7 +4532,7 @@ def _apply_channel_tab_data_scope(
 
     _pmc_filter_panel = st.container()
     with _pmc_filter_panel:
-        st.markdown('<div class="mpo-data-surface">', unsafe_allow_html=True)
+        st.markdown('<div class="mpo-data-surface mpo-scope-filters">', unsafe_allow_html=True)
         st.markdown(
             '<div class="mpo-filter-ribbon">'
             '<span class="mpo-filter-ribbon-title">Data scope</span>'
@@ -4537,7 +4540,7 @@ def _apply_channel_tab_data_scope(
             unsafe_allow_html=True,
         )
         st.markdown('<div class="mpo-top-toolbar">', unsafe_allow_html=True)
-        _c_ch, _c_div, _c_mo = st.columns([1, 0.03, 1], gap="small")
+        _c_ch, _c_div, _c_mo = st.columns([1.18, 0.02, 0.82], gap="small")
         with _c_ch:
             st.multiselect(
                 "Channels",
@@ -8971,25 +8974,23 @@ def render_page_market_mom(
 
     _dashboard_tab_page_header("Market MoM")
     st.markdown(
-        '<p class="mpo-sec-head-desc" style="margin-top:-6px;margin-bottom:12px;">'
+        '<p class="mpo-sec-head-desc mom-tab-lead">'
         "One place to see how <strong>spend</strong>, <strong>pipeline volume</strong>, and <strong>conversion quality</strong> move "
         "month by month for a single market or the full portfolio — built for regional reviews and global read-outs.</p>",
         unsafe_allow_html=True,
     )
 
-    st.markdown('<div class="mpo-data-surface">', unsafe_allow_html=True)
+    st.markdown('<div class="mpo-data-surface mpo-scope-filters mom-scope-panel">', unsafe_allow_html=True)
     st.markdown(
         '<div class="mpo-filter-ribbon">'
         '<span class="mpo-filter-ribbon-title">Data scope</span>'
         "</div>",
         unsafe_allow_html=True,
     )
-    st.markdown('<div class="mpo-top-toolbar">', unsafe_allow_html=True)
+    st.markdown('<div class="mpo-top-toolbar mom-toolbar-stack">', unsafe_allow_html=True)
     df, _ = _apply_sheet_filters(df_date, key_suffix=key_suffix, filters_in_row=True)
-    st.markdown("</div>", unsafe_allow_html=True)
-    st.markdown('<div class="mpo-top-toolbar">', unsafe_allow_html=True)
     mk_opts = sorted([x for x in df_date["country"].dropna().unique().tolist() if x and x != "Unknown"])
-    ctl1, ctl2 = st.columns((1, 2))
+    ctl1, ctl2 = st.columns((1.05, 1.35), gap="small")
     with ctl1:
         pick = st.selectbox(
             "Focus market",
@@ -8998,9 +8999,10 @@ def render_page_market_mom(
             help="Choose one country/region or keep the full blended scope.",
         )
     with ctl2:
-        st.caption(
-            f"Reporting window **{start_date:%d %b %Y}** → **{end_date:%d %b %Y}** · "
-            "Filters above apply to every chart and the operating table."
+        st.markdown(
+            f'<p class="mom-reporting-hint">Reporting window <strong>{start_date:%d %b %Y}</strong> → '
+            f"<strong>{end_date:%d %b %Y}</strong> · Filters here apply to every chart and the operating table.</p>",
+            unsafe_allow_html=True,
         )
     st.markdown("</div>", unsafe_allow_html=True)
     st.markdown("</div>", unsafe_allow_html=True)
@@ -10017,12 +10019,25 @@ def main() -> None:
         line-height: 1.2;
     }
     .looker-table-title { font-size: 1.0rem; font-weight: 700; color: #202124; margin: 20px 0 8px 0; }
+    .dash-tab-head-cluster {
+        margin: 0 0 2px 0;
+        padding: 0;
+    }
+    .dash-tab-kicker {
+        font-size: 0.72rem;
+        font-weight: 600;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        color: #64748b;
+        margin: 0 0 1px 0;
+        line-height: 1.25;
+    }
     .dash-tab-heading {
         font-size: 1.22rem;
         font-weight: 800;
         letter-spacing: -0.035em;
         color: #0f172a;
-        margin: 0 0 12px 0;
+        margin: 0 0 2px 0;
         line-height: 1.2;
     }
     .dash-master-surface {
@@ -10041,7 +10056,35 @@ def main() -> None:
     }
     .dash-chart-stack .looker-table-title { margin-top: 4px !important; }
     .mom-page-wrap {
-        margin: 4px 0 0 0;
+        margin: 2px 0 0 0;
+    }
+    .mom-tab-lead {
+        margin: 0 0 4px 0 !important;
+        font-size: 0.8125rem;
+        line-height: 1.45;
+        color: #64748b;
+        font-weight: 500;
+    }
+    .mom-scope-panel.mpo-data-surface {
+        margin-top: 0 !important;
+    }
+    .mom-toolbar-stack.mpo-top-toolbar {
+        max-width: min(960px, 100%);
+    }
+    .mom-toolbar-stack [data-testid="stVerticalBlock"] {
+        gap: 0.28rem !important;
+    }
+    p.mom-reporting-hint {
+        margin: 0.1rem 0 0 0;
+        padding: 2px 0 0 0;
+        font-size: 0.78rem;
+        line-height: 1.4;
+        color: #64748b;
+        font-weight: 500;
+    }
+    p.mom-reporting-hint strong {
+        color: #334155;
+        font-weight: 600;
     }
     /* KPI scorecards: glass panels, staggered entrance, hover lift */
     .kpi-section {
@@ -10367,14 +10410,14 @@ def main() -> None:
         flex-wrap: wrap;
         align-items: center;
         justify-content: flex-start;
-        gap: 8px 12px;
-        margin: -2px 0 6px 0;
-        padding: 0 0 8px 0;
+        gap: 6px 10px;
+        margin: 0 0 1px 0;
+        padding: 0 0 4px 0;
         border-bottom: 1px solid rgba(15, 23, 42, 0.07);
     }
     .mpo-data-surface {
         margin: 0 0 6px 0;
-        padding: 10px 10px 8px;
+        padding: 8px 10px 7px;
         border-radius: 14px;
         background:
             radial-gradient(circle at 86% 16%, rgba(13, 148, 136, 0.1) 0%, rgba(13, 148, 136, 0.0) 42%),
@@ -10382,6 +10425,29 @@ def main() -> None:
         box-shadow:
             0 1px 0 rgba(255, 255, 255, 0.9) inset,
             0 8px 24px -18px rgba(15, 23, 42, 0.2);
+    }
+    /* Scope strip: tighter padding + capped control width (less empty space inside inputs). */
+    .mpo-data-surface.mpo-scope-filters {
+        margin: 0 0 4px 0 !important;
+        padding: 6px 10px 6px !important;
+    }
+    .mpo-scope-filters .mpo-top-toolbar {
+        max-width: min(920px, 100%);
+    }
+    .mpo-scope-filters .mpo-top-toolbar [data-testid="column"] .stMultiSelect [data-baseweb="select"],
+    .mpo-scope-filters .mpo-top-toolbar [data-testid="column"] .stMultiSelect > div[data-baseweb="select"] {
+        max-width: min(440px, 100%) !important;
+    }
+    .mpo-scope-filters .mpo-top-toolbar [data-testid="column"] .stSelectbox [data-baseweb="select"],
+    .mpo-scope-filters .mpo-top-toolbar [data-testid="column"] .stSelectbox > div {
+        max-width: min(400px, 100%) !important;
+    }
+    /* Tight vertical rhythm between “Data scope” and multiselects */
+    .mpo-scope-filters .mpo-top-toolbar [data-testid="stVerticalBlock"] > div [data-testid="stElementContainer"] {
+        margin-top: 0.15rem !important;
+    }
+    .mpo-scope-filters .mpo-top-toolbar [data-testid="stVerticalBlock"] > div:first-child [data-testid="stElementContainer"] {
+        margin-top: 0 !important;
     }
     .mpo-perf-charts-wrap {
         margin: 6px 0 4px 0;
@@ -10418,18 +10484,18 @@ def main() -> None:
         letter-spacing: 0.13em;
         text-transform: uppercase;
         color: #0f766e;
-        padding: 5px 10px;
+        padding: 4px 9px;
         border-radius: 999px;
         background: #ecfdf5;
         border: 1px solid #a7f3d0;
     }
     .mpo-top-toolbar {
-        margin: 2px 0 2px 0;
+        margin: 0;
     }
     .mpo-toolbar-divider {
         width: 1px;
-        height: 58px;
-        margin: 8px auto 0 auto;
+        height: 42px;
+        margin: 4px auto 0 auto;
         background: linear-gradient(180deg, rgba(148, 163, 184, 0.08), rgba(71, 85, 105, 0.35), rgba(148, 163, 184, 0.08));
         border-radius: 999px;
     }
@@ -10859,8 +10925,19 @@ def main() -> None:
         flex-wrap: nowrap !important;
     }
     [data-testid="stTabs"] {
-        margin-top: 4px;
-        margin-bottom: 8px;
+        margin-top: 2px;
+        margin-bottom: 4px;
+    }
+    /* Less air above the first block inside a tab (title + filters sit higher). */
+    div[role="tabpanel"] > div {
+        padding-top: 0.2rem !important;
+    }
+    div[role="tabpanel"] > div > [data-testid="stVerticalBlock"] {
+        gap: 0.35rem !important;
+    }
+    section[data-testid="stMain"] .block-container {
+        padding-top: 0.75rem !important;
+        padding-bottom: 1.1rem !important;
     }
     .stTabs [data-baseweb="tab"],
     [data-testid="stTabs"] button[role="tab"] {
