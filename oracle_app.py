@@ -26,7 +26,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-15-mom-same-kicker"
+DASHBOARD_BUILD = "2026-04-15-no-data-scope-ribbon"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -4427,7 +4427,7 @@ def _apply_marketing_performance_filters(
     reporting_start: date,
     reporting_end: date,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Performance-tab filters: **market** × **month** (Data scope ribbon)."""
+    """Performance-tab filters: **market** × **month**."""
 
     mk_raw = [x for x in df_date["country"].dropna().unique().tolist() if x and x != "Unknown"]
     if "cost" in df_date.columns and mk_raw:
@@ -4452,13 +4452,6 @@ def _apply_marketing_performance_filters(
     _mpo_normalize_month_multiselect_state(key_suffix)
     _mpo_filter_panel = st.container()
     with _mpo_filter_panel:
-        st.markdown(
-            '<div class="mpo-filter-ribbon">'
-            '<span class="mpo-filter-ribbon-title">Data scope</span>'
-            "</div>",
-            unsafe_allow_html=True,
-        )
-        st.caption("Filters apply to scorecards, charts, and tables on this tab.")
         _c_mk, _c_mo = st.columns(2, gap="medium")
         with _c_mk:
             st.multiselect(
@@ -4498,7 +4491,7 @@ def _apply_channel_tab_data_scope(
     reporting_start: date,
     reporting_end: date,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Spend-by-channel tab: **Data scope** ribbon — **Channels** + **Month** (same layout as Marketing performance, no market slicer)."""
+    """Spend-by-channel tab: **Channels** + **Month** (same layout as Marketing performance, no market slicer)."""
     if spend_df.empty:
         return spend_df.iloc[0:0].copy(), spend_df.iloc[0:0].copy()
 
@@ -4532,13 +4525,6 @@ def _apply_channel_tab_data_scope(
 
     _pmc_filter_panel = st.container()
     with _pmc_filter_panel:
-        st.markdown(
-            '<div class="mpo-filter-ribbon">'
-            '<span class="mpo-filter-ribbon-title">Data scope</span>'
-            "</div>",
-            unsafe_allow_html=True,
-        )
-        st.caption("Filters apply to the spend grid and charts on this tab.")
         _c_ch, _c_mo = st.columns(2, gap="medium")
         with _c_ch:
             st.multiselect(
@@ -8975,13 +8961,6 @@ def render_page_market_mom(
         unsafe_allow_html=True,
     )
 
-    st.markdown(
-        '<div class="mpo-filter-ribbon">'
-        '<span class="mpo-filter-ribbon-title">Data scope</span>'
-        "</div>",
-        unsafe_allow_html=True,
-    )
-    st.caption("Sheet filters and focus market apply to every chart and table on this tab.")
     df, _ = _apply_sheet_filters(df_date, key_suffix=key_suffix, filters_in_row=True)
     mk_opts = sorted([x for x in df_date["country"].dropna().unique().tolist() if x and x != "Unknown"])
     ctl1, ctl2 = st.columns((1, 1.15), gap="medium", vertical_alignment="center")
@@ -10411,19 +10390,6 @@ def main() -> None:
         border: 1px solid rgba(15, 23, 42, 0.06);
         box-shadow: 0 16px 48px -28px rgba(15, 23, 42, 0.14);
     }
-    .mpo-filter-ribbon {
-        display: flex;
-        align-items: center;
-        flex-wrap: wrap;
-        gap: 8px;
-        margin: 0 0 2px 0;
-        padding: 0 0 8px 0;
-        border-bottom: 1px solid rgba(15, 23, 42, 0.07);
-    }
-    [data-testid="stVerticalBlock"] [data-testid="stCaption"] {
-        margin-top: 0.15rem !important;
-        margin-bottom: 0.45rem !important;
-    }
     [data-testid="column"] {
         min-width: 0 !important;
     }
@@ -10455,17 +10421,6 @@ def main() -> None:
         border-radius: 10px;
         background: rgba(255, 255, 255, 0.82);
         padding: 10px 10px 6px 10px;
-    }
-    .mpo-filter-ribbon-title {
-        font-size: 10px;
-        font-weight: 800;
-        letter-spacing: 0.13em;
-        text-transform: uppercase;
-        color: #0f766e;
-        padding: 4px 9px;
-        border-radius: 999px;
-        background: #ecfdf5;
-        border: 1px solid #a7f3d0;
     }
     .mpo-top-toolbar {
         margin: 0;
