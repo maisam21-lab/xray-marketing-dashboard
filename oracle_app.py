@@ -25,7 +25,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
-DASHBOARD_BUILD = "2026-04-14-master-t3b3-single-gm-raw-leads"
+DASHBOARD_BUILD = "2026-04-13-t3b3-q2-scope-month-key-overlay"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 ME_XRAY_SPEND_SHEET_URL = f"https://docs.google.com/spreadsheets/d/{DEFAULT_SHEET_ID}/edit"
@@ -3811,12 +3811,18 @@ def _overlay_gm_leads_qualified_from_raw_leads(gm: pd.DataFrame, leads_df: pd.Da
     ov = _leads_qualified_overlay_frame_by_month_market(leads_df)
     if ov.empty:
         return gm
-    out = gm.merge(ov.rename(columns={"leads": "_lr", "qualified": "_qr"}), on=["month", "Market"], how="left")
+    ov = ov.copy()
+    ov["month_key"] = ov["month"].map(lambda m: _month_norm_key(m) or (str(m).strip() if pd.notna(m) else ""))
+    ov = ov.loc[ov["month_key"].astype(str).str.len() > 0].drop_duplicates(subset=["month_key", "Market"], keep="last")
+    out = gm.copy()
+    out["month_key"] = out["month"].map(_month_norm_key)
+    ov_m = ov.rename(columns={"leads": "_lr", "qualified": "_qr"}).drop(columns=["month"], errors="ignore")
+    out = out.merge(ov_m, on=["month_key", "Market"], how="left")
     m = out["_lr"].notna()
     if m.any():
         out.loc[m, "leads"] = pd.to_numeric(out.loc[m, "_lr"], errors="coerce").fillna(0)
         out.loc[m, "qualified"] = pd.to_numeric(out.loc[m, "_qr"], errors="coerce").fillna(0)
-    out = out.drop(columns=["_lr", "_qr"], errors="ignore")
+    out = out.drop(columns=["_lr", "_qr", "month_key"], errors="ignore")
     out["CPL"] = out.apply(
         lambda r: (r["spend"] / r["leads"]) if r["leads"] and r["leads"] > 0 else float("nan"),
         axis=1,
@@ -7070,6 +7076,17 @@ def _t3b3_quarter_label_from_tuple(yq: tuple[int, int]) -> str:
     return f"{y} - T3B3 Q{q}"
 
 
+def _t3b3_calendar_quarters_in_date_range(start: date, end: date) -> set[tuple[int, int]]:
+    """Every calendar quarter (year, 1..4) that overlaps the reporting window (inclusive)."""
+    keys = _month_norm_keys_in_reporting_window(start, end)
+    out: set[tuple[int, int]] = set()
+    for k in keys:
+        t = _t3b3_quarter_tuple_from_month(k)
+        if t:
+            out.add(t)
+    return out
+
+
 def _t3b3_view_style_css(df: pd.DataFrame) -> pd.DataFrame:
     """Same palette as master view; ``T3B3 Quarter`` column + bold subtotals / grand total."""
     _align_c = "text-align: center; vertical-align: middle;"
@@ -7365,7 +7382,11 @@ def _t3b3_me_master_row_sum_for_quarter(gm: pd.DataFrame, yq: tuple[int, int]) -
     return _t3b3_metric_dict_sum_frame(chunk)
 
 
-def _t3b3_detail_rows_from_gm(gm: pd.DataFrame) -> pd.DataFrame:
+def _t3b3_detail_rows_from_gm(
+    gm: pd.DataFrame,
+    *,
+    calendar_quarters_in_scope: Optional[set[tuple[int, int]]] = None,
+) -> pd.DataFrame:
     """Quarter × market grid; **Middle East** roll-up matches master; includes **Qualified** / **SQL%**."""
     cols = [
         "T3B3 Quarter",
@@ -7414,11 +7435,13 @@ def _t3b3_detail_rows_from_gm(gm: pd.DataFrame) -> pd.DataFrame:
             return (50, str(mkt))
 
     q_candidates = sorted({t for t in gm_q["_yq"].tolist() if t}, key=lambda t: (t[0], t[1]), reverse=True)
-    quarters: list[tuple[int, int]] = []
+    activity_q: list[tuple[int, int]] = []
     for yq in q_candidates:
         probe = _t3b3_metric_dict_sum_frame(gm_q.loc[gm_q["_yq"] == yq])
         if _t3b3_dict_has_activity(probe):
-            quarters.append(yq)
+            activity_q.append(yq)
+    scope_q = set(calendar_quarters_in_scope) if calendar_quarters_in_scope else set()
+    quarters = sorted(set(activity_q) | scope_q, key=lambda t: (t[0], t[1]), reverse=True)
     if not quarters:
         return pd.DataFrame(columns=cols)
     out_rows: list[dict[str, Any]] = []
@@ -7440,6 +7463,21 @@ def _t3b3_detail_rows_from_gm(gm: pd.DataFrame) -> pd.DataFrame:
         nm = _t3b3_metric_dict_sum_frame(non_me)
         for k in grand:
             grand[k] += nm.get(k, 0.0) + me_tot.get(k, 0.0)
+
+        if not markets and not _t3b3_dict_has_activity(me_tot) and yq in scope_q:
+            row_ph: dict[str, Any] = {
+                "T3B3 Quarter": qlab,
+                "Market": "—",
+                "spend": 0.0,
+                "cw": 0.0,
+                "lf": 0.0,
+                "tcv": 0.0,
+                "leads": 0.0,
+                "qualified": 0.0,
+            }
+            _t3b3_add_derived_from_sums(row_ph)
+            out_rows.append(row_ph)
+            continue
 
         for mkt in markets:
             r = sub.loc[sub["Market"] == mkt].iloc[0]
@@ -7475,7 +7513,11 @@ def _t3b3_detail_rows_from_gm(gm: pd.DataFrame) -> pd.DataFrame:
     return pd.DataFrame(out_rows)[cols]
 
 
-def _t3b3_kw_bh_rows_from_gm(gm: pd.DataFrame) -> pd.DataFrame:
+def _t3b3_kw_bh_rows_from_gm(
+    gm: pd.DataFrame,
+    *,
+    calendar_quarters_in_scope: Optional[set[tuple[int, int]]] = None,
+) -> pd.DataFrame:
     """Quarter rollup for Kuwait + Bahrain only."""
     reg_lower = _REGION_SUBTOTAL_NAMES_LOWER
     src = gm.loc[~gm["Market"].astype(str).str.strip().str.lower().isin(reg_lower)].copy()
@@ -7510,20 +7552,39 @@ def _t3b3_kw_bh_rows_from_gm(gm: pd.DataFrame) -> pd.DataFrame:
         leads=("leads", "sum"),
         qualified=("qualified", "sum"),
     )
-    if gq.empty:
+    if gq.empty and not calendar_quarters_in_scope:
         return pd.DataFrame(columns=cols)
+    from_data = sorted(
+        {t for t in gq["_yq"].dropna().unique().tolist() if t},
+        key=lambda t: (int(t[0]), int(t[1])),
+        reverse=True,
+    )
+    scope_q = set(calendar_quarters_in_scope) if calendar_quarters_in_scope else set()
+    yq_list = sorted(set(from_data) | scope_q, key=lambda t: (int(t[0]), int(t[1])), reverse=True)
     rows: list[dict[str, Any]] = []
-    for yq in sorted(gq["_yq"].dropna().unique().tolist(), key=lambda t: (int(t[0]), int(t[1])), reverse=True):
-        r = gq.loc[gq["_yq"] == yq].iloc[0]
+    for yq in yq_list:
+        chunk = gq.loc[gq["_yq"] == yq]
+        if not chunk.empty:
+            r = chunk.iloc[0]
+            sp, cw_v, tcv_v, lf_v, ld_v, qf_v = (
+                float(r["spend"]),
+                float(r["cw"]),
+                float(r["tcv"]),
+                float(r["lf"]),
+                float(r["leads"]),
+                float(r["qualified"]),
+            )
+        else:
+            sp = cw_v = tcv_v = lf_v = ld_v = qf_v = 0.0
         row = {
             "T3B3 Quarter": _t3b3_quarter_label_from_tuple((int(yq[0]), int(yq[1]))),
             "Market": "Kuwait + Bahrain",
-            "spend": float(r["spend"]),
-            "cw": float(r["cw"]),
-            "tcv": float(r["tcv"]),
-            "lf": float(r["lf"]),
-            "leads": float(r["leads"]),
-            "qualified": float(r["qualified"]),
+            "spend": sp,
+            "cw": cw_v,
+            "tcv": tcv_v,
+            "lf": lf_v,
+            "leads": ld_v,
+            "qualified": qf_v,
         }
         _t3b3_add_derived_from_sums(row)
         rows.append(row)
@@ -7534,16 +7595,22 @@ def _render_t3b3_quarter_sections(
     gm: pd.DataFrame,
     *,
     key_suffix: str,
+    reporting_start: Optional[date] = None,
+    reporting_end: Optional[date] = None,
 ) -> None:
     """T3B3 quarterly tables on Marketing performance (calendar quarters)."""
     st.markdown('<div class="looker-table-title">T3B3 view</div>', unsafe_allow_html=True)
     st.caption(
         "Calendar-year quarters (Q1=Jan–Mar … Q4=Oct–Dec). **Middle East** uses the same roll-up row as the master "
         "table when regional totals sit there. **SQL%** = Qualified ÷ Total Leads. Grand total = non–ME markets plus "
-        "one Middle East total per quarter."
+        "one Middle East total per quarter. Quarters overlapping the **reporting range** above always appear (use "
+        "placeholders when the grid has no rows yet for that quarter)."
     )
-    detail = _t3b3_detail_rows_from_gm(gm)
-    kb = _t3b3_kw_bh_rows_from_gm(gm)
+    scope_q: Optional[set[tuple[int, int]]] = None
+    if reporting_start is not None and reporting_end is not None:
+        scope_q = _t3b3_calendar_quarters_in_date_range(reporting_start, reporting_end)
+    detail = _t3b3_detail_rows_from_gm(gm, calendar_quarters_in_scope=scope_q)
+    kb = _t3b3_kw_bh_rows_from_gm(gm, calendar_quarters_in_scope=scope_q)
 
     def _fmt_t3b3(pvt: pd.DataFrame) -> Any:
         def _fmt_for_metric(metric_name: str) -> Any:
@@ -8425,7 +8492,12 @@ def render_page_marketing_performance(
         pivot_dimension="market",
         table_mode="full",
     )
-    _render_t3b3_quarter_sections(gm_mpo, key_suffix=f"{key_suffix}_t3b3")
+    _render_t3b3_quarter_sections(
+        gm_mpo,
+        key_suffix=f"{key_suffix}_t3b3",
+        reporting_start=start_date,
+        reporting_end=end_date,
+    )
 
     _render_mpo_trend_charts(
         start_date=start_date,
