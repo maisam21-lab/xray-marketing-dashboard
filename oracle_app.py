@@ -26,7 +26,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
 # If the hosted app shows an older string, GitHub ``main`` (or the branch Streamlit uses) does not have your latest push yet.
-DASHBOARD_BUILD = "2026-04-14-master-month-beside-me"
+DASHBOARD_BUILD = "2026-04-14-perf-charts-compact-row"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 ME_XRAY_SPEND_SHEET_URL = f"https://docs.google.com/spreadsheets/d/{DEFAULT_SHEET_ID}/edit"
@@ -6162,9 +6162,10 @@ def _render_mpo_trend_charts(
     leads_sliced = _mpo_slice_by_dashboard_ref(leads_df, df_ref_for_scope)
     post_sliced = _mpo_slice_by_dashboard_ref(post_df_kpi, df_ref_for_scope)
 
-    _chart_h = 560
+    # Slightly shorter than before so the twin cards use less vertical space; Trends a bit wider than Breakdown.
+    _chart_h = 470
 
-    col_left, col_right = st.columns(2, gap="large")
+    col_left, col_right = st.columns([1.55, 1.0], gap="small")
 
     with col_left:
         with st.container(border=True):
@@ -6186,7 +6187,7 @@ def _render_mpo_trend_charts(
                     rows=3,
                     cols=1,
                     shared_xaxes=True,
-                    vertical_spacing=0.07,
+                    vertical_spacing=0.052,
                     subplot_titles=("Cost ($)", "Clicks", "Impressions"),
                 )
                 fig_t.add_trace(
@@ -6286,14 +6287,14 @@ def _render_mpo_trend_charts(
                     legend=dict(
                         orientation="h",
                         yanchor="top",
-                        y=-0.06,
+                        y=-0.05,
                         xanchor="center",
                         x=0.5,
-                        font=dict(size=12),
+                        font=dict(size=11),
                     ),
                     hovermode="x unified",
                     hoverlabel=dict(font_size=12),
-                    margin=dict(l=12, r=12, t=36, b=72),
+                    margin=dict(l=10, r=10, t=28, b=56),
                 )
                 fig_t.update_annotations(font=dict(size=13, color="#0f172a"))
                 mom_c = _mpo_mom_pct_str(s_cost)
@@ -6309,7 +6310,7 @@ def _render_mpo_trend_charts(
 
     with col_right:
         with st.container(border=True):
-            r1, r2 = st.columns([3, 9])
+            r1, r2 = st.columns([2, 5], gap="small")
             with r1:
                 st.markdown('<p class="mpo-perf-chart-title">Breakdown</p>', unsafe_allow_html=True)
             with r2:
@@ -6369,8 +6370,8 @@ def _render_mpo_trend_charts(
                 )
                 fig_d.update_layout(
                     showlegend=True,
-                    legend=dict(orientation="h", yanchor="top", y=-0.22, xanchor="center", x=0.5, font=dict(size=12)),
-                    margin=dict(l=12, r=12, t=4, b=72),
+                    legend=dict(orientation="h", yanchor="top", y=-0.18, xanchor="center", x=0.5, font=dict(size=11)),
+                    margin=dict(l=8, r=8, t=2, b=52),
                     height=_chart_h,
                     paper_bgcolor="white",
                     hoverlabel=dict(font_size=12),
@@ -10058,7 +10059,7 @@ def main() -> None:
             0 8px 24px -18px rgba(15, 23, 42, 0.2);
     }
     .mpo-perf-charts-wrap {
-        margin: 10px 0 6px 0;
+        margin: 6px 0 4px 0;
     }
     .mpo-perf-charts-page-title {
         margin-bottom: 2px !important;
