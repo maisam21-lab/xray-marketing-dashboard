@@ -26,7 +26,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-15-kicker-stamp"
+DASHBOARD_BUILD = "2026-04-15-mom-same-kicker"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -8967,7 +8967,7 @@ def render_page_market_mom(
         st.info("No rows in the selected date range.")
         return
 
-    _dashboard_tab_page_header("Market MoM")
+    _dashboard_tab_page_header()
     st.markdown(
         '<p class="mpo-sec-head-desc mom-tab-lead">'
         "One place to see how <strong>spend</strong>, <strong>pipeline volume</strong>, and <strong>conversion quality</strong> move "
