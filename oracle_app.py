@@ -25,7 +25,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
-DASHBOARD_BUILD = "2026-04-13-mpo-t3b3-below-master"
+DASHBOARD_BUILD = "2026-04-13-t3b3-me-rollup-align"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 ME_XRAY_SPEND_SHEET_URL = f"https://docs.google.com/spreadsheets/d/{DEFAULT_SHEET_ID}/edit"
@@ -7243,10 +7243,44 @@ def _t3b3_add_derived_from_sums(row: dict[str, Any]) -> None:
     row["Total Leads"] = int(round(leads))
 
 
+def _t3b3_metric_dict_sum_frame(
+    frame: pd.DataFrame,
+    cols: tuple[str, ...] = ("spend", "cw", "tcv", "lf", "leads"),
+) -> dict[str, float]:
+    out: dict[str, float] = {}
+    for c in cols:
+        if frame.empty or c not in frame.columns:
+            out[c] = 0.0
+        else:
+            out[c] = float(pd.to_numeric(frame[c], errors="coerce").fillna(0).sum())
+    return out
+
+
+def _t3b3_dict_has_activity(d: dict[str, float]) -> bool:
+    return bool(
+        d.get("spend", 0) > 1e-6
+        or d.get("cw", 0) > 0
+        or d.get("leads", 0) > 0
+        or d.get("tcv", 0) > 1e-6
+        or d.get("lf", 0) > 1e-6
+    )
+
+
+def _t3b3_me_master_row_sum_for_quarter(gm: pd.DataFrame, yq: tuple[int, int]) -> Optional[dict[str, float]]:
+    """Sum the **Middle East** aggregate rows from the master grid for months in ``yq`` (same roll-up as month × market)."""
+    if gm.empty or "Market" not in gm.columns or "month" not in gm.columns:
+        return None
+    lab = _MIDDLE_EAST_REGION_LABEL.strip().lower()
+    m_m = gm["Market"].astype(str).str.strip().str.lower() == lab
+    m_q = gm["month"].map(lambda m: _t3b3_quarter_tuple_from_month(m) == yq)
+    chunk = gm.loc[m_m & m_q]
+    if chunk.empty:
+        return None
+    return _t3b3_metric_dict_sum_frame(chunk)
+
+
 def _t3b3_detail_rows_from_gm(gm: pd.DataFrame) -> pd.DataFrame:
-    """Quarter × market grid with Middle East subtotals and grand total (country rows only — no double-count)."""
-    reg_lower = _REGION_SUBTOTAL_NAMES_LOWER
-    src = gm.loc[~gm["Market"].astype(str).str.strip().str.lower().isin(reg_lower)].copy()
+    """Quarter × market grid; **Middle East (Subtotal)** uses the master **Middle East** row when present (fixes missing spend)."""
     cols = [
         "T3B3 Quarter",
         "Market",
@@ -7259,6 +7293,8 @@ def _t3b3_detail_rows_from_gm(gm: pd.DataFrame) -> pd.DataFrame:
         "Cost/TCV%",
         "Total Leads",
     ]
+    reg_lower = _REGION_SUBTOTAL_NAMES_LOWER
+    src = gm.loc[~gm["Market"].astype(str).str.strip().str.lower().isin(reg_lower)].copy()
     if src.empty:
         return pd.DataFrame(columns=cols)
 
@@ -7296,6 +7332,19 @@ def _t3b3_detail_rows_from_gm(gm: pd.DataFrame) -> pd.DataFrame:
         sub = gq[gq["_yq"] == yq].copy()
         qlab = _t3b3_quarter_label_from_tuple(yq)
         markets = sorted(sub["Market"].unique().tolist(), key=_mkt_sort)
+
+        me_roll = _t3b3_me_master_row_sum_for_quarter(gm, yq)
+        me_from_countries = _t3b3_metric_dict_sum_frame(sub.loc[sub["Market"].map(_is_middle_east_market)])
+        if me_roll is not None and _t3b3_dict_has_activity(me_roll):
+            me_tot = me_roll
+        else:
+            me_tot = me_from_countries
+
+        non_me = sub.loc[~sub["Market"].map(_is_middle_east_market)]
+        nm = _t3b3_metric_dict_sum_frame(non_me)
+        for k in grand:
+            grand[k] += nm.get(k, 0.0) + me_tot.get(k, 0.0)
+
         for mkt in markets:
             r = sub.loc[sub["Market"] == mkt].iloc[0]
             sp = float(r["spend"])
@@ -7303,11 +7352,6 @@ def _t3b3_detail_rows_from_gm(gm: pd.DataFrame) -> pd.DataFrame:
             lf = float(r["lf"])
             tcv_v = float(r["tcv"])
             ld = float(r["leads"])
-            grand["spend"] += sp
-            grand["cw"] += cw
-            grand["tcv"] += tcv_v
-            grand["lf"] += lf
-            grand["leads"] += ld
             row: dict[str, Any] = {
                 "T3B3 Quarter": qlab,
                 "Market": mkt,
@@ -7320,17 +7364,9 @@ def _t3b3_detail_rows_from_gm(gm: pd.DataFrame) -> pd.DataFrame:
             _t3b3_add_derived_from_sums(row)
             out_rows.append(row)
 
-        me_mask = sub["Market"].map(_is_middle_east_market)
-        me_sub = sub.loc[me_mask]
-        if not me_sub.empty:
-            ms = {
-                "spend": float(me_sub["spend"].sum()),
-                "cw": float(me_sub["cw"].sum()),
-                "tcv": float(me_sub["tcv"].sum()),
-                "lf": float(me_sub["lf"].sum()),
-                "leads": float(me_sub["leads"].sum()),
-            }
-            row_me: dict[str, Any] = {"T3B3 Quarter": qlab, "Market": "Middle East (Subtotal)", **ms}
+        if _t3b3_dict_has_activity(me_tot):
+            row_me: dict[str, Any] = {"T3B3 Quarter": qlab, "Market": "Middle East (Subtotal)"}
+            row_me.update(me_tot)
             _t3b3_add_derived_from_sums(row_me)
             out_rows.append(row_me)
 
@@ -7400,8 +7436,9 @@ def _render_t3b3_quarter_sections(
     """T3B3 quarterly tables on Marketing performance (calendar quarters)."""
     st.markdown('<div class="looker-table-title">T3B3 view</div>', unsafe_allow_html=True)
     st.caption(
-        "Calendar-year quarters (Q1=Jan–Mar … Q4=Oct–Dec), rolled up from the same month × market grid as below. "
-        "Ratios recomputed from summed numerators."
+        "Calendar-year quarters (Q1=Jan–Mar … Q4=Oct–Dec). **Middle East (Subtotal)** uses the same **Middle East** "
+        "roll-up row as the master table when the sheet puts regional totals there (so spend is not dropped). "
+        "Grand total = non–Middle East markets plus one Middle East total per quarter. Ratios from summed inputs."
     )
     detail = _t3b3_detail_rows_from_gm(gm)
     kb = _t3b3_kw_bh_rows_from_gm(gm)
