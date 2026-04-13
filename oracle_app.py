@@ -25,7 +25,7 @@ from plotly.subplots import make_subplots
 import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
-DASHBOARD_BUILD = "2026-04-14-t3b3-qualified-sql-pct"
+DASHBOARD_BUILD = "2026-04-14-master-t3b3-single-gm-raw-leads"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 ME_XRAY_SPEND_SHEET_URL = f"https://docs.google.com/spreadsheets/d/{DEFAULT_SHEET_ID}/edit"
@@ -3772,6 +3772,64 @@ def _leads_pivot_rowcount_by_month_country(ld: pd.DataFrame) -> pd.DataFrame:
     return cnt
 
 
+def _leads_qualified_overlay_frame_by_month_market(ld: pd.DataFrame) -> pd.DataFrame:
+    """Month × Market **leads** (row count) and **qualified** (``lead_status_text``), same basis as master drill / scorecard."""
+    x = _normalize_master_merge_frame(ld)
+    if x.empty or "month" not in x.columns or "country" not in x.columns:
+        return pd.DataFrame(columns=["month", "Market", "leads", "qualified"])
+    x = x.copy()
+    x["_mk"] = x["month"].map(_month_norm_key).astype(str).str.strip()
+    x = x.loc[x["_mk"].ne("")].copy()
+    if x.empty:
+        return pd.DataFrame(columns=["month", "Market", "leads", "qualified"])
+    x["month"] = x["_mk"]
+    x = x.drop(columns=["_mk"], errors="ignore")
+    if "lead_status_text" in x.columns:
+        stext = x["lead_status_text"].astype(str).str.strip().str.lower()
+        x["_qual"] = stext.eq("qualified").astype(int)
+    else:
+        x["_qual"] = 0
+    _gb = x.groupby(["month", "country"], dropna=False)
+    g = _gb.size().reset_index(name="leads")
+    g = g.merge(_gb["_qual"].sum().reset_index(name="qualified"), on=["month", "country"], how="left")
+    g["Market"] = g["country"].map(_market_display_from_join_key)
+    out = g.groupby(["month", "Market"], as_index=False, dropna=False).agg(
+        leads=("leads", "sum"),
+        qualified=("qualified", "sum"),
+    )
+    out["leads"] = pd.to_numeric(out["leads"], errors="coerce").fillna(0)
+    out["qualified"] = pd.to_numeric(out["qualified"], errors="coerce").fillna(0)
+    return out
+
+
+def _overlay_gm_leads_qualified_from_raw_leads(gm: pd.DataFrame, leads_df: pd.DataFrame) -> pd.DataFrame:
+    """Replace ``leads`` / ``qualified`` where raw leads rows exist (aligns grid + T3B3 with master **cell drill** source)."""
+    if gm.empty or leads_df is None or (isinstance(leads_df, pd.DataFrame) and leads_df.empty):
+        return gm
+    if "Market" not in gm.columns or "month" not in gm.columns:
+        return gm
+    ov = _leads_qualified_overlay_frame_by_month_market(leads_df)
+    if ov.empty:
+        return gm
+    out = gm.merge(ov.rename(columns={"leads": "_lr", "qualified": "_qr"}), on=["month", "Market"], how="left")
+    m = out["_lr"].notna()
+    if m.any():
+        out.loc[m, "leads"] = pd.to_numeric(out.loc[m, "_lr"], errors="coerce").fillna(0)
+        out.loc[m, "qualified"] = pd.to_numeric(out.loc[m, "_qr"], errors="coerce").fillna(0)
+    out = out.drop(columns=["_lr", "_qr"], errors="ignore")
+    out["CPL"] = out.apply(
+        lambda r: (r["spend"] / r["leads"]) if r["leads"] and r["leads"] > 0 else float("nan"),
+        axis=1,
+    )
+    out["SQL %"] = out.apply(
+        lambda r: (r["qualified"] / r["leads"] * 100) if r["leads"] and r["leads"] > 0 else float("nan"),
+        axis=1,
+    )
+    if "Total Leads" in out.columns:
+        out["Total Leads"] = out["leads"]
+    return out
+
+
 def _new_working_count_from_leads(frame: pd.DataFrame) -> int:
     """Count leads where Lead Status is exactly New or Working."""
     if frame.empty or "lead_status_text" not in frame.columns:
@@ -7120,8 +7178,10 @@ def _t3b3_view_style_css(df: pd.DataFrame) -> pd.DataFrame:
 def _master_build_gm_with_metrics(
     df: pd.DataFrame,
     spend_grid: Optional[pd.DataFrame],
+    *,
+    pivot_dimension: Literal["market", "channel"] = "market",
 ) -> pd.DataFrame:
-    """Month × Market grid with derived KPI columns (same pipeline as the marketing performance master table, market pivot)."""
+    """Month × Market (or **Channel**) grid with derived KPIs — single builder for master pivot + T3B3."""
     df = _normalize_master_merge_frame(df)
     if not df.empty and "month" in df.columns:
         _mpl = df["month"].map(lambda x: _dashboard_month_plausible(_month_norm_key(x)))
@@ -7194,11 +7254,15 @@ def _master_build_gm_with_metrics(
         if c in g.columns:
             sum_map[c] = "sum"
     gm = g.groupby(["month", "Market"], as_index=False, dropna=False).agg(sum_map)
-    gm = _master_union_gm_with_spend_pivot(gm, spend_grid)
-    gm = _master_view_drop_empty_months(gm)
-    gm = _master_view_append_middle_east_first(gm)
-    gm = _overlay_spend_from_spend_grid_on_gm(gm, spend_grid)
-    gm = _master_view_refresh_middle_east_spend_row(gm)
+    if pivot_dimension == "channel":
+        gm = gm.rename(columns={"Market": "Channel"})
+        gm = _master_view_drop_empty_months(gm)
+    else:
+        gm = _master_union_gm_with_spend_pivot(gm, spend_grid)
+        gm = _master_view_drop_empty_months(gm)
+        gm = _master_view_append_middle_east_first(gm)
+        gm = _overlay_spend_from_spend_grid_on_gm(gm, spend_grid)
+        gm = _master_view_refresh_middle_east_spend_row(gm)
     gm["Spend"] = gm["spend"]
     gm["CW (Inc Approved)"] = gm["cw"].astype(int)
     if "lf" in gm.columns:
@@ -7528,139 +7592,20 @@ def _render_t3b3_quarter_sections(
         st.dataframe(_fmt_t3b3(kb), use_container_width=True, hide_index=True, key=f"{key_suffix}_t3b3_kb")
 
 
-def _master_performance_table(
-    df: pd.DataFrame,
+def _render_master_view_pivot_from_gm(
+    gm: pd.DataFrame,
     *,
     key_suffix: str,
-    section_title: Optional[str] = "Master view",
-    spend_grid: Optional[pd.DataFrame] = None,
-    detail_sources: Optional[dict[str, pd.DataFrame]] = None,
-    pivot_dimension: Literal["market", "channel"] = "market",
-    table_mode: Literal["full", "spend_only"] = "full",
-    month_not_before: Optional[date] = None,
+    section_title: Optional[str],
+    detail_sources: Optional[dict[str, pd.DataFrame]],
+    pivot_dimension: Literal["market", "channel"],
+    table_mode: Literal["full", "spend_only"],
 ) -> None:
-    """Month column (label on first row per month only), row dimension (**Market** or **Channel**), cyan metrics, R/G/Y.
-
-    ``pivot_dimension="channel"`` skips Middle East roll-up / spend-grid overlays (same spend math, channel rows only).
-    ``table_mode="spend_only"`` shows **Month**, row dimension, and **Spend** only (PMC tab).
-    ``month_not_before`` drops earlier calendar months (e.g. March floor for Spend-by-channel).
-    """
-    df = _normalize_master_merge_frame(df)
-    if not df.empty and "month" in df.columns:
-        _mpl = df["month"].map(lambda x: _dashboard_month_plausible(_month_norm_key(x)))
-        # Keep rows with real spend even if month was still non-plausible (outer-merge keys vs. display filter).
-        if "cost" in df.columns:
-            _has_spend = pd.to_numeric(df["cost"], errors="coerce").fillna(0) > 1e-3
-            _keep = _mpl | _has_spend
-        else:
-            _keep = _mpl
-        _df_f = df.loc[_keep].copy()
-        # After UNFORMATTED_VALUE, bad month parsing can wipe every row — keep data visible.
-        if not _df_f.empty:
-            df = _df_f
-    df = _collapse_duplicate_named_columns(df)
-    if "cost" in df.columns:
-        df["cost"] = pd.to_numeric(df["cost"], errors="coerce").fillna(0)
-    if "spend" in df.columns:
-        s_alt = pd.to_numeric(df["spend"], errors="coerce").fillna(0)
-        if "cost" in df.columns:
-            df["cost"] = df["cost"].where(df["cost"] > 1e-6, s_alt)
-        else:
-            df["cost"] = s_alt
-    df = _master_view_impute_month_for_spend_rows(df)
+    """Styled master pivot + metric drill; ``gm`` must be from ``_master_build_gm_with_metrics`` (numeric ``Spend`` etc.)."""
+    row_heading = "Channel" if pivot_dimension == "channel" else "Market"
+    gm = gm.copy()
     if section_title:
         st.markdown(f'<div class="looker-table-title">{section_title}</div>', unsafe_allow_html=True)
-    agg: dict[str, tuple[str, str]] = {
-        "spend": ("cost", "sum"),
-        "cw": ("closed_won", "sum"),
-        "clicks": ("clicks", "sum"),
-        "leads": ("leads", "sum"),
-        "qualified": ("qualified", "sum"),
-    }
-    if "tcv" in df.columns:
-        agg["tcv"] = ("tcv", "sum")
-    if "first_month_lf" in df.columns:
-        agg["lf"] = ("first_month_lf", "sum")
-    if "impressions" in df.columns:
-        agg["impressions"] = ("impressions", "sum")
-    # Preserve post-tab pipeline fields from the merged master frame (were dropped before).
-    for _src, _dst in (
-        ("pitching", "pitching"),
-        ("new", "new"),
-        ("working", "working"),
-        ("qualifying", "qualifying"),
-        ("negotiation", "negotiation"),
-        ("commitment", "commitment"),
-        ("closed_lost", "closed_lost"),
-    ):
-        if _src in df.columns:
-            agg[_dst] = (_src, "sum")
-
-    g = df.groupby(["month", "country"], as_index=False, dropna=False).agg(**agg).sort_values(
-        ["month", "country"], ascending=[False, True]
-    )
-    g["Market"] = g["country"].map(_market_display_from_join_key)
-    # Sum additive fields per month × market, then recompute ratios (Looker: do not SUM(CPCW:LF)).
-    sum_map: dict[str, str] = {}
-    for c in (
-        "spend",
-        "cw",
-        "tcv",
-        "lf",
-        "leads",
-        "qualified",
-        "clicks",
-        "impressions",
-        "pitching",
-        "new",
-        "working",
-        "qualifying",
-        "negotiation",
-        "commitment",
-        "closed_lost",
-    ):
-        if c in g.columns:
-            sum_map[c] = "sum"
-    gm = g.groupby(["month", "Market"], as_index=False, dropna=False).agg(sum_map)
-    row_heading = "Channel" if pivot_dimension == "channel" else "Market"
-    if pivot_dimension == "channel":
-        gm = gm.rename(columns={"Market": "Channel"})
-        gm = _master_view_drop_empty_months(gm)
-    else:
-        gm = _master_union_gm_with_spend_pivot(gm, spend_grid)
-        gm = _master_view_drop_empty_months(gm)
-        gm = _master_view_append_middle_east_first(gm)
-        gm = _overlay_spend_from_spend_grid_on_gm(gm, spend_grid)
-        gm = _master_view_refresh_middle_east_spend_row(gm)
-    gm["Spend"] = gm["spend"]
-    gm["CW (Inc Approved)"] = gm["cw"].astype(int)
-    if "lf" in gm.columns:
-        gm["1st Month LF"] = gm["lf"]
-    if "tcv" in gm.columns:
-        gm["Actual TCV"] = gm["tcv"]
-    gm["Total Leads"] = gm["leads"]
-    gm["CPCW"] = gm.apply(
-        lambda r: (r["spend"] / r["cw"]) if r["cw"] and r["cw"] > 0 else float("nan"),
-        axis=1,
-    )
-    if "lf" in gm.columns:
-        gm["CPCW:LF"] = gm.apply(
-            lambda r: (r["spend"] / r["lf"]) if r["lf"] and r["lf"] > 0 else float("nan"),
-            axis=1,
-        )
-    if "tcv" in gm.columns:
-        gm["Cost/TCV%"] = gm.apply(
-            lambda r: (r["spend"] / r["tcv"] * 100) if r["tcv"] and r["tcv"] > 0 else float("nan"),
-            axis=1,
-        )
-    gm["CPL"] = gm.apply(
-        lambda r: (r["spend"] / r["leads"]) if r["leads"] and r["leads"] > 0 else float("nan"),
-        axis=1,
-    )
-    gm["SQL %"] = gm.apply(
-        lambda r: (r["qualified"] / r["leads"] * 100) if r["leads"] and r["leads"] > 0 else float("nan"),
-        axis=1,
-    )
 
     metrics = (
         ["Spend"]
@@ -7915,6 +7860,30 @@ def _master_performance_table(
             impr=int(payload.get("impr") or 0),
             clk=int(payload.get("clk") or 0),
         )
+
+
+def _master_performance_table(
+    df: pd.DataFrame,
+    *,
+    key_suffix: str,
+    section_title: Optional[str] = "Master view",
+    spend_grid: Optional[pd.DataFrame] = None,
+    detail_sources: Optional[dict[str, pd.DataFrame]] = None,
+    pivot_dimension: Literal["market", "channel"] = "market",
+    table_mode: Literal["full", "spend_only"] = "full",
+    month_not_before: Optional[date] = None,
+) -> None:
+    """Month × Market/Channel master pivot; uses the same ``gm`` builder as quarterly T3B3 when wired that way."""
+    _ = month_not_before
+    gm = _master_build_gm_with_metrics(df, spend_grid, pivot_dimension=pivot_dimension)
+    _render_master_view_pivot_from_gm(
+        gm,
+        key_suffix=key_suffix,
+        section_title=section_title,
+        detail_sources=detail_sources,
+        pivot_dimension=pivot_dimension,
+        table_mode=table_mode,
+    )
 
 
 def render_page_marketing_performance(
@@ -8441,20 +8410,22 @@ def render_page_marketing_performance(
         prior=_kpi_prior,
     )
 
-    _master_performance_table(
-        master_df,
+    gm_mpo = _master_build_gm_with_metrics(master_df, _spend_for_master_ui, pivot_dimension="market")
+    gm_mpo = _overlay_gm_leads_qualified_from_raw_leads(gm_mpo, leads_df)
+    _render_master_view_pivot_from_gm(
+        gm_mpo,
         key_suffix=key_suffix,
-        spend_grid=_spend_for_master_ui,
+        section_title="Master view",
         detail_sources={
             "spend": spend_sheet_for_kpis,
             "leads": leads_df,
             "post": post_df_kpi,
             "cw": cw_kpi,
         },
+        pivot_dimension="market",
+        table_mode="full",
     )
-
-    gm_t3b3 = _master_build_gm_with_metrics(master_df, _spend_for_master_ui)
-    _render_t3b3_quarter_sections(gm_t3b3, key_suffix=f"{key_suffix}_t3b3")
+    _render_t3b3_quarter_sections(gm_mpo, key_suffix=f"{key_suffix}_t3b3")
 
     _render_mpo_trend_charts(
         start_date=start_date,
