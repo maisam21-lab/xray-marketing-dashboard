@@ -26,7 +26,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
 # If the hosted app shows an older string, GitHub ``main`` (or the branch Streamlit uses) does not have your latest push yet.
-DASHBOARD_BUILD = "2026-04-14-scorecards-reference-ui-kit"
+DASHBOARD_BUILD = "2026-04-14-market-mom-exec-layout"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -8877,11 +8877,66 @@ def render_page_marketing_performance(
     )
 
 
+def _mom_monthly_series(df: pd.DataFrame) -> pd.DataFrame:
+    """Month-level aggregates for Market MoM charts (spend, funnel counts, rates)."""
+    if df.empty or "month" not in df.columns:
+        return pd.DataFrame()
+    d = df.copy()
+    if "closed_won" not in d.columns:
+        d["closed_won"] = 0
+    if "qualified" not in d.columns:
+        d["qualified"] = 0
+    if "cost" in d.columns:
+        monthly = (
+            d.groupby("month", as_index=False)
+            .agg(
+                cw=("closed_won", "sum"),
+                qualified=("qualified", "sum"),
+                spend=("cost", "sum"),
+            )
+            .sort_values("month")
+        )
+        monthly["spend"] = pd.to_numeric(monthly["spend"], errors="coerce").fillna(0.0)
+    else:
+        monthly = (
+            d.groupby("month", as_index=False)
+            .agg(cw=("closed_won", "sum"), qualified=("qualified", "sum"))
+            .sort_values("month")
+        )
+        monthly["spend"] = 0.0
+    monthly["cw"] = pd.to_numeric(monthly["cw"], errors="coerce").fillna(0).astype(int)
+    monthly["qualified"] = pd.to_numeric(monthly["qualified"], errors="coerce").fillna(0.0)
+    month_leads: list[int] = []
+    for m in monthly["month"].tolist():
+        gm = d[d["month"] == m]
+        month_leads.append(_lead_rows_count(gm))
+    monthly["leads"] = month_leads
+    monthly["sql_pct"] = monthly.apply(
+        lambda r: (float(r["qualified"]) / float(r["leads"]) * 100.0) if r["leads"] else 0.0,
+        axis=1,
+    )
+    monthly["q_win_pct"] = monthly.apply(
+        lambda r: (float(r["cw"]) / float(r["qualified"]) * 100.0) if r["qualified"] else 0.0,
+        axis=1,
+    )
+    monthly["cpl"] = monthly.apply(
+        lambda r: (float(r["spend"]) / float(r["leads"])) if r["leads"] else float("nan"),
+        axis=1,
+    )
+    monthly["cpsql"] = monthly.apply(
+        lambda r: (float(r["spend"]) / float(r["qualified"])) if r["qualified"] else float("nan"),
+        axis=1,
+    )
+    monthly["month_lbl"] = monthly["month"].map(lambda x: _month_norm_key(x))
+    return monthly
+
+
 def render_page_market_mom(
     df_loaded: pd.DataFrame,
     start_date: date,
     end_date: date,
 ) -> None:
+    """Regional **month-over-month** view for leadership: headline KPIs, trends, quality, unit economics, then pivot detail."""
     key_suffix = "mom"
     df_filtered = _filter_by_date_range(df_loaded, start_date, end_date)
     df_date = df_loaded if df_filtered.empty else df_filtered
@@ -8890,73 +8945,214 @@ def render_page_market_mom(
         return
 
     _dashboard_tab_page_header("Market MoM")
+    st.markdown(
+        '<p class="mpo-sec-head-desc" style="margin-top:-6px;margin-bottom:12px;">'
+        "One place to see how <strong>spend</strong>, <strong>pipeline volume</strong>, and <strong>conversion quality</strong> move "
+        "month by month for a single market or the full portfolio — built for regional reviews and global read-outs.</p>",
+        unsafe_allow_html=True,
+    )
+
     df, _ = _apply_sheet_filters(df_date, key_suffix=key_suffix)
 
     mk_opts = sorted([x for x in df_date["country"].dropna().unique().tolist() if x and x != "Unknown"])
-    pick = st.selectbox(
-        "Market",
-        ["All markets"] + mk_opts,
-        key=f"{key_suffix}_market",
-    )
-    if pick != "All markets":
-        df = df[df["country"] == pick]
+    ctl1, ctl2 = st.columns((1, 2))
+    with ctl1:
+        pick = st.selectbox(
+            "Focus market",
+            ["All markets"] + mk_opts,
+            key=f"{key_suffix}_market",
+            help="Choose one country/region or keep the full blended scope.",
+        )
+    with ctl2:
+        st.caption(
+            f"Reporting window **{start_date:%d %b %Y}** → **{end_date:%d %b %Y}** · "
+            "Filters above apply to every chart and the operating table."
+        )
 
-    _master_performance_table(df, key_suffix=f"{key_suffix}_mom", section_title="")
+    if pick != "All markets":
+        df = df[df["country"] == pick].copy()
+
+    if df.empty:
+        st.warning("No rows match the current filters — widen the date range or clear sheet filters.")
+        return
+
+    scope_lbl = pick if pick != "All markets" else "All markets (portfolio)"
+    total_spend = float(pd.to_numeric(df["cost"], errors="coerce").fillna(0).sum()) if "cost" in df.columns else 0.0
+    total_cw = int(pd.to_numeric(df["closed_won"], errors="coerce").fillna(0).sum()) if "closed_won" in df.columns else 0
+    total_leads = _lead_rows_count(df)
+    total_qual = int(pd.to_numeric(df["qualified"], errors="coerce").fillna(0).sum()) if "qualified" in df.columns else 0
+    sql_all = (total_qual / total_leads * 100.0) if total_leads else 0.0
+    qwin_all = (total_cw / total_qual * 100.0) if total_qual else 0.0
+
+    with st.container(border=True):
+        st.markdown(
+            f'<div class="looker-table-title" style="margin-top:0;">Executive snapshot — {html.escape(scope_lbl)}</div>',
+            unsafe_allow_html=True,
+        )
+        m1, m2, m3, m4, m5 = st.columns(5)
+        m1.metric("Spend (Σ)", _format_spend_k(total_spend) if total_spend else "$0")
+        m2.metric("Closed won (Σ)", f"{total_cw:,}")
+        m3.metric("Lead rows (Σ)", f"{total_leads:,}")
+        m4.metric("SQL %", f"{sql_all:.1f}%")
+        m5.metric("Q win %", f"{qwin_all:.1f}%")
+
+    monthly = _mom_monthly_series(df)
+    if monthly.empty:
+        st.info("No calendar months in this slice — check filters and month columns.")
+        _master_performance_table(df, key_suffix=f"{key_suffix}_mom", section_title="Month × market detail")
+        return
+
+    _plot_mom = dict(template="plotly_white", paper_bgcolor="white", plot_bgcolor="white", font=dict(size=12))
+    _xaxis = dict(showgrid=True, gridcolor="rgba(148,163,184,0.25)", title="")
+
+    with st.container(border=True):
+        st.markdown('<div class="looker-table-title" style="margin-top:0;">Demand & spend trajectory</div>', unsafe_allow_html=True)
+        st.caption("Are we funding enough reach, and is demand holding month to month?")
+        c_sp, c_vol = st.columns(2)
+        with c_sp:
+            fig_sp = go.Figure()
+            fig_sp.add_trace(
+                go.Bar(
+                    x=monthly["month_lbl"],
+                    y=monthly["spend"],
+                    name="Spend",
+                    marker_color="#4f8483",
+                    hovertemplate="%{x}<br>Spend: $%{y:,.0f}<extra></extra>",
+                )
+            )
+            fig_sp.update_layout(
+                title=dict(text="Paid spend by month", font=dict(size=14)),
+                **_plot_mom,
+                margin=dict(l=8, r=8, t=52, b=8),
+                showlegend=False,
+                yaxis=dict(title="USD", showgrid=True, gridcolor="rgba(148,163,184,0.2)"),
+                xaxis=_xaxis,
+            )
+            st.plotly_chart(fig_sp, width="stretch", key=f"{key_suffix}_pl_spend")
+        with c_vol:
+            fig_v = go.Figure()
+            fig_v.add_trace(
+                go.Bar(
+                    x=monthly["month_lbl"],
+                    y=monthly["cw"],
+                    name="CW",
+                    marker_color="#059669",
+                )
+            )
+            fig_v.add_trace(
+                go.Bar(
+                    x=monthly["month_lbl"],
+                    y=monthly["leads"],
+                    name="Lead rows",
+                    marker_color="#3b82f6",
+                )
+            )
+            fig_v.add_trace(
+                go.Bar(
+                    x=monthly["month_lbl"],
+                    y=monthly["qualified"],
+                    name="Qualified",
+                    marker_color="#8b5cf6",
+                )
+            )
+            fig_v.update_layout(
+                title=dict(text="Funnel volume (by month)", font=dict(size=14)),
+                barmode="group",
+                **_plot_mom,
+                margin=dict(l=8, r=8, t=52, b=8),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
+                yaxis=dict(title="Count", showgrid=True, gridcolor="rgba(148,163,184,0.2)"),
+                xaxis=_xaxis,
+            )
+            st.plotly_chart(fig_v, width="stretch", key=f"{key_suffix}_pl_volume")
+
+    with st.container(border=True):
+        st.markdown('<div class="looker-table-title" style="margin-top:0;">Conversion quality</div>', unsafe_allow_html=True)
+        st.caption("SQL % and qualified-stage win rate — are we improving qualification and downstream wins?")
+        fig_q = go.Figure()
+        fig_q.add_trace(
+            go.Scatter(
+                x=monthly["month_lbl"],
+                y=monthly["sql_pct"],
+                name="SQL %",
+                mode="lines+markers",
+                line=dict(color="#4f8483", width=2.5),
+                marker=dict(size=8),
+            )
+        )
+        fig_q.add_trace(
+            go.Scatter(
+                x=monthly["month_lbl"],
+                y=monthly["q_win_pct"],
+                name="Q win % (CW ÷ qualified)",
+                mode="lines+markers",
+                line=dict(color="#c2410c", width=2.5),
+                marker=dict(size=8),
+            )
+        )
+        fig_q.update_layout(
+            title=dict(text="Quality rates over time", font=dict(size=14)),
+            **_plot_mom,
+            margin=dict(l=8, r=8, t=52, b=8),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
+            yaxis=dict(title="Percent", ticksuffix="%", showgrid=True, gridcolor="rgba(148,163,184,0.2)"),
+            xaxis=_xaxis,
+        )
+        st.plotly_chart(fig_q, width="stretch", key=f"{key_suffix}_pl_quality")
+
+    if monthly["spend"].sum() > 1e-9 and (monthly["cpl"].notna().any() or monthly["cpsql"].notna().any()):
+        with st.container(border=True):
+            st.markdown('<div class="looker-table-title" style="margin-top:0;">Unit economics (estimated)</div>', unsafe_allow_html=True)
+            st.caption("CPL and CPSQL from blended spend in this slice — use for directional efficiency, not GAAP.")
+            fig_ue = go.Figure()
+            fig_ue.add_trace(
+                go.Scatter(
+                    x=monthly["month_lbl"],
+                    y=monthly["cpl"],
+                    name="CPL (spend ÷ lead rows)",
+                    mode="lines+markers",
+                    line=dict(color="#0369a1", width=2),
+                    connectgaps=False,
+                )
+            )
+            fig_ue.add_trace(
+                go.Scatter(
+                    x=monthly["month_lbl"],
+                    y=monthly["cpsql"],
+                    name="CPSQL (spend ÷ qualified)",
+                    mode="lines+markers",
+                    line=dict(color="#7c3aed", width=2),
+                    connectgaps=False,
+                )
+            )
+            fig_ue.update_layout(
+                title=dict(text="Cost per lead & per SQL", font=dict(size=14)),
+                **_plot_mom,
+                margin=dict(l=8, r=8, t=52, b=8),
+                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
+                yaxis=dict(title="USD", showgrid=True, gridcolor="rgba(148,163,184,0.2)"),
+                xaxis=_xaxis,
+            )
+            st.plotly_chart(fig_ue, width="stretch", key=f"{key_suffix}_pl_ue")
+
+    with st.expander("Month × market operating detail (full pivot)", expanded=False):
+        _master_performance_table(df, key_suffix=f"{key_suffix}_mom", section_title="")
 
     grand = pd.DataFrame(
         [
             {
-                "Month": "Grand total",
-                "Market": "—",
-                "Spend": float(df["cost"].sum()),
-                "CW (Inc Approved)": int(df["closed_won"].sum()),
-                "Total Leads": _lead_rows_count(df),
+                "Scope": scope_lbl,
+                "Spend (Σ)": total_spend,
+                "CW (Σ)": total_cw,
+                "Lead rows (Σ)": total_leads,
+                "Qualified (Σ)": total_qual,
+                "SQL %": round(sql_all, 2),
+                "Q win %": round(qwin_all, 2),
             }
         ]
     )
-    st.caption("Grand total (filtered)")
-    st.dataframe(grand, width="stretch", hide_index=True, key=f"{key_suffix}_df_grand")
-
-    monthly = (
-        df.groupby("month", as_index=False)
-        .agg(cw=("closed_won", "sum"), qualified=("qualified", "sum"))
-        .sort_values("month")
-    )
-    month_leads: list[int] = []
-    for m in monthly["month"].tolist():
-        gm = df[df["month"] == m]
-        month_leads.append(_lead_rows_count(gm))
-    monthly["leads"] = month_leads
-    monthly["sql_pct"] = monthly.apply(
-        lambda r: (r["qualified"] / r["leads"] * 100) if r["leads"] else 0.0,
-        axis=1,
-    )
-    monthly["q_win_pct"] = monthly.apply(
-        lambda r: (r["cw"] / r["qualified"] * 100) if r["qualified"] else 0.0,
-        axis=1,
-    )
-
-    ch1, ch2 = st.columns(2)
-    with ch1:
-        fig = px.bar(
-            monthly,
-            x="month",
-            y=["cw", "leads", "qualified"],
-            barmode="group",
-            title="CW vs leads vs qualified (by month)",
-        )
-        fig.update_layout(plot_bgcolor="white", paper_bgcolor="white", margin=dict(l=8, r=8, t=45, b=8))
-        st.plotly_chart(fig, width="stretch", key=f"{key_suffix}_pl_combo")
-    with ch2:
-        fig2 = px.line(
-            monthly,
-            x="month",
-            y=["sql_pct", "q_win_pct"],
-            markers=True,
-            title="SQL % and Q Win % (CW ÷ Qualified, by month)",
-        )
-        fig2.update_layout(plot_bgcolor="white", paper_bgcolor="white", margin=dict(l=8, r=8, t=45, b=8))
-        st.plotly_chart(fig2, width="stretch", key=f"{key_suffix}_pl_lines")
+    with st.expander("Export-friendly totals (this slice)", expanded=False):
+        st.dataframe(grand, width="stretch", hide_index=True, key=f"{key_suffix}_df_grand")
 
 
 def _pmc_normalize_channel_label(raw: str) -> str:
