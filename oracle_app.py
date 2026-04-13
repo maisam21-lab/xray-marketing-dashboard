@@ -26,7 +26,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
 # If the hosted app shows an older string, GitHub ``main`` (or the branch Streamlit uses) does not have your latest push yet.
-DASHBOARD_BUILD = "2026-04-14-kpi-dense-charts-equal"
+DASHBOARD_BUILD = "2026-04-14-perf-charts-tidy-v2"
 
 DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
 ME_XRAY_SPEND_SHEET_URL = f"https://docs.google.com/spreadsheets/d/{DEFAULT_SHEET_ID}/edit"
@@ -6162,9 +6162,10 @@ def _render_mpo_trend_charts(
     leads_sliced = _mpo_slice_by_dashboard_ref(leads_df, df_ref_for_scope)
     post_sliced = _mpo_slice_by_dashboard_ref(post_df_kpi, df_ref_for_scope)
 
-    # Same pixel height + margins for both charts so the two bordered cards match; equal column width.
-    _chart_h = 470
-    _perf_plot_margin = dict(l=10, r=10, t=26, b=54)
+    # Same pixel height + margins for both charts; equal column width. Shared left margin fits y-axis titles.
+    _chart_h = 488
+    _perf_plot_margin = dict(l=56, r=12, t=18, b=52)
+    _perf_plot_margin_donut = dict(l=16, r=16, t=12, b=48)
 
     col_left, col_right = st.columns([1, 1], gap="small")
 
@@ -6184,12 +6185,18 @@ def _render_mpo_trend_charts(
                 s_clk = pd.to_numeric(g["clicks"], errors="coerce").fillna(0.0)
                 s_imp = pd.to_numeric(g["impressions"], errors="coerce").fillna(0.0)
                 n_mo = int(len(xs))
+                mom_c = _mpo_mom_pct_str(s_cost)
+                mom_k = _mpo_mom_pct_str(s_clk)
+                mom_i = _mpo_mom_pct_str(s_imp)
+                st.caption(
+                    f"{n_mo} months · Cost Σ {_mpo_format_trend_value('cost', float(s_cost.sum()))} (MoM {mom_c}) · "
+                    f"Clicks Σ {float(s_clk.sum()):,.0f} ({mom_k}) · Impr Σ {float(s_imp.sum()):,.0f} ({mom_i})"
+                )
                 fig_t = make_subplots(
                     rows=3,
                     cols=1,
                     shared_xaxes=True,
-                    vertical_spacing=0.052,
-                    subplot_titles=("Cost ($)", "Clicks", "Impressions"),
+                    vertical_spacing=0.042,
                 )
                 fig_t.add_trace(
                     go.Scatter(
@@ -6232,36 +6239,42 @@ def _render_mpo_trend_charts(
                     row=3,
                     col=1,
                 )
-                _ax_title = dict(size=13, color="#0f172a")
-                _ax_tick = dict(size=12, color="#334155")
+                _ytitle = dict(font=dict(size=12, color="#334155"))
+                _ytick = dict(size=11, color="#475569")
                 fig_t.update_yaxes(
+                    title=dict(text="Cost ($)", standoff=10, **_ytitle),
                     tickprefix="$",
                     tickformat=",.0f",
-                    title_font=_ax_title,
-                    tickfont=_ax_tick,
+                    tickfont=_ytick,
                     showgrid=True,
                     gridcolor="rgba(148, 163, 184, 0.25)",
                     zeroline=False,
+                    side="left",
+                    automargin=True,
                     row=1,
                     col=1,
                 )
                 fig_t.update_yaxes(
+                    title=dict(text="Clicks", standoff=10, **_ytitle),
                     tickformat=",.0f",
-                    title_font=_ax_title,
-                    tickfont=_ax_tick,
+                    tickfont=_ytick,
                     showgrid=True,
                     gridcolor="rgba(148, 163, 184, 0.25)",
                     zeroline=False,
+                    side="left",
+                    automargin=True,
                     row=2,
                     col=1,
                 )
                 fig_t.update_yaxes(
+                    title=dict(text="Impressions", standoff=10, **_ytitle),
                     tickformat=",.0f",
-                    title_font=_ax_title,
-                    tickfont=_ax_tick,
+                    tickfont=_ytick,
                     showgrid=True,
                     gridcolor="rgba(148, 163, 184, 0.25)",
                     zeroline=False,
+                    side="left",
+                    automargin=True,
                     row=3,
                     col=1,
                 )
@@ -6288,22 +6301,14 @@ def _render_mpo_trend_charts(
                     legend=dict(
                         orientation="h",
                         yanchor="top",
-                        y=-0.05,
+                        y=-0.04,
                         xanchor="center",
                         x=0.5,
-                        font=dict(size=11),
+                        font=dict(size=10),
                     ),
                     hovermode="x unified",
                     hoverlabel=dict(font_size=12),
                     margin={**_perf_plot_margin},
-                )
-                fig_t.update_annotations(font=dict(size=13, color="#0f172a"))
-                mom_c = _mpo_mom_pct_str(s_cost)
-                mom_k = _mpo_mom_pct_str(s_clk)
-                mom_i = _mpo_mom_pct_str(s_imp)
-                st.caption(
-                    f"{n_mo} months in view · Cost Σ {_mpo_format_trend_value('cost', float(s_cost.sum()))} (MoM {mom_c}) · "
-                    f"Clicks Σ {float(s_clk.sum()):,.0f} ({mom_k}) · Impr Σ {float(s_imp.sum()):,.0f} ({mom_i})"
                 )
                 if float(s_clk.sum()) < 1e-6 and float(s_imp.sum()) < 1e-6:
                     st.caption("Clicks/impressions are zero in this slice — check Supermetrics / filters.")
@@ -6311,15 +6316,12 @@ def _render_mpo_trend_charts(
 
     with col_right:
         with st.container(border=True):
-            r1, r2 = st.columns([2, 5], gap="small")
-            with r1:
-                st.markdown('<p class="mpo-perf-chart-title">Breakdown</p>', unsafe_allow_html=True)
-            with r2:
-                brk = _mpo_segmented_or_radio(
-                    "breakdown",
-                    ["Traffic", "Leads Conversion", "Funnel Stages"],
-                    key=f"{key_suffix}_mpo_breakdown_kind",
-                )
+            st.markdown('<p class="mpo-perf-chart-title">Breakdown</p>', unsafe_allow_html=True)
+            brk = _mpo_segmented_or_radio(
+                "breakdown",
+                ["Traffic", "Leads Conversion", "Funnel Stages"],
+                key=f"{key_suffix}_mpo_breakdown_kind",
+            )
 
             labels: list[str] = []
             values: list[float] = []
@@ -6347,11 +6349,12 @@ def _render_mpo_trend_charts(
                         go.Pie(
                             labels=labels,
                             values=values,
-                            hole=0.58,
+                            hole=0.48,
+                            domain=dict(x=[0.02, 0.98], y=[0.02, 0.90]),
                             marker=dict(colors=cols, line=dict(color="#fff", width=1.5)),
                             textinfo="label+percent",
                             textposition="auto",
-                            textfont=dict(size=13),
+                            textfont=dict(size=12),
                             sort=True,
                             direction="clockwise",
                             insidetextorientation="horizontal",
@@ -6370,34 +6373,38 @@ def _render_mpo_trend_charts(
                     else ("Qualified vs not" if brk == "Leads Conversion" else "Stages in scope")
                 )
                 fig_d.update_layout(
+                    title=dict(
+                        text=_brk_label,
+                        x=0.5,
+                        xanchor="center",
+                        y=0.995,
+                        yanchor="top",
+                        font=dict(size=12, color="#334155"),
+                    ),
                     showlegend=True,
-                    legend=dict(orientation="h", yanchor="top", y=-0.14, xanchor="center", x=0.5, font=dict(size=11)),
-                    margin={**_perf_plot_margin},
+                    legend=dict(
+                        orientation="h",
+                        yanchor="top",
+                        y=-0.08,
+                        xanchor="center",
+                        x=0.5,
+                        font=dict(size=10),
+                    ),
+                    margin={**_perf_plot_margin_donut},
                     height=_chart_h,
                     paper_bgcolor="white",
                     hoverlabel=dict(font_size=12),
                     annotations=[
                         dict(
-                            text=f"<b>{_brk_label}</b>",
-                            xref="paper",
-                            yref="paper",
-                            x=0,
-                            y=1.07,
-                            xanchor="left",
-                            yanchor="bottom",
-                            showarrow=False,
-                            font=dict(size=14, color="#334155"),
-                        ),
-                        dict(
                             text=f"<b>{total_v:,.0f}</b><br><span style='font-size:11px;color:#64748b'>{_center_sub}</span>",
                             xref="paper",
                             yref="paper",
                             x=0.5,
-                            y=0.5,
+                            y=0.48,
                             xanchor="center",
                             yanchor="middle",
                             showarrow=False,
-                            font=dict(size=19, color="#0f172a"),
+                            font=dict(size=18, color="#0f172a"),
                         ),
                     ],
                 )
