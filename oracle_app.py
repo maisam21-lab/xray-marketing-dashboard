@@ -26,7 +26,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-15-data-scope-redesign"
+DASHBOARD_BUILD = "2026-04-15-scope-strip-simple"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -4414,22 +4414,6 @@ def _mpo_month_picker_options(
     return [by_k[k] for k in sorted(by_k.keys(), key=_mpo_month_ts_for_sort)]
 
 
-def _mpo_data_scope_head(*, hint: str) -> None:
-    """Ribbon row: **DATA SCOPE** pill + short hint (same pattern on Marketing performance / channel / MoM)."""
-    st.markdown(
-        f'<div class="mpo-scope-card-head">'
-        f'<span class="mpo-filter-ribbon-title">Data scope</span>'
-        f'<span class="mpo-scope-card-hint">{html.escape(hint)}</span>'
-        f"</div>",
-        unsafe_allow_html=True,
-    )
-
-
-def _mpo_scope_layout_columns() -> tuple[Any, Any, Any]:
-    """Side gutters + center column so multiselects are not full-bleed on wide screens."""
-    return st.columns([2.4, 5.8, 2.4], gap="small")
-
-
 def _apply_marketing_performance_filters(
     df_date: pd.DataFrame,
     *,
@@ -4462,26 +4446,26 @@ def _apply_marketing_performance_filters(
     _mpo_normalize_month_multiselect_state(key_suffix)
     _mpo_filter_panel = st.container()
     with _mpo_filter_panel:
-        _g_l, _g_mid, _g_r = _mpo_scope_layout_columns()
-        with _g_mid:
-            with st.container(border=True):
-                _mpo_data_scope_head(
-                    hint="Choose geography and month — updates scorecards, charts, and tables on this tab.",
-                )
-                st.divider()
-                _c_mk, _c_mo = st.columns(2, gap="large")
-                with _c_mk:
-                    st.multiselect(
-                        "Markets & countries",
-                        [_MPO_ALL_GEO_SENTINEL] + market_opts,
-                        key=_k_mpo_market,
-                    )
-                with _c_mo:
-                    st.multiselect(
-                        "Month",
-                        [_MPO_ALL_MONTHS_SENTINEL] + month_opts,
-                        key=_k_mpo_month,
-                    )
+        st.markdown(
+            '<div class="mpo-filter-ribbon">'
+            '<span class="mpo-filter-ribbon-title">Data scope</span>'
+            "</div>",
+            unsafe_allow_html=True,
+        )
+        st.caption("Filters apply to scorecards, charts, and tables on this tab.")
+        _c_mk, _c_mo = st.columns(2, gap="medium")
+        with _c_mk:
+            st.multiselect(
+                "Markets & countries",
+                [_MPO_ALL_GEO_SENTINEL] + market_opts,
+                key=_k_mpo_market,
+            )
+        with _c_mo:
+            st.multiselect(
+                "Month",
+                [_MPO_ALL_MONTHS_SENTINEL] + month_opts,
+                key=_k_mpo_month,
+            )
 
     selected_markets = st.session_state.get(f"{key_suffix}_market", [_MPO_ALL_GEO_SENTINEL])
     selected_months = st.session_state.get(f"{key_suffix}_month", [_MPO_ALL_MONTHS_SENTINEL])
@@ -4542,26 +4526,26 @@ def _apply_channel_tab_data_scope(
 
     _pmc_filter_panel = st.container()
     with _pmc_filter_panel:
-        _g_l, _g_mid, _g_r = _mpo_scope_layout_columns()
-        with _g_mid:
-            with st.container(border=True):
-                _mpo_data_scope_head(
-                    hint="Choose channels and month — updates the spend grid and charts on this tab.",
-                )
-                st.divider()
-                _c_ch, _c_mo = st.columns(2, gap="large")
-                with _c_ch:
-                    st.multiselect(
-                        "Channels",
-                        [_MPO_ALL_CHANNELS_SENTINEL] + ch_opts,
-                        key=_k_pmc_ch,
-                    )
-                with _c_mo:
-                    st.multiselect(
-                        "Month",
-                        [_MPO_ALL_MONTHS_SENTINEL] + month_opts,
-                        key=_k_pmc_mo,
-                    )
+        st.markdown(
+            '<div class="mpo-filter-ribbon">'
+            '<span class="mpo-filter-ribbon-title">Data scope</span>'
+            "</div>",
+            unsafe_allow_html=True,
+        )
+        st.caption("Filters apply to the spend grid and charts on this tab.")
+        _c_ch, _c_mo = st.columns(2, gap="medium")
+        with _c_ch:
+            st.multiselect(
+                "Channels",
+                [_MPO_ALL_CHANNELS_SENTINEL] + ch_opts,
+                key=_k_pmc_ch,
+            )
+        with _c_mo:
+            st.multiselect(
+                "Month",
+                [_MPO_ALL_MONTHS_SENTINEL] + month_opts,
+                key=_k_pmc_mo,
+            )
 
     selected_ch = st.session_state.get(f"{key_suffix}_channel_scope", [_MPO_ALL_CHANNELS_SENTINEL])
     selected_months = st.session_state.get(f"{key_suffix}_month", [_MPO_ALL_MONTHS_SENTINEL])
@@ -8985,29 +8969,29 @@ def render_page_market_mom(
         unsafe_allow_html=True,
     )
 
-    _mg_l, _mg_mid, _mg_r = _mpo_scope_layout_columns()
-    with _mg_mid:
-        with st.container(border=True):
-            _mpo_data_scope_head(
-                hint="Narrow the sheet, then pick a focus market — all MoM views follow these choices.",
-            )
-            st.divider()
-            df, _ = _apply_sheet_filters(df_date, key_suffix=key_suffix, filters_in_row=True)
-            mk_opts = sorted([x for x in df_date["country"].dropna().unique().tolist() if x and x != "Unknown"])
-            ctl1, ctl2 = st.columns((1, 1.2), gap="large")
-            with ctl1:
-                pick = st.selectbox(
-                    "Focus market",
-                    ["All markets"] + mk_opts,
-                    key=f"{key_suffix}_market",
-                    help="Choose one country/region or keep the full blended scope.",
-                )
-            with ctl2:
-                st.markdown(
-                    f'<p class="mom-reporting-hint">Reporting window <strong>{start_date:%d %b %Y}</strong> → '
-                    f"<strong>{end_date:%d %b %Y}</strong> · Applies to charts and the operating table.</p>",
-                    unsafe_allow_html=True,
-                )
+    st.markdown(
+        '<div class="mpo-filter-ribbon">'
+        '<span class="mpo-filter-ribbon-title">Data scope</span>'
+        "</div>",
+        unsafe_allow_html=True,
+    )
+    st.caption("Sheet filters and focus market apply to every chart and table on this tab.")
+    df, _ = _apply_sheet_filters(df_date, key_suffix=key_suffix, filters_in_row=True)
+    mk_opts = sorted([x for x in df_date["country"].dropna().unique().tolist() if x and x != "Unknown"])
+    ctl1, ctl2 = st.columns((1, 1.15), gap="medium", vertical_alignment="center")
+    with ctl1:
+        pick = st.selectbox(
+            "Focus market",
+            ["All markets"] + mk_opts,
+            key=f"{key_suffix}_market",
+            help="Choose one country/region or keep the full blended scope.",
+        )
+    with ctl2:
+        st.markdown(
+            f'<p class="mom-reporting-hint">Reporting window <strong>{start_date:%d %b %Y}</strong> → '
+            f"<strong>{end_date:%d %b %Y}</strong> · Filters here apply to every chart and the operating table.</p>",
+            unsafe_allow_html=True,
+        )
 
     if pick != "All markets":
         df = df[df["country"] == pick].copy()
@@ -10067,9 +10051,6 @@ def main() -> None:
         color: #64748b;
         font-weight: 500;
     }
-    .mom-focus-row [data-testid="stHorizontalBlock"] {
-        align-items: center !important;
-    }
     p.mom-reporting-hint {
         margin: 0.1rem 0 0 0;
         padding: 2px 0 0 0;
@@ -10401,52 +10382,21 @@ def main() -> None:
         border: 1px solid rgba(15, 23, 42, 0.06);
         box-shadow: 0 16px 48px -28px rgba(15, 23, 42, 0.14);
     }
-    .mpo-scope-card-head {
+    .mpo-filter-ribbon {
         display: flex;
-        flex-wrap: wrap;
         align-items: center;
-        justify-content: space-between;
-        gap: 8px 20px;
+        flex-wrap: wrap;
+        gap: 8px;
         margin: 0 0 2px 0;
+        padding: 0 0 8px 0;
+        border-bottom: 1px solid rgba(15, 23, 42, 0.07);
     }
-    .mpo-scope-card-hint {
-        flex: 1 1 220px;
-        font-size: 0.78rem;
-        line-height: 1.45;
-        color: #64748b;
-        font-weight: 500;
-        text-align: right;
-        max-width: min(42ch, 100%);
-    }
-    @media (max-width: 700px) {
-        .mpo-scope-card-hint { text-align: left; }
-    }
-    .mpo-scope-card-head .mpo-filter-ribbon-title {
-        flex-shrink: 0;
-    }
-    /* Data scope card (bordered container) + gutters: calmer chrome */
-    [data-testid="stVerticalBlockBorderWrapper"] {
-        border-radius: 16px !important;
-        border: 1px solid rgba(15, 23, 42, 0.09) !important;
-        background: linear-gradient(165deg, #ffffff 0%, #f8fafc 98%) !important;
-        box-shadow: 0 1px 2px rgba(15, 23, 42, 0.05) !important;
-    }
-    [data-testid="stVerticalBlockBorderWrapper"] hr {
-        margin: 0.4rem 0 0.6rem 0 !important;
-        border: none !important;
-        border-top: 1px solid rgba(15, 23, 42, 0.07) !important;
+    [data-testid="stVerticalBlock"] [data-testid="stCaption"] {
+        margin-top: 0.15rem !important;
+        margin-bottom: 0.45rem !important;
     }
     [data-testid="column"] {
         min-width: 0 !important;
-    }
-    .stApp [data-testid="stMultiSelect"] > div[data-baseweb="select"],
-    .stApp .stMultiSelect > div[data-baseweb="select"] {
-        width: 100% !important;
-        max-width: none !important;
-    }
-    .stApp .stSelectbox > div[data-baseweb="select"] {
-        width: 100% !important;
-        max-width: none !important;
     }
     .mpo-perf-charts-wrap {
         margin: 6px 0 4px 0;
