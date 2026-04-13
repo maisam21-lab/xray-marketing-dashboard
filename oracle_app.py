@@ -26,7 +26,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-15-mpo-header-kicker"
+DASHBOARD_BUILD = "2026-04-15-kicker-stamp"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -4247,11 +4247,12 @@ def _apply_sheet_filters(
 def _dashboard_tab_page_header(heading: Optional[str] = None) -> None:
     """Kicker (Marketing · RevOps) and optional bold tab title — omit ``heading`` to show kicker only."""
     _kicker = (
-        '<p class="dash-tab-kicker">'
+        '<p class="dash-tab-kicker-wrap">'
+        '<span class="dash-tab-kicker-stamp" title="KitchenPark Marketing · RevOps">'
         '<span class="dash-tab-kicker-marketing">Marketing</span>'
         '<span class="dash-tab-kicker-sep"> · </span>'
         '<span class="dash-tab-kicker-revops">RevOps</span>'
-        "</p>"
+        "</span></p>"
     )
     _parts: list[str] = ['<div class="dash-tab-head-cluster">', _kicker]
     if heading and str(heading).strip():
@@ -10014,22 +10015,37 @@ def main() -> None:
         margin: 0 0 2px 0;
         padding: 0;
     }
-    .dash-tab-kicker {
-        font-size: 0.72rem;
-        font-weight: 600;
-        letter-spacing: 0.04em;
+    .dash-tab-kicker-wrap {
+        margin: 0 0 4px 0;
+        line-height: 1.2;
+    }
+    /* Compact “rubber stamp” kicker */
+    .dash-tab-kicker-stamp {
+        display: inline-block;
+        font-size: 0.5rem;
+        font-weight: 700;
+        letter-spacing: 0.16em;
         text-transform: uppercase;
-        color: #64748b;
-        margin: 0 0 1px 0;
-        line-height: 1.25;
+        color: #5c6b82;
+        padding: 3px 9px 4px;
+        border: 1px dashed rgba(71, 85, 105, 0.42);
+        border-radius: 3px;
+        background: linear-gradient(165deg, #f8fafc 0%, #eef2f7 55%, #e8edf3 100%);
+        box-shadow:
+            0 1px 0 rgba(255, 255, 255, 0.85) inset,
+            0 1px 2px rgba(15, 23, 42, 0.06);
+        transform: rotate(-0.35deg);
+        user-select: none;
+    }
+    .dash-tab-kicker-sep {
+        opacity: 0.65;
+        font-weight: 600;
     }
     .dash-tab-kicker-revops {
-        font-size: 0.58rem;
-        font-weight: 500;
-        letter-spacing: 0.05em;
-        text-transform: uppercase;
-        color: #94a3b8;
-        vertical-align: 0.05em;
+        font-size: 0.85em;
+        font-weight: 600;
+        letter-spacing: 0.14em;
+        color: #6b7b92;
     }
     .dash-tab-heading {
         font-size: 1.22rem;
