@@ -26,7 +26,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and optional debug strings.
 # If the hosted app shows an older string, GitHub ``main`` (or the branch Streamlit uses) does not have your latest push yet.
-DASHBOARD_BUILD = "2026-04-14-scorecards-tone-caption-trim"
+DASHBOARD_BUILD = "2026-04-14-scorecards-biz-signal-colors"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -5557,18 +5557,14 @@ def _kpi_funnel_delta_pill_html(
     )
 
 
-def _kpi_compare_tone(
+def _kpi_period_outcome(
     cur: Optional[float],
     prev: Optional[float],
     *,
     lower_is_better: bool = False,
     disabled: bool = False,
 ) -> str:
-    """Semantic period-over-period class for scorecard tint (same thresholds as delta arrows).
-
-    Use ``lower_is_better=True`` for spend, CPL/CPSQL/CPCW, CpCW:LF, Cost/TCV %, and closed lost — a *decrease* vs the
-    reference month reads as positive (green edge). Volume metrics default to *higher is better*.
-    """
+    """``favorable`` | ``unfavorable`` | ``flat`` | ``na`` | ``off`` — same ±0.05% thresholds as delta text."""
     if disabled:
         return "off"
     if cur is None or prev is None:
@@ -5576,13 +5572,41 @@ def _kpi_compare_tone(
     if prev == 0.0:
         if cur == 0.0:
             return "flat"
-        return "down" if lower_is_better else "up"
+        if lower_is_better:
+            return "unfavorable" if float(cur) > 0.0 else "favorable"
+        return "favorable" if float(cur) > 0.0 else "flat"
     pct = (cur - prev) / prev * 100.0
     if abs(pct) <= 0.05:
         return "flat"
     if lower_is_better:
-        return "up" if pct < -0.05 else "down"
-    return "up" if pct > 0.05 else "down"
+        return "favorable" if pct < -0.05 else "unfavorable"
+    return "favorable" if pct > 0.05 else "unfavorable"
+
+
+def _kpi_biz_signal(
+    cur: Optional[float],
+    prev: Optional[float],
+    *,
+    domain: str,
+    lower_is_better: bool = False,
+    disabled: bool = False,
+) -> str:
+    """CSS class token for scorecard border psychology: metric ``domain`` + period ``outcome``.
+
+    **Why domains:** the same “green/red” bar feels different for *awareness* (cool blue expansion),
+    *revenue* (emerald win / rose miss), *unit economics* (teal savings vs **amber** budget pressure — alert
+    without the same emotional hit as revenue red), and *pipeline velocity* (violet forward motion).
+    """
+    o = _kpi_period_outcome(cur, prev, lower_is_better=lower_is_better, disabled=disabled)
+    if o in ("off", "na"):
+        return "na"
+    raw = "".join(ch if ch.isalnum() or ch in "-_" else "-" for ch in domain.strip().lower())
+    slug = "-".join(p for p in raw.replace("_", "-").split("-") if p)
+    if not slug:
+        return "na"
+    if o == "flat":
+        return f"biz-{slug}--flat"
+    return f"biz-{slug}--{'favorable' if o == 'favorable' else 'unfavorable'}"
 
 
 def _kpi_funnel_sub_row(label: str, value: str) -> str:
@@ -5641,15 +5665,15 @@ def _kpi_block(
         *,
         hue: str = "cw",
         extra_class: str = "",
-        tone: str = "na",
+        biz_signal: str = "na",
     ) -> str:
         h = html.escape(hue, quote=True)
         xc = html.escape(extra_class.strip(), quote=True) if extra_class.strip() else ""
         xcls = f" {xc}" if xc else ""
-        t = str(tone).strip().lower()
-        tone_cls = f" kpi-funnel-card--tone-{html.escape(t, quote=True)}" if t not in ("", "off", "na") else ""
+        b = str(biz_signal).strip().lower()
+        biz_cls = f" kpi-funnel-card--{html.escape(b, quote=True)}" if b not in ("", "na") else ""
         return (
-            f'<div class="kpi-funnel-card kpi-funnel-card--pastel kpi-funnel-card--pastel-{h}{xcls}{tone_cls}" '
+            f'<div class="kpi-funnel-card kpi-funnel-card--pastel kpi-funnel-card--pastel-{h}{xcls}{biz_cls}" '
             f'style="animation-delay:{delay:.2f}s">'
             f'<span class="kpi-funnel-icon" aria-hidden="true">{icon}</span>'
             f'<div class="kpi-funnel-title">{html.escape(title)}</div>'
@@ -5686,7 +5710,7 @@ def _kpi_block(
         _d(),
         hue="leads",
         extra_class="kpi-funnel-card--hero",
-        tone=_kpi_compare_tone(pv.get("mom_impr_c"), pv.get("mom_impr_p"), disabled=_no_delta),
+        biz_signal=_kpi_biz_signal(pv.get("mom_impr_c"), pv.get("mom_impr_p"), domain="reach", disabled=_no_delta),
     )
     card_tot_clicks = _card(
         "🖱",
@@ -5697,7 +5721,7 @@ def _kpi_block(
         _d(),
         hue="leads",
         extra_class="kpi-funnel-card--hero",
-        tone=_kpi_compare_tone(pv.get("mom_clicks_c"), pv.get("mom_clicks_p"), disabled=_no_delta),
+        biz_signal=_kpi_biz_signal(pv.get("mom_clicks_c"), pv.get("mom_clicks_p"), domain="reach", disabled=_no_delta),
     )
     card_tot_ctr = _card(
         "%",
@@ -5708,7 +5732,7 @@ def _kpi_block(
         _d(),
         hue="leads",
         extra_class="kpi-funnel-card--hero",
-        tone=_kpi_compare_tone(pv.get("mom_ctr_c"), pv.get("mom_ctr_p"), disabled=_no_delta),
+        biz_signal=_kpi_biz_signal(pv.get("mom_ctr_c"), pv.get("mom_ctr_p"), domain="engagement", disabled=_no_delta),
     )
 
     cpcw_s = f"${cpcw:,.2f}" if total_cw and cpcw == cpcw else "—"
@@ -5727,7 +5751,7 @@ def _kpi_block(
         _kpi_funnel_delta_html(pv.get("mom_cw_c"), pv.get("mom_cw_p"), vs_label=_vs, disabled=_no_delta),
         cw_sub,
         _d(),
-        tone=_kpi_compare_tone(pv.get("mom_cw_c"), pv.get("mom_cw_p"), disabled=_no_delta),
+        biz_signal=_kpi_biz_signal(pv.get("mom_cw_c"), pv.get("mom_cw_p"), domain="growth", disabled=_no_delta),
     )
     card_spend = _card(
         "💲",
@@ -5736,7 +5760,9 @@ def _kpi_block(
         _kpi_funnel_delta_html(pv.get("mom_spend_c"), pv.get("mom_spend_p"), vs_label=_vs, disabled=_no_delta),
         spend_sub,
         _d(),
-        tone=_kpi_compare_tone(pv.get("mom_spend_c"), pv.get("mom_spend_p"), lower_is_better=True, disabled=_no_delta),
+        biz_signal=_kpi_biz_signal(
+            pv.get("mom_spend_c"), pv.get("mom_spend_p"), domain="efficiency", lower_is_better=True, disabled=_no_delta
+        ),
     )
     card_cpcw = _card(
         "$",
@@ -5745,7 +5771,9 @@ def _kpi_block(
         _kpi_funnel_delta_html(pv.get("mom_cpcw_c"), pv.get("mom_cpcw_p"), vs_label=_vs, disabled=_no_delta),
         cpcw_sub,
         _d(),
-        tone=_kpi_compare_tone(pv.get("mom_cpcw_c"), pv.get("mom_cpcw_p"), lower_is_better=True, disabled=_no_delta),
+        biz_signal=_kpi_biz_signal(
+            pv.get("mom_cpcw_c"), pv.get("mom_cpcw_p"), domain="efficiency", lower_is_better=True, disabled=_no_delta
+        ),
     )
     card_tcv = _card(
         "◆",
@@ -5754,7 +5782,7 @@ def _kpi_block(
         _kpi_funnel_delta_html(pv.get("mom_tcv_c"), pv.get("mom_tcv_p"), vs_label=_vs, disabled=_no_delta),
         tcv_sub,
         _d(),
-        tone=_kpi_compare_tone(pv.get("mom_tcv_c"), pv.get("mom_tcv_p"), disabled=_no_delta),
+        biz_signal=_kpi_biz_signal(pv.get("mom_tcv_c"), pv.get("mom_tcv_p"), domain="growth", disabled=_no_delta),
     )
     card_cpcwlf = _card(
         "≈",
@@ -5763,7 +5791,9 @@ def _kpi_block(
         _kpi_funnel_delta_html(pv.get("mom_cpcwlf_c"), pv.get("mom_cpcwlf_p"), vs_label=_vs, disabled=_no_delta),
         cpcwlf_sub,
         _d(),
-        tone=_kpi_compare_tone(pv.get("mom_cpcwlf_c"), pv.get("mom_cpcwlf_p"), lower_is_better=True, disabled=_no_delta),
+        biz_signal=_kpi_biz_signal(
+            pv.get("mom_cpcwlf_c"), pv.get("mom_cpcwlf_p"), domain="efficiency", lower_is_better=True, disabled=_no_delta
+        ),
     )
     card_ctcv = _card(
         "%",
@@ -5772,8 +5802,12 @@ def _kpi_block(
         _kpi_funnel_delta_html(pv.get("mom_spend_tcv_pct_c"), pv.get("mom_spend_tcv_pct_p"), vs_label=_vs, disabled=_no_delta),
         pct_tcv_sub,
         _d(),
-        tone=_kpi_compare_tone(
-            pv.get("mom_spend_tcv_pct_c"), pv.get("mom_spend_tcv_pct_p"), lower_is_better=True, disabled=_no_delta
+        biz_signal=_kpi_biz_signal(
+            pv.get("mom_spend_tcv_pct_c"),
+            pv.get("mom_spend_tcv_pct_p"),
+            domain="efficiency",
+            lower_is_better=True,
+            disabled=_no_delta,
         ),
     )
 
@@ -5794,7 +5828,9 @@ def _kpi_block(
         sub_tl,
         _d(),
         hue="leads",
-        tone=_kpi_compare_tone(pv.get("mom_leads_rows_c"), pv.get("mom_leads_rows_p"), disabled=_no_delta),
+        biz_signal=_kpi_biz_signal(
+            pv.get("mom_leads_rows_c"), pv.get("mom_leads_rows_p"), domain="demand", disabled=_no_delta
+        ),
     )
     card_ql = _card(
         "✓",
@@ -5804,7 +5840,9 @@ def _kpi_block(
         sub_qual,
         _d(),
         hue="leads",
-        tone=_kpi_compare_tone(pv.get("mom_qual_status_c"), pv.get("mom_qual_status_p"), disabled=_no_delta),
+        biz_signal=_kpi_biz_signal(
+            pv.get("mom_qual_status_c"), pv.get("mom_qual_status_p"), domain="demand", disabled=_no_delta
+        ),
     )
     card_nw = _card(
         "◇",
@@ -5814,7 +5852,7 @@ def _kpi_block(
         sub_nw,
         _d(),
         hue="leads",
-        tone=_kpi_compare_tone(pv.get("mom_nw_c"), pv.get("mom_nw_p"), disabled=_no_delta),
+        biz_signal=_kpi_biz_signal(pv.get("mom_nw_c"), pv.get("mom_nw_p"), domain="demand", disabled=_no_delta),
     )
     card_sql = _card(
         "‰",
@@ -5824,7 +5862,9 @@ def _kpi_block(
         sub_sql,
         _d(),
         hue="leads",
-        tone=_kpi_compare_tone(pv.get("mom_sql_pct_c"), pv.get("mom_sql_pct_p"), disabled=_no_delta),
+        biz_signal=_kpi_biz_signal(
+            pv.get("mom_sql_pct_c"), pv.get("mom_sql_pct_p"), domain="conversion", disabled=_no_delta
+        ),
     )
     card_cpl = _card(
         "⬧",
@@ -5834,7 +5874,9 @@ def _kpi_block(
         sub_cpl_c,
         _d(),
         hue="leads",
-        tone=_kpi_compare_tone(pv.get("mom_cpl_c"), pv.get("mom_cpl_p"), lower_is_better=True, disabled=_no_delta),
+        biz_signal=_kpi_biz_signal(
+            pv.get("mom_cpl_c"), pv.get("mom_cpl_p"), domain="efficiency", lower_is_better=True, disabled=_no_delta
+        ),
     )
     card_cpsql = _card(
         "⬧",
@@ -5844,7 +5886,9 @@ def _kpi_block(
         sub_cpsql_c,
         _d(),
         hue="leads",
-        tone=_kpi_compare_tone(pv.get("mom_cpsql_c"), pv.get("mom_cpsql_p"), lower_is_better=True, disabled=_no_delta),
+        biz_signal=_kpi_biz_signal(
+            pv.get("mom_cpsql_c"), pv.get("mom_cpsql_p"), domain="efficiency", lower_is_better=True, disabled=_no_delta
+        ),
     )
 
     _qual_show = int(total_qualifying)
@@ -5869,7 +5913,7 @@ def _kpi_block(
         sub_live,
         _d(),
         hue="pipe",
-        tone=_kpi_compare_tone(pv.get("mom_live_c"), pv.get("mom_live_p"), disabled=_no_delta),
+        biz_signal=_kpi_biz_signal(pv.get("mom_live_c"), pv.get("mom_live_p"), domain="velocity", disabled=_no_delta),
     )
     card_nego = _card(
         "◆",
@@ -5879,7 +5923,7 @@ def _kpi_block(
         sub_nego,
         _d(),
         hue="pipe",
-        tone=_kpi_compare_tone(pv.get("mom_nego_c"), pv.get("mom_nego_p"), disabled=_no_delta),
+        biz_signal=_kpi_biz_signal(pv.get("mom_nego_c"), pv.get("mom_nego_p"), domain="velocity", disabled=_no_delta),
     )
     card_commit = _card(
         "◆",
@@ -5889,7 +5933,7 @@ def _kpi_block(
         sub_commit,
         _d(),
         hue="pipe",
-        tone=_kpi_compare_tone(pv.get("mom_commit_c"), pv.get("mom_commit_p"), disabled=_no_delta),
+        biz_signal=_kpi_biz_signal(pv.get("mom_commit_c"), pv.get("mom_commit_p"), domain="velocity", disabled=_no_delta),
     )
     card_clost = _card(
         "✕",
@@ -5899,7 +5943,9 @@ def _kpi_block(
         sub_clost,
         _d(),
         hue="pipe",
-        tone=_kpi_compare_tone(pv.get("mom_clost_c"), pv.get("mom_clost_p"), lower_is_better=True, disabled=_no_delta),
+        biz_signal=_kpi_biz_signal(
+            pv.get("mom_clost_c"), pv.get("mom_clost_p"), domain="leakage", lower_is_better=True, disabled=_no_delta
+        ),
     )
     card_qwin = _card(
         "%",
@@ -5909,7 +5955,7 @@ def _kpi_block(
         sub_qwin,
         _d(),
         hue="pipe",
-        tone=_kpi_compare_tone(pv.get("mom_qwin_c"), pv.get("mom_qwin_p"), disabled=_no_delta),
+        biz_signal=_kpi_biz_signal(pv.get("mom_qwin_c"), pv.get("mom_qwin_p"), domain="quality", disabled=_no_delta),
     )
 
     sec_traffic_hero = (
@@ -10342,51 +10388,66 @@ def main() -> None:
     .kpi-funnel-card--pastel-pipe {
         background: linear-gradient(152deg, #f5f3ff 0%, #ddd6fe 44%, #ede9fe 100%);
     }
-    /* MoM/YoY semantic accent — inset bar survives hover (see tone + :hover pairs below). */
-    .kpi-funnel-card.kpi-funnel-card--tone-up {
+    /*
+     * Business psychology — period vs reference (MoM/YoY): each metric ``domain`` gets its own hue language.
+     * reach: cooling slate when demand softens (not “panic red” at top of funnel).
+     * efficiency: teal wins vs amber pressure (budget heat ≠ revenue miss).
+     * growth / demand: emerald / blue wins vs rose-orange misses.
+     * velocity (pipeline): violet motion vs deeper purple caution.
+     * leakage: teal when losses shrink; brick when they spike.
+     * quality: deep green vs amber when win-rate slips.
+     */
+    .kpi-funnel-card[class*="--biz-"] {
+        --biz-bar: #64748b;
+        --biz-glow: rgba(100, 116, 139, 0.1);
         box-shadow:
-            inset 4px 0 0 0 rgba(5, 150, 105, 0.88),
+            inset 4px 0 0 0 var(--biz-bar),
             0 1px 2px rgba(15, 23, 42, 0.05),
-            0 8px 22px rgba(5, 150, 105, 0.07);
+            0 8px 22px var(--biz-glow);
     }
-    .kpi-funnel-card.kpi-funnel-card--tone-down {
+    .kpi-funnel-card[class*="--biz-"]:hover {
+        border-color: transparent;
         box-shadow:
-            inset 4px 0 0 0 rgba(220, 38, 38, 0.78),
-            0 1px 2px rgba(15, 23, 42, 0.05),
-            0 8px 22px rgba(220, 38, 38, 0.06);
+            inset 5px 0 0 0 var(--biz-bar),
+            0 12px 34px rgba(15, 23, 42, 0.11),
+            0 8px 26px var(--biz-glow);
+        transform: translateY(-2px);
     }
-    .kpi-funnel-card.kpi-funnel-card--tone-flat {
-        box-shadow:
-            inset 4px 0 0 0 rgba(100, 116, 139, 0.45),
-            0 1px 2px rgba(15, 23, 42, 0.04),
-            0 8px 20px rgba(15, 23, 42, 0.05);
-    }
-    .kpi-funnel-card:hover {
+    .kpi-funnel-card--biz-reach--favorable { --biz-bar: #0284c7; --biz-glow: rgba(2, 132, 199, 0.11); }
+    .kpi-funnel-card--biz-reach--unfavorable { --biz-bar: #64748b; --biz-glow: rgba(71, 85, 105, 0.1); }
+    .kpi-funnel-card--biz-reach--flat { --biz-bar: #94a3b8; --biz-glow: rgba(148, 163, 184, 0.08); }
+    .kpi-funnel-card--biz-engagement--favorable { --biz-bar: #2563eb; --biz-glow: rgba(37, 99, 235, 0.11); }
+    .kpi-funnel-card--biz-engagement--unfavorable { --biz-bar: #e11d48; --biz-glow: rgba(225, 29, 72, 0.09); }
+    .kpi-funnel-card--biz-engagement--flat { --biz-bar: #94a3b8; --biz-glow: rgba(148, 163, 184, 0.08); }
+    .kpi-funnel-card--biz-growth--favorable { --biz-bar: #059669; --biz-glow: rgba(5, 150, 105, 0.12); }
+    .kpi-funnel-card--biz-growth--unfavorable { --biz-bar: #be123c; --biz-glow: rgba(190, 18, 60, 0.09); }
+    .kpi-funnel-card--biz-growth--flat { --biz-bar: #94a3b8; --biz-glow: rgba(148, 163, 184, 0.08); }
+    .kpi-funnel-card--biz-efficiency--favorable { --biz-bar: #0d9488; --biz-glow: rgba(13, 148, 136, 0.11); }
+    .kpi-funnel-card--biz-efficiency--unfavorable { --biz-bar: #d97706; --biz-glow: rgba(217, 119, 6, 0.12); }
+    .kpi-funnel-card--biz-efficiency--flat { --biz-bar: #94a3b8; --biz-glow: rgba(148, 163, 184, 0.08); }
+    .kpi-funnel-card--biz-demand--favorable { --biz-bar: #2563eb; --biz-glow: rgba(37, 99, 235, 0.11); }
+    .kpi-funnel-card--biz-demand--unfavorable { --biz-bar: #ea580c; --biz-glow: rgba(234, 88, 12, 0.1); }
+    .kpi-funnel-card--biz-demand--flat { --biz-bar: #94a3b8; --biz-glow: rgba(148, 163, 184, 0.08); }
+    .kpi-funnel-card--biz-conversion--favorable { --biz-bar: #4f46e5; --biz-glow: rgba(79, 70, 229, 0.11); }
+    .kpi-funnel-card--biz-conversion--unfavorable { --biz-bar: #c026d3; --biz-glow: rgba(192, 38, 211, 0.09); }
+    .kpi-funnel-card--biz-conversion--flat { --biz-bar: #94a3b8; --biz-glow: rgba(148, 163, 184, 0.08); }
+    .kpi-funnel-card--biz-velocity--favorable { --biz-bar: #7c3aed; --biz-glow: rgba(124, 58, 237, 0.12); }
+    .kpi-funnel-card--biz-velocity--unfavorable { --biz-bar: #6b21a8; --biz-glow: rgba(107, 33, 168, 0.1); }
+    .kpi-funnel-card--biz-velocity--flat { --biz-bar: #94a3b8; --biz-glow: rgba(148, 163, 184, 0.08); }
+    .kpi-funnel-card--biz-leakage--favorable { --biz-bar: #0f766e; --biz-glow: rgba(15, 118, 110, 0.11); }
+    .kpi-funnel-card--biz-leakage--unfavorable { --biz-bar: #b91c1c; --biz-glow: rgba(185, 28, 28, 0.1); }
+    .kpi-funnel-card--biz-leakage--flat { --biz-bar: #94a3b8; --biz-glow: rgba(148, 163, 184, 0.08); }
+    .kpi-funnel-card--biz-quality--favorable { --biz-bar: #166534; --biz-glow: rgba(22, 101, 52, 0.11); }
+    .kpi-funnel-card--biz-quality--unfavorable { --biz-bar: #b45309; --biz-glow: rgba(180, 83, 9, 0.11); }
+    .kpi-funnel-card--biz-quality--flat { --biz-bar: #94a3b8; --biz-glow: rgba(148, 163, 184, 0.08); }
+    .kpi-funnel-card:hover:not([class*="--biz-"]) {
         box-shadow: 0 10px 28px rgba(15, 23, 42, 0.1);
         border-color: #cbd5e1;
         transform: translateY(-2px);
     }
-    .kpi-funnel-card--pastel:hover {
+    .kpi-funnel-card--pastel:hover:not([class*="--biz-"]) {
         border-color: transparent;
         box-shadow: 0 12px 32px rgba(15, 23, 42, 0.1);
-    }
-    .kpi-funnel-card.kpi-funnel-card--tone-up:hover {
-        box-shadow:
-            inset 4px 0 0 0 rgba(5, 150, 105, 0.95),
-            0 12px 32px rgba(15, 23, 42, 0.11);
-        border-color: transparent;
-    }
-    .kpi-funnel-card.kpi-funnel-card--tone-down:hover {
-        box-shadow:
-            inset 4px 0 0 0 rgba(220, 38, 38, 0.88),
-            0 12px 32px rgba(15, 23, 42, 0.11);
-        border-color: transparent;
-    }
-    .kpi-funnel-card.kpi-funnel-card--tone-flat:hover {
-        box-shadow:
-            inset 4px 0 0 0 rgba(100, 116, 139, 0.55),
-            0 12px 30px rgba(15, 23, 42, 0.09);
-        border-color: transparent;
     }
     .kpi-funnel-icon {
         position: absolute;
