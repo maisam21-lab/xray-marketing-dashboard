@@ -26,7 +26,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-15-mom-cell-color-arrows"
+DASHBOARD_BUILD = "2026-04-15-mom-arrow-only-no-dcw"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -9257,7 +9257,7 @@ def render_page_market_mom(
                     f"</div>",
                     unsafe_allow_html=True,
                 )
-        compact_cols = ["Month", "Market", "Spend", "Δ Spend", "CW", "Δ CW", "SQL %", "Q win %"]
+        compact_cols = ["Month", "Market", "Spend", "Δ Spend", "CW", "SQL %", "Q win %"]
         compact_tbl = tbl_view[compact_cols].copy()
 
         def _delta_cell(v: float, money: bool) -> str:
@@ -9278,7 +9278,6 @@ def render_page_market_mom(
             spend = float(pd.to_numeric(r["Spend"], errors="coerce") or 0.0)
             d_sp = float(pd.to_numeric(r["Δ Spend"], errors="coerce") or 0.0)
             cw = int(pd.to_numeric(r["CW"], errors="coerce") or 0)
-            d_cw = float(pd.to_numeric(r["Δ CW"], errors="coerce") or 0.0)
             sql = float(pd.to_numeric(r["SQL %"], errors="coerce") or 0.0)
             qwin = float(pd.to_numeric(r["Q win %"], errors="coerce") or 0.0)
             rows_html.append(
@@ -9288,7 +9287,6 @@ def render_page_market_mom(
                 f"<td>${spend:,.0f}</td>"
                 f"<td>{_delta_cell(d_sp, money=True)}</td>"
                 f"<td>{cw:,}</td>"
-                f"<td>{_delta_cell(d_cw, money=False)}</td>"
                 f"<td>{sql:.1f}%</td>"
                 f"<td>{qwin:.1f}%</td>"
                 "</tr>"
@@ -9303,7 +9301,6 @@ def render_page_market_mom(
             '<th style="text-align:right;padding:8px;border-bottom:1px solid #e2e8f0;">Spend</th>'
             '<th style="text-align:left;padding:8px;border-bottom:1px solid #e2e8f0;">Δ Spend</th>'
             '<th style="text-align:right;padding:8px;border-bottom:1px solid #e2e8f0;">CW</th>'
-            '<th style="text-align:left;padding:8px;border-bottom:1px solid #e2e8f0;">Δ CW</th>'
             '<th style="text-align:right;padding:8px;border-bottom:1px solid #e2e8f0;">SQL %</th>'
             '<th style="text-align:right;padding:8px;border-bottom:1px solid #e2e8f0;">Q win %</th>'
             "</tr></thead>"
