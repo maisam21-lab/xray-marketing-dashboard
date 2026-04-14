@@ -26,7 +26,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-15-mom-qualified-leads-labels"
+DASHBOARD_BUILD = "2026-04-15-mom-right-chart-color-update"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -9414,7 +9414,7 @@ def render_page_market_mom(
                 y=monthly["sql_pct"],
                 name="SQL %",
                 mode="lines+markers",
-                line=dict(color="#2563eb", width=2.5),
+                line=dict(color="#0d9488", width=2.5),
                 marker=dict(size=8),
             )
         )
@@ -9424,7 +9424,7 @@ def render_page_market_mom(
                 y=monthly["q_win_pct"],
                 name="Q win % (CW ÷ qualified leads)",
                 mode="lines+markers",
-                line=dict(color="#7c3aed", width=2.5),
+                line=dict(color="#ea580c", width=2.5),
                 marker=dict(size=8),
             )
         )
