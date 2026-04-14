@@ -9280,6 +9280,11 @@ def render_page_market_mom(
                 .sort_values(["_month_rank", "_me_sort", sort_label], ascending=[False, True, False])
                 .drop(columns=["_month_rank", "_me_sort"])
             )
+        # Hide rows with no conversion signal (spend-only rows with zero CW/SQL/Q-win) to keep the table focused.
+        _cw0 = pd.to_numeric(tbl_view["CW"], errors="coerce").fillna(0).eq(0)
+        _sql0 = pd.to_numeric(tbl_view["SQL %"], errors="coerce").fillna(0).eq(0)
+        _qw0 = pd.to_numeric(tbl_view["Q win %"], errors="coerce").fillna(0).eq(0)
+        tbl_view = tbl_view.loc[~(_cw0 & _sql0 & _qw0)].copy()
         if not tbl_view.empty:
             _metric_s = pd.to_numeric(tbl_view[sort_label], errors="coerce").fillna(0.0)
             _top_i = int(_metric_s.idxmax())
