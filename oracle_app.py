@@ -26,7 +26,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-15-mom-arrow-only-no-dcw"
+DASHBOARD_BUILD = "2026-04-15-mom-north-star-cw"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -5697,7 +5697,9 @@ def _mom_executive_snapshot_scorecards_html(
     sub_cw = _kpi_funnel_sub_row("CPCW", cpcw_s) + _kpi_funnel_sub_row("Spend (Σ)", spend_k)
     sub_tl = _kpi_funnel_sub_row("Qualified", f"{total_qual:,}") + _kpi_funnel_sub_row("SQL %", f"{sql_pct:.2f}%")
     sub_sql = _kpi_funnel_sub_row("Qualified", f"{total_qual:,}") + _kpi_funnel_sub_row("Total leads", f"{total_leads:,}")
-    sub_qwin = _kpi_funnel_sub_row("Qualified (denom.)", f"{total_qual:,}") + _kpi_funnel_sub_row("CW (num.)", f"{total_cw:,}")
+    sub_qwin = _kpi_funnel_sub_row("Qualified (denom.)", f"{total_qual:,}") + _kpi_funnel_sub_row(
+        "Closed won (num.)", f"{total_cw:,}"
+    )
 
     card_spend = _kpi_funnel_pastel_card_html(
         icon="💲",
@@ -5711,7 +5713,7 @@ def _mom_executive_snapshot_scorecards_html(
     )
     card_cw = _kpi_funnel_pastel_card_html(
         icon="◎",
-        title="CW (inc. approved)",
+        title="Closed won (inc. approved)",
         value_s=f"{total_cw:,}",
         delta_html=_delta_off,
         sub_html=sub_cw,
@@ -9086,7 +9088,7 @@ def render_page_market_mom(
     start_date: date,
     end_date: date,
 ) -> None:
-    """Regional **month-over-month** view for leadership: headline KPIs, trends, quality, unit economics, then pivot detail."""
+    """Month-over-month view framed on **Closed Won** — the outcome marketing spend is meant to produce; funnel metrics are leading signals."""
     key_suffix = "mom"
     df_filtered = _filter_by_date_range(df_loaded, start_date, end_date)
     df_date = df_loaded if df_filtered.empty else df_filtered
@@ -9123,6 +9125,9 @@ def render_page_market_mom(
         return
 
     st.markdown('<div class="mom-page-wrap">', unsafe_allow_html=True)
+    st.caption(
+        "**North star: Closed Won.** Spend funds demand; SQL % and Q win % explain whether that demand is converting into wins."
+    )
 
     _sel_mk = st.session_state.get(f"{key_suffix}_market", [_MPO_ALL_GEO_SENTINEL])
     _mk_only = _mpo_market_scope_countries_only(_sel_mk)
@@ -9171,8 +9176,8 @@ def render_page_market_mom(
         unsafe_allow_html=True,
     )
     st.caption(
-        "Total spend and paid spend by month use the **same spend source** as **Marketing performance**, "
-        "with this tab's **Market** and **Month** filters (sidebar dates still bound the load)."
+        "Spend uses the **same paid-media source** as **Marketing performance**; **Market** and **Month** match that tab. "
+        "Charts below still tie spend to the funnel that should feed **Closed Won**."
     )
 
     monthly = _mom_monthly_series(df, spend_df=spend_df_mpo)
@@ -9180,7 +9185,7 @@ def render_page_market_mom(
     if monthly.empty:
         st.info("No calendar months in this slice — check filters and month columns.")
         if not mom_delta_tbl.empty:
-            st.markdown('<div class="looker-table-title">Month × market MoM deltas</div>', unsafe_allow_html=True)
+            st.markdown('<div class="looker-table-title">Month × market — momentum toward Closed Won</div>', unsafe_allow_html=True)
             st.dataframe(
                 mom_delta_tbl,
                 width="stretch",
@@ -9193,8 +9198,11 @@ def render_page_market_mom(
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    st.markdown('<div class="looker-table-title">Month × market MoM deltas</div>', unsafe_allow_html=True)
-    st.caption("Key question: **which markets are improving vs slipping month over month?**")
+    st.markdown('<div class="looker-table-title">Month × market — momentum toward Closed Won</div>', unsafe_allow_html=True)
+    st.caption(
+        "Key question: **where is Closed Won momentum strongest or weakest vs last month?** "
+        "Default rank uses **Δ CW**; switch to spend or conversion rates when diagnosing drivers."
+    )
     if not mom_delta_tbl.empty:
         ctl_m, ctl_s = st.columns((1, 1.2), gap="small")
         month_opts = sorted(mom_delta_tbl["Month"].dropna().astype(str).unique().tolist(), key=_mpo_month_ts_for_sort, reverse=True)
@@ -9207,8 +9215,8 @@ def render_page_market_mom(
             )
         with ctl_s:
             sort_label = st.selectbox(
-                "Rank by",
-                ["Δ Spend", "Δ CW", "SQL %", "Q win %"],
+                "Rank by (Closed Won first)",
+                ["Δ CW", "Q win %", "SQL %", "Δ Spend"],
                 index=0,
                 key=f"{key_suffix}_mom_tbl_rank_metric",
             )
@@ -9231,17 +9239,35 @@ def render_page_market_mom(
             _bot_r = tbl_view.loc[_bot_i]
             _fmt = (
                 (lambda v: f"${v:,.0f}") if sort_label == "Δ Spend" else
-                (lambda v: f"{int(v):,}") if sort_label == "Δ CW" else
+                (lambda v: f"{int(v):+,d}") if sort_label == "Δ CW" else
                 (lambda v: f"{v:.1f}%")
             )
             _top_v = float(pd.to_numeric(_top_r[sort_label], errors="coerce") or 0.0)
             _bot_v = float(pd.to_numeric(_bot_r[sort_label], errors="coerce") or 0.0)
             _h1, _h2 = st.columns(2, gap="small")
+            _hero_top = (
+                "Strongest Closed Won MoM"
+                if sort_label == "Δ CW"
+                else "Top market"
+                if sort_label == "Δ Spend"
+                else "Highest Q win %"
+                if sort_label == "Q win %"
+                else "Highest SQL %"
+            )
+            _hero_bot = (
+                "Weakest Closed Won MoM"
+                if sort_label == "Δ CW"
+                else "Lowest spend delta"
+                if sort_label == "Δ Spend"
+                else "Lowest Q win %"
+                if sort_label == "Q win %"
+                else "Lowest SQL %"
+            )
             with _h1:
                 st.markdown(
                     f'<div style="padding:10px 12px;border-radius:10px;background:#ecfdf5;border:1px solid #86efac;">'
                     f'<div style="font-size:11px;font-weight:700;color:#166534;letter-spacing:.04em;text-transform:uppercase;">'
-                    f'Top market ({html.escape(sort_label)})</div>'
+                    f'{html.escape(_hero_top)} ({html.escape(sort_label)})</div>'
                     f'<div style="font-size:18px;font-weight:800;color:#14532d;line-height:1.2;">{html.escape(str(_top_r["Market"]))}</div>'
                     f'<div style="font-size:12px;color:#166534;">{html.escape(str(_top_r["Month"]))} · {html.escape(_fmt(_top_v))}</div>'
                     f"</div>",
@@ -9251,7 +9277,7 @@ def render_page_market_mom(
                 st.markdown(
                     f'<div style="padding:10px 12px;border-radius:10px;background:#fef2f2;border:1px solid #fca5a5;">'
                     f'<div style="font-size:11px;font-weight:700;color:#991b1b;letter-spacing:.04em;text-transform:uppercase;">'
-                    f'Bottom market ({html.escape(sort_label)})</div>'
+                    f'{html.escape(_hero_bot)} ({html.escape(sort_label)})</div>'
                     f'<div style="font-size:18px;font-weight:800;color:#7f1d1d;line-height:1.2;">{html.escape(str(_bot_r["Market"]))}</div>'
                     f'<div style="font-size:12px;color:#991b1b;">{html.escape(str(_bot_r["Month"]))} · {html.escape(_fmt(_bot_v))}</div>'
                     f"</div>",
@@ -9300,7 +9326,7 @@ def render_page_market_mom(
             '<th style="text-align:left;padding:8px;border-bottom:1px solid #e2e8f0;">Market</th>'
             '<th style="text-align:right;padding:8px;border-bottom:1px solid #e2e8f0;">Spend</th>'
             '<th style="text-align:left;padding:8px;border-bottom:1px solid #e2e8f0;">Δ Spend</th>'
-            '<th style="text-align:right;padding:8px;border-bottom:1px solid #e2e8f0;">CW</th>'
+            '<th style="text-align:right;padding:8px;border-bottom:1px solid #e2e8f0;">Closed won</th>'
             '<th style="text-align:right;padding:8px;border-bottom:1px solid #e2e8f0;">SQL %</th>'
             '<th style="text-align:right;padding:8px;border-bottom:1px solid #e2e8f0;">Q win %</th>'
             "</tr></thead>"
@@ -9316,12 +9342,13 @@ def render_page_market_mom(
     c_vol, c_qlt = st.columns(2)
     with c_vol:
         st.markdown('<div class="looker-table-title" style="margin-top:0;">Funnel volume</div>', unsafe_allow_html=True)
+        st.caption("**Closed won** is the outcome; leads and qualified show whether the funnel can support it.")
         fig_v = go.Figure()
         fig_v.add_trace(
             go.Bar(
                 x=monthly["month_lbl"],
                 y=monthly["cw"],
-                name="CW",
+                name="Closed won",
                 marker_color="#059669",
             )
         )
@@ -9342,7 +9369,7 @@ def render_page_market_mom(
             )
         )
         fig_v.update_layout(
-            title=dict(text="CW, leads, and qualified by month", font=dict(size=14)),
+            title=dict(text="Closed won, leads, and qualified by month", font=dict(size=14)),
             barmode="group",
             **_plot_mom,
             margin=dict(l=8, r=8, t=52, b=8),
@@ -9353,6 +9380,7 @@ def render_page_market_mom(
         st.plotly_chart(fig_v, width="stretch", key=f"{key_suffix}_pl_volume")
     with c_qlt:
         st.markdown('<div class="looker-table-title" style="margin-top:0;">Conversion quality</div>', unsafe_allow_html=True)
+        st.caption("SQL % and Q win % explain how efficiently qualified demand turns into **Closed won**.")
         fig_q = go.Figure()
         fig_q.add_trace(
             go.Scatter(
