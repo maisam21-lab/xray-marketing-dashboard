@@ -26,7 +26,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-15-mom-spend-parity"
+DASHBOARD_BUILD = "2026-04-15-mom-header-align"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -8994,12 +8994,6 @@ def render_page_market_mom(
         return
 
     _dashboard_tab_page_header()
-    st.markdown(
-        '<p class="mpo-sec-head-desc mom-tab-lead">'
-        "One place to see how <strong>spend</strong>, <strong>pipeline volume</strong>, and <strong>conversion quality</strong> move "
-        "month by month for a single market or the full portfolio — built for regional reviews and global read-outs.</p>",
-        unsafe_allow_html=True,
-    )
 
     df_mpo = _mpo_dataframe_from_session_filters(df_date, key_suffix="mpo")
     spend_sheet_for_kpis, _, _, _, _ = _mpo_load_spend_sheet_for_kpis(
@@ -10124,13 +10118,6 @@ def main() -> None:
     .dash-chart-stack .looker-table-title { margin-top: 4px !important; }
     .mom-page-wrap {
         margin: 2px 0 0 0;
-    }
-    .mom-tab-lead {
-        margin: 0 0 4px 0 !important;
-        font-size: 0.8125rem;
-        line-height: 1.45;
-        color: #64748b;
-        font-weight: 500;
     }
     p.mom-reporting-hint {
         margin: 0.1rem 0 0 0;
