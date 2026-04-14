@@ -26,7 +26,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-15-mom-chart-colors-soft"
+DASHBOARD_BUILD = "2026-04-15-spend-tab-has-two-inner-tabs"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -10012,7 +10012,6 @@ def _extras_skip_tabs_already_loaded(df_loaded: pd.DataFrame, extras: list[pd.Da
 _DASH_NAV_OPTIONS = [
     "Marketing performance",
     "Market MoM",
-    "Inbound channels",
     "Spend by channel",
 ]
 
@@ -10146,15 +10145,17 @@ def render_main_dashboard(
         st.warning(_no_data_msg)
         return
 
-    tab_mpo, tab_mom, tab_inb, tab_pmc = st.tabs(_DASH_NAV_OPTIONS)
+    tab_mpo, tab_mom, tab_channels = st.tabs(_DASH_NAV_OPTIONS)
     with tab_mpo:
         render_page_marketing_performance(df_loaded, start_date, end_date)
     with tab_mom:
         render_page_market_mom(df_loaded, start_date, end_date)
-    with tab_inb:
-        render_page_channels(df_loaded, start_date, end_date, inbound=True)
-    with tab_pmc:
-        render_page_channels(df_loaded, start_date, end_date, inbound=False)
+    with tab_channels:
+        ch_pmc, ch_inb = st.tabs(["Performance Marketing Channels", "All Inbound Channels"])
+        with ch_pmc:
+            render_page_channels(df_loaded, start_date, end_date, inbound=False)
+        with ch_inb:
+            render_page_channels(df_loaded, start_date, end_date, inbound=True)
 
 
 def main() -> None:
