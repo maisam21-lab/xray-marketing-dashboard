@@ -26,7 +26,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-15-mom-me-in-master-style-row"
+DASHBOARD_BUILD = "2026-04-15-mom-no-hero-cards"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -9285,58 +9285,6 @@ def render_page_market_mom(
         _sql0 = pd.to_numeric(tbl_view["SQL %"], errors="coerce").fillna(0).eq(0)
         _qw0 = pd.to_numeric(tbl_view["Q win %"], errors="coerce").fillna(0).eq(0)
         tbl_view = tbl_view.loc[~(_cw0 & _sql0 & _qw0)].copy()
-        if not tbl_view.empty:
-            _metric_s = pd.to_numeric(tbl_view[sort_label], errors="coerce").fillna(0.0)
-            _top_i = int(_metric_s.idxmax())
-            _bot_i = int(_metric_s.idxmin())
-            _top_r = tbl_view.loc[_top_i]
-            _bot_r = tbl_view.loc[_bot_i]
-            _fmt = (
-                (lambda v: f"${v:,.0f}") if sort_label == "Δ Spend" else
-                (lambda v: f"{int(v):+,d}") if sort_label == "Δ CW" else
-                (lambda v: f"{v:.1f}%")
-            )
-            _top_v = float(pd.to_numeric(_top_r[sort_label], errors="coerce") or 0.0)
-            _bot_v = float(pd.to_numeric(_bot_r[sort_label], errors="coerce") or 0.0)
-            _h1, _h2 = st.columns(2, gap="small")
-            _hero_top = (
-                "Strongest Closed Won MoM"
-                if sort_label == "Δ CW"
-                else "Top market"
-                if sort_label == "Δ Spend"
-                else "Highest Q win %"
-                if sort_label == "Q win %"
-                else "Highest SQL %"
-            )
-            _hero_bot = (
-                "Weakest Closed Won MoM"
-                if sort_label == "Δ CW"
-                else "Lowest spend delta"
-                if sort_label == "Δ Spend"
-                else "Lowest Q win %"
-                if sort_label == "Q win %"
-                else "Lowest SQL %"
-            )
-            with _h1:
-                st.markdown(
-                    f'<div style="padding:10px 12px;border-radius:10px;background:#ecfdf5;border:1px solid #86efac;">'
-                    f'<div style="font-size:11px;font-weight:700;color:#166534;letter-spacing:.04em;text-transform:uppercase;">'
-                    f'{html.escape(_hero_top)} ({html.escape(sort_label)})</div>'
-                    f'<div style="font-size:18px;font-weight:800;color:#14532d;line-height:1.2;">{html.escape(str(_top_r["Market"]))}</div>'
-                    f'<div style="font-size:12px;color:#166534;">{html.escape(str(_top_r["Month"]))} · {html.escape(_fmt(_top_v))}</div>'
-                    f"</div>",
-                    unsafe_allow_html=True,
-                )
-            with _h2:
-                st.markdown(
-                    f'<div style="padding:10px 12px;border-radius:10px;background:#fef2f2;border:1px solid #fca5a5;">'
-                    f'<div style="font-size:11px;font-weight:700;color:#991b1b;letter-spacing:.04em;text-transform:uppercase;">'
-                    f'{html.escape(_hero_bot)} ({html.escape(sort_label)})</div>'
-                    f'<div style="font-size:18px;font-weight:800;color:#7f1d1d;line-height:1.2;">{html.escape(str(_bot_r["Market"]))}</div>'
-                    f'<div style="font-size:12px;color:#991b1b;">{html.escape(str(_bot_r["Month"]))} · {html.escape(_fmt(_bot_v))}</div>'
-                    f"</div>",
-                    unsafe_allow_html=True,
-                )
         compact_cols = ["Month", "Market", "Spend", "Δ Spend", "CW", "SQL %", "Q win %"]
         compact_tbl = tbl_view[compact_cols].copy()
 
