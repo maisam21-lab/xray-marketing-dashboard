@@ -26,7 +26,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-15-mom-cw-axis-visible"
+DASHBOARD_BUILD = "2026-04-15-mom-chart-color-refresh"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -9364,7 +9364,7 @@ def render_page_market_mom(
                 x=monthly["month_lbl"],
                 y=monthly["cw"],
                 name="Closed won",
-                marker_color="#059669",
+                marker_color="#2563eb",
             ),
             secondary_y=True,
         )
@@ -9373,7 +9373,7 @@ def render_page_market_mom(
                 x=monthly["month_lbl"],
                 y=monthly["leads"],
                 name="Lead rows",
-                marker_color="#3b82f6",
+                marker_color="#94a3b8",
             ),
             secondary_y=False,
         )
@@ -9382,7 +9382,7 @@ def render_page_market_mom(
                 x=monthly["month_lbl"],
                 y=monthly["qualified"],
                 name="Qualified",
-                marker_color="#8b5cf6",
+                marker_color="#14b8a6",
             ),
             secondary_y=False,
         )
@@ -9407,7 +9407,7 @@ def render_page_market_mom(
                 y=monthly["sql_pct"],
                 name="SQL %",
                 mode="lines+markers",
-                line=dict(color="#4f8483", width=2.5),
+                line=dict(color="#0ea5e9", width=2.5),
                 marker=dict(size=8),
             )
         )
@@ -9417,7 +9417,7 @@ def render_page_market_mom(
                 y=monthly["q_win_pct"],
                 name="Q win % (CW ÷ qualified)",
                 mode="lines+markers",
-                line=dict(color="#c2410c", width=2.5),
+                line=dict(color="#f59e0b", width=2.5),
                 marker=dict(size=8),
             )
         )
