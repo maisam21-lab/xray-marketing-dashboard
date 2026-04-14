@@ -26,7 +26,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-15-mom-delta-table"
+DASHBOARD_BUILD = "2026-04-15-mom-delta-readable"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -9073,6 +9073,7 @@ def _mom_market_month_delta_table(df: pd.DataFrame, spend_df: Optional[pd.DataFr
         out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0).astype(int)
     for c in ("SQL %", "Δ SQL pp", "Q win %", "Δ Q win pp"):
         out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0.0).round(2)
+    out = out.sort_values(["Month", "Market"], ascending=[False, True]).reset_index(drop=True)
     return out
 
 
@@ -9121,6 +9122,8 @@ def render_page_market_mom(
         scope_lbl = f"{len(_mk_only)} markets"
     else:
         scope_lbl = "All markets (portfolio)"
+    if _mk_only:
+        st.caption(f"Active market filter: {', '.join(_mk_only)}")
     _hk_mom = _mpo_headline_month_keys_for_scope(
         pd.DataFrame(),
         df_mpo,
@@ -9168,7 +9171,13 @@ def render_page_market_mom(
         st.info("No calendar months in this slice — check filters and month columns.")
         if not mom_delta_tbl.empty:
             st.markdown('<div class="looker-table-title">Month × market MoM deltas</div>', unsafe_allow_html=True)
-            st.dataframe(mom_delta_tbl, width="stretch", hide_index=True, key=f"{key_suffix}_df_mom_delta_empty")
+            st.dataframe(
+                mom_delta_tbl,
+                width="stretch",
+                hide_index=True,
+                height=360,
+                key=f"{key_suffix}_df_mom_delta_empty",
+            )
         else:
             _master_performance_table(df, key_suffix=f"{key_suffix}_mom", section_title="Month × market detail")
         st.markdown("</div>", unsafe_allow_html=True)
@@ -9176,7 +9185,27 @@ def render_page_market_mom(
 
     st.markdown('<div class="looker-table-title">Month × market MoM deltas</div>', unsafe_allow_html=True)
     if not mom_delta_tbl.empty:
-        st.dataframe(mom_delta_tbl, width="stretch", hide_index=True, key=f"{key_suffix}_df_mom_delta")
+        st.dataframe(
+            mom_delta_tbl,
+            width="stretch",
+            hide_index=True,
+            height=360,
+            column_config={
+                "Month": st.column_config.TextColumn("Month", width="small"),
+                "Market": st.column_config.TextColumn("Market", width="medium"),
+                "Spend": st.column_config.NumberColumn("Spend", format="$%,.0f", width="small"),
+                "Δ Spend": st.column_config.NumberColumn("Δ Spend", format="$%,.0f", width="small"),
+                "CW": st.column_config.NumberColumn("CW", format="%d", width="small"),
+                "Δ CW": st.column_config.NumberColumn("Δ CW", format="%d", width="small"),
+                "Leads": st.column_config.NumberColumn("Leads", format="%d", width="small"),
+                "Δ Leads": st.column_config.NumberColumn("Δ Leads", format="%d", width="small"),
+                "SQL %": st.column_config.NumberColumn("SQL %", format="%.2f%%", width="small"),
+                "Δ SQL pp": st.column_config.NumberColumn("Δ SQL pp", format="%.2f", width="small"),
+                "Q win %": st.column_config.NumberColumn("Q win %", format="%.2f%%", width="small"),
+                "Δ Q win pp": st.column_config.NumberColumn("Δ Q win pp", format="%.2f", width="small"),
+            },
+            key=f"{key_suffix}_df_mom_delta",
+        )
     else:
         _master_performance_table(df, key_suffix=f"{key_suffix}_mom", section_title="")
 
