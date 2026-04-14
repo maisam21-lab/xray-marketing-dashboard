@@ -26,7 +26,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-15-mom-color-and-recent-first"
+DASHBOARD_BUILD = "2026-04-15-mom-hero-dynamic"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -9223,16 +9223,50 @@ def render_page_market_mom(
                 .sort_values(["_month_rank", sort_label], ascending=[False, False])
                 .drop(columns=["_month_rank"])
             )
+        if not tbl_view.empty:
+            _metric_s = pd.to_numeric(tbl_view[sort_label], errors="coerce").fillna(0.0)
+            _top_i = int(_metric_s.idxmax())
+            _bot_i = int(_metric_s.idxmin())
+            _top_r = tbl_view.loc[_top_i]
+            _bot_r = tbl_view.loc[_bot_i]
+            _fmt = (
+                (lambda v: f"${v:,.0f}") if sort_label == "Δ Spend" else
+                (lambda v: f"{int(v):,}") if sort_label == "Δ CW" else
+                (lambda v: f"{v:.1f}%")
+            )
+            _top_v = float(pd.to_numeric(_top_r[sort_label], errors="coerce") or 0.0)
+            _bot_v = float(pd.to_numeric(_bot_r[sort_label], errors="coerce") or 0.0)
+            _h1, _h2 = st.columns(2, gap="small")
+            with _h1:
+                st.markdown(
+                    f'<div style="padding:10px 12px;border-radius:10px;background:#ecfdf5;border:1px solid #86efac;">'
+                    f'<div style="font-size:11px;font-weight:700;color:#166534;letter-spacing:.04em;text-transform:uppercase;">'
+                    f'Top market ({html.escape(sort_label)})</div>'
+                    f'<div style="font-size:18px;font-weight:800;color:#14532d;line-height:1.2;">{html.escape(str(_top_r["Market"]))}</div>'
+                    f'<div style="font-size:12px;color:#166534;">{html.escape(str(_top_r["Month"]))} · {html.escape(_fmt(_top_v))}</div>'
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+            with _h2:
+                st.markdown(
+                    f'<div style="padding:10px 12px;border-radius:10px;background:#fef2f2;border:1px solid #fca5a5;">'
+                    f'<div style="font-size:11px;font-weight:700;color:#991b1b;letter-spacing:.04em;text-transform:uppercase;">'
+                    f'Bottom market ({html.escape(sort_label)})</div>'
+                    f'<div style="font-size:18px;font-weight:800;color:#7f1d1d;line-height:1.2;">{html.escape(str(_bot_r["Market"]))}</div>'
+                    f'<div style="font-size:12px;color:#991b1b;">{html.escape(str(_bot_r["Month"]))} · {html.escape(_fmt(_bot_v))}</div>'
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
         compact_cols = ["Month", "Market", "Spend", "Δ Spend", "CW", "Δ CW", "SQL %", "Q win %"]
         compact_tbl = tbl_view[compact_cols].copy()
         compact_tbl_fmt = compact_tbl.copy()
         compact_tbl_fmt["Spend"] = pd.to_numeric(compact_tbl_fmt["Spend"], errors="coerce").fillna(0.0).map(lambda v: f"${v:,.0f}")
         compact_tbl_fmt["Δ Spend"] = pd.to_numeric(compact_tbl_fmt["Δ Spend"], errors="coerce").fillna(0.0).map(
-            lambda v: f"{'🟢▲' if v > 0 else '🔴▼' if v < 0 else '⚪→'} ${abs(v):,.0f}"
+            lambda v: f"{'GAIN ▲' if v > 0 else 'DROP ▼' if v < 0 else 'FLAT →'} ${abs(v):,.0f}"
         )
         compact_tbl_fmt["CW"] = pd.to_numeric(compact_tbl_fmt["CW"], errors="coerce").fillna(0).astype(int).map(str)
         compact_tbl_fmt["Δ CW"] = pd.to_numeric(compact_tbl_fmt["Δ CW"], errors="coerce").fillna(0.0).map(
-            lambda v: f"{'🟢▲' if v > 0 else '🔴▼' if v < 0 else '⚪→'} {int(abs(v)):,}"
+            lambda v: f"{'GAIN ▲' if v > 0 else 'DROP ▼' if v < 0 else 'FLAT →'} {int(abs(v)):,}"
         )
         compact_tbl_fmt["SQL %"] = pd.to_numeric(compact_tbl_fmt["SQL %"], errors="coerce").fillna(0.0).map(lambda v: f"{v:.1f}%")
         compact_tbl_fmt["Q win %"] = pd.to_numeric(compact_tbl_fmt["Q win %"], errors="coerce").fillna(0.0).map(lambda v: f"{v:.1f}%")
@@ -9253,28 +9287,6 @@ def render_page_market_mom(
             },
             key=f"{key_suffix}_df_mom_delta",
         )
-        with st.expander("Show full MoM delta table", expanded=False):
-            st.dataframe(
-                mom_delta_tbl,
-                width="stretch",
-                hide_index=True,
-                height=360,
-                column_config={
-                    "Month": st.column_config.TextColumn("Month", width="small"),
-                    "Market": st.column_config.TextColumn("Market", width="medium"),
-                    "Spend": st.column_config.NumberColumn("Spend", format="$%,.0f", width="small"),
-                    "Δ Spend": st.column_config.NumberColumn("Δ Spend", format="$%,.0f", width="small"),
-                    "CW": st.column_config.NumberColumn("CW", format="%d", width="small"),
-                    "Δ CW": st.column_config.NumberColumn("Δ CW", format="%d", width="small"),
-                    "Leads": st.column_config.NumberColumn("Leads", format="%d", width="small"),
-                    "Δ Leads": st.column_config.NumberColumn("Δ Leads", format="%d", width="small"),
-                    "SQL %": st.column_config.NumberColumn("SQL %", format="%.2f%%", width="small"),
-                    "Δ SQL pp": st.column_config.NumberColumn("Δ SQL pp", format="%.2f", width="small"),
-                    "Q win %": st.column_config.NumberColumn("Q win %", format="%.2f%%", width="small"),
-                    "Δ Q win pp": st.column_config.NumberColumn("Δ Q win pp", format="%.2f", width="small"),
-                },
-                key=f"{key_suffix}_df_mom_delta_full",
-            )
     else:
         _master_performance_table(df, key_suffix=f"{key_suffix}_mom", section_title="")
 
@@ -9350,22 +9362,6 @@ def render_page_market_mom(
             xaxis=_xaxis,
         )
         st.plotly_chart(fig_q, width="stretch", key=f"{key_suffix}_pl_quality")
-
-    grand = pd.DataFrame(
-        [
-            {
-                "Scope": scope_lbl,
-                "Spend (Σ)": total_spend,
-                "CW (Σ)": total_cw,
-                "Lead rows (Σ)": total_leads,
-                "Qualified (Σ)": total_qual,
-                "SQL %": round(sql_all, 2),
-                "Q win %": round(qwin_all, 2),
-            }
-        ]
-    )
-    with st.expander("Export-friendly totals (this slice)", expanded=False):
-        st.dataframe(grand, width="stretch", hide_index=True, key=f"{key_suffix}_df_grand")
 
     st.markdown("</div>", unsafe_allow_html=True)
 
