@@ -26,7 +26,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-15-mom-no-matplotlib-styler"
+DASHBOARD_BUILD = "2026-04-15-mom-color-and-recent-first"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -9215,20 +9215,24 @@ def render_page_market_mom(
         tbl_view = mom_delta_tbl.copy()
         if month_focus != "All months":
             tbl_view = tbl_view.loc[tbl_view["Month"].astype(str) == str(month_focus)].copy()
-        if sort_label in ("Δ Spend", "Δ CW"):
             tbl_view = tbl_view.sort_values(sort_label, ascending=False)
         else:
-            tbl_view = tbl_view.sort_values(sort_label, ascending=False)
+            _month_rank = tbl_view["Month"].map(_mpo_month_ts_for_sort)
+            tbl_view = (
+                tbl_view.assign(_month_rank=_month_rank)
+                .sort_values(["_month_rank", sort_label], ascending=[False, False])
+                .drop(columns=["_month_rank"])
+            )
         compact_cols = ["Month", "Market", "Spend", "Δ Spend", "CW", "Δ CW", "SQL %", "Q win %"]
         compact_tbl = tbl_view[compact_cols].copy()
         compact_tbl_fmt = compact_tbl.copy()
         compact_tbl_fmt["Spend"] = pd.to_numeric(compact_tbl_fmt["Spend"], errors="coerce").fillna(0.0).map(lambda v: f"${v:,.0f}")
         compact_tbl_fmt["Δ Spend"] = pd.to_numeric(compact_tbl_fmt["Δ Spend"], errors="coerce").fillna(0.0).map(
-            lambda v: f"{'▲' if v > 0 else '▼' if v < 0 else '→'} ${abs(v):,.0f}"
+            lambda v: f"{'🟢▲' if v > 0 else '🔴▼' if v < 0 else '⚪→'} ${abs(v):,.0f}"
         )
         compact_tbl_fmt["CW"] = pd.to_numeric(compact_tbl_fmt["CW"], errors="coerce").fillna(0).astype(int).map(str)
         compact_tbl_fmt["Δ CW"] = pd.to_numeric(compact_tbl_fmt["Δ CW"], errors="coerce").fillna(0.0).map(
-            lambda v: f"{'▲' if v > 0 else '▼' if v < 0 else '→'} {int(abs(v)):,}"
+            lambda v: f"{'🟢▲' if v > 0 else '🔴▼' if v < 0 else '⚪→'} {int(abs(v)):,}"
         )
         compact_tbl_fmt["SQL %"] = pd.to_numeric(compact_tbl_fmt["SQL %"], errors="coerce").fillna(0.0).map(lambda v: f"{v:.1f}%")
         compact_tbl_fmt["Q win %"] = pd.to_numeric(compact_tbl_fmt["Q win %"], errors="coerce").fillna(0.0).map(lambda v: f"{v:.1f}%")
