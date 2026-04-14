@@ -10766,23 +10766,9 @@ def main() -> None:
         font-weight: 600;
         color: #718096 !important;
         letter-spacing: 0.01em;
-        margin-right: 40px;
+        margin-right: 0;
     }
-    .kpi-funnel-card--hero .kpi-funnel-icon {
-        opacity: 1 !important;
-        top: 10px;
-        right: 10px;
-        width: 32px;
-        height: 32px;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        border-radius: 999px;
-        background: #ebf2ff;
-        color: #2c5282;
-        font-size: 1rem;
-        line-height: 1;
-    }
+    .kpi-funnel-card--hero .kpi-funnel-icon { display: none !important; }
     .kpi-funnel-delta--pill-wrap {
         display: flex;
         flex-wrap: wrap;
@@ -10893,39 +10879,19 @@ def main() -> None:
         border-color: #cbd5e1;
         transform: translateY(-2px);
     }
-    .kpi-funnel-icon {
-        position: absolute;
-        top: 8px;
-        right: 8px;
-        font-size: 1.15rem;
-        line-height: 1;
-        opacity: 0.88;
-    }
+    .kpi-funnel-icon { display: none !important; }
     .kpi-funnel-card--pastel .kpi-funnel-icon {
         opacity: 0.2;
         font-size: 0.95rem;
     }
-    .kpi-funnel-wrap--pastel-scorecard .kpi-funnel-card--pastel .kpi-funnel-icon {
-        opacity: 1;
-        top: 10px;
-        right: 10px;
-        width: 32px;
-        height: 32px;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        border-radius: 999px;
-        background: #ebf2ff;
-        color: #2c5282;
-        font-size: 0.95rem;
-    }
+    .kpi-funnel-wrap--pastel-scorecard .kpi-funnel-card--pastel .kpi-funnel-icon { display: none !important; }
     .kpi-funnel-title {
         font-size: 9.5px;
         font-weight: 700;
         color: #64748b;
         text-transform: uppercase;
         letter-spacing: 0.055em;
-        margin: 0 24px 3px 0;
+        margin: 0 0 3px 0;
         line-height: 1.25;
     }
     .kpi-funnel-card--pastel-cw .kpi-funnel-title { color: #0f5d4a; }
