@@ -10014,9 +10014,9 @@ def render_main_dashboard(
     _fp = _secret_fingerprint(_service_account_from_streamlit_secrets())
     _load_banner = st.empty()
     _load_banner.info(
-        "⏳ **Loading your data** — We’re pulling the latest numbers from Google Sheets. "
-        "Big workbooks can take **about 1–2 minutes**; that’s normal. "
-        "If it never finishes, check that the spreadsheet is shared with the **service account** listed in your app **Secrets**, then refresh the page or restart the app."
+        "⏳ **Loading data** from Google Sheets. "
+        "Large workbooks may take **1–2 minutes**. "
+        "If loading stalls, confirm the sheet is shared with the **service account** in app **Secrets**, then refresh or restart."
     )
     try:
         # Source of truth is the entire spreadsheet; aggregate data across tabs.
