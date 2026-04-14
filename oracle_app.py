@@ -26,7 +26,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-15-mom-shared-mpo-filters"
+DASHBOARD_BUILD = "2026-04-15-mom-me-month-totals"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -9048,6 +9048,53 @@ def _mom_market_month_delta_table(df: pd.DataFrame, spend_df: Optional[pd.DataFr
             else 0.0
         )
 
+    _jk_g = grp["market"].map(_country_join_key)
+    _month_norm_series = grp["month"].map(_month_norm_key)
+    _month_keys_sorted = sorted(
+        {str(x) for x in _month_norm_series.dropna().unique() if x},
+        key=_mpo_month_ts_for_sort,
+    )
+    _me_rows: list[dict[str, Any]] = []
+    for _mk in _month_keys_sorted:
+        _mm = _month_norm_series.astype(str) == str(_mk)
+        _chunk = grp.loc[_mm]
+        if _chunk.empty:
+            continue
+        _jk_c = _chunk["market"].map(_country_join_key)
+        _c_only = _chunk.loc[_jk_c.isin(_MIDDLE_EAST_MARKET_KEYS)]
+        _r_only = _chunk.loc[_jk_c.eq("middle east")]
+        if not _c_only.empty:
+            _sp = float(pd.to_numeric(_c_only["spend"], errors="coerce").fillna(0).sum())
+            _cw = int(pd.to_numeric(_c_only["cw"], errors="coerce").fillna(0).sum())
+            _qual = float(pd.to_numeric(_c_only["qualified"], errors="coerce").fillna(0).sum())
+            _ld = int(pd.to_numeric(_c_only["leads"], errors="coerce").fillna(0).sum())
+            _mo = _c_only["month"].iloc[0]
+        elif not _r_only.empty:
+            _sp = float(pd.to_numeric(_r_only["spend"], errors="coerce").fillna(0).sum())
+            _cw = int(pd.to_numeric(_r_only["cw"], errors="coerce").fillna(0).sum())
+            _qual = float(pd.to_numeric(_r_only["qualified"], errors="coerce").fillna(0).sum())
+            _ld = int(pd.to_numeric(_r_only["leads"], errors="coerce").fillna(0).sum())
+            _mo = _r_only["month"].iloc[0]
+        else:
+            continue
+        _sql = (float(_qual) / float(_ld) * 100.0) if _ld else 0.0
+        _qw = (float(_cw) / float(_qual) * 100.0) if _qual else 0.0
+        _me_rows.append(
+            {
+                "month": _mo,
+                "market": _MIDDLE_EAST_REGION_LABEL,
+                "cw": _cw,
+                "qualified": _qual,
+                "leads": _ld,
+                "spend": _sp,
+                "sql_pct": _sql,
+                "q_win_pct": _qw,
+            }
+        )
+    grp = grp.loc[~_jk_g.eq("middle east")].copy()
+    if _me_rows:
+        grp = pd.concat([grp, pd.DataFrame(_me_rows)], ignore_index=True)
+
     grp["month_key"] = grp["month"].map(_month_norm_key).astype(str)
     grp = grp.sort_values(["market", "month_key"], key=lambda c: c.map(_mpo_month_ts_for_sort) if c.name == "month_key" else c)
 
@@ -9079,7 +9126,9 @@ def _mom_market_month_delta_table(df: pd.DataFrame, spend_df: Optional[pd.DataFr
         out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0).astype(int)
     for c in ("SQL %", "Δ SQL pp", "Q win %", "Δ Q win pp"):
         out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0.0).round(2)
-    out = out.sort_values(["Month", "Market"], ascending=[False, True]).reset_index(drop=True)
+    out["_me_sort"] = out["Market"].astype(str).eq(_MIDDLE_EAST_REGION_LABEL)
+    out = out.sort_values(["Month", "_me_sort", "Market"], ascending=[False, True, True]).drop(columns=["_me_sort"])
+    out = out.reset_index(drop=True)
     return out
 
 
