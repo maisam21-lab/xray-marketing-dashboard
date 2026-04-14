@@ -26,7 +26,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-15-mom-table-compact"
+DASHBOARD_BUILD = "2026-04-15-mom-dynamic-colored-table"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -9194,11 +9194,55 @@ def render_page_market_mom(
         return
 
     st.markdown('<div class="looker-table-title">Month × market MoM deltas</div>', unsafe_allow_html=True)
+    st.caption("Key question: **which markets are improving vs slipping month over month?**")
     if not mom_delta_tbl.empty:
+        ctl_m, ctl_s = st.columns((1, 1.2), gap="small")
+        month_opts = sorted(mom_delta_tbl["Month"].dropna().astype(str).unique().tolist(), key=_mpo_month_ts_for_sort, reverse=True)
+        with ctl_m:
+            month_focus = st.selectbox(
+                "Focus month",
+                ["All months"] + month_opts,
+                index=0,
+                key=f"{key_suffix}_mom_tbl_month_focus",
+            )
+        with ctl_s:
+            sort_label = st.selectbox(
+                "Rank by",
+                ["Δ Spend", "Δ CW", "SQL %", "Q win %"],
+                index=0,
+                key=f"{key_suffix}_mom_tbl_rank_metric",
+            )
+        tbl_view = mom_delta_tbl.copy()
+        if month_focus != "All months":
+            tbl_view = tbl_view.loc[tbl_view["Month"].astype(str) == str(month_focus)].copy()
+        if sort_label in ("Δ Spend", "Δ CW"):
+            tbl_view = tbl_view.sort_values(sort_label, ascending=False)
+        else:
+            tbl_view = tbl_view.sort_values(sort_label, ascending=False)
         compact_cols = ["Month", "Market", "Spend", "Δ Spend", "CW", "Δ CW", "SQL %", "Q win %"]
-        compact_tbl = mom_delta_tbl[compact_cols].copy()
+        compact_tbl = tbl_view[compact_cols].copy()
+        delta_cols = ["Δ Spend", "Δ CW"]
+        styled_compact = compact_tbl.style.format(
+            {
+                "Spend": "${:,.0f}",
+                "Δ Spend": "{:+,.0f}",
+                "CW": "{:,.0f}",
+                "Δ CW": "{:+,.0f}",
+                "SQL %": "{:.1f}%",
+                "Q win %": "{:.1f}%",
+            }
+        )
+        for _dc in delta_cols:
+            _m = float(pd.to_numeric(compact_tbl[_dc], errors="coerce").abs().max()) if _dc in compact_tbl.columns else 0.0
+            if _m > 0:
+                styled_compact = styled_compact.background_gradient(
+                    cmap="RdYlGn",
+                    subset=[_dc],
+                    vmin=-_m,
+                    vmax=_m,
+                )
         st.dataframe(
-            compact_tbl,
+            styled_compact,
             width="stretch",
             hide_index=True,
             height=320,
