@@ -26,7 +26,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-15-mom-dynamic-colored-table"
+DASHBOARD_BUILD = "2026-04-15-mom-no-matplotlib-styler"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -9221,40 +9221,31 @@ def render_page_market_mom(
             tbl_view = tbl_view.sort_values(sort_label, ascending=False)
         compact_cols = ["Month", "Market", "Spend", "Δ Spend", "CW", "Δ CW", "SQL %", "Q win %"]
         compact_tbl = tbl_view[compact_cols].copy()
-        delta_cols = ["Δ Spend", "Δ CW"]
-        styled_compact = compact_tbl.style.format(
-            {
-                "Spend": "${:,.0f}",
-                "Δ Spend": "{:+,.0f}",
-                "CW": "{:,.0f}",
-                "Δ CW": "{:+,.0f}",
-                "SQL %": "{:.1f}%",
-                "Q win %": "{:.1f}%",
-            }
+        compact_tbl_fmt = compact_tbl.copy()
+        compact_tbl_fmt["Spend"] = pd.to_numeric(compact_tbl_fmt["Spend"], errors="coerce").fillna(0.0).map(lambda v: f"${v:,.0f}")
+        compact_tbl_fmt["Δ Spend"] = pd.to_numeric(compact_tbl_fmt["Δ Spend"], errors="coerce").fillna(0.0).map(
+            lambda v: f"{'▲' if v > 0 else '▼' if v < 0 else '→'} ${abs(v):,.0f}"
         )
-        for _dc in delta_cols:
-            _m = float(pd.to_numeric(compact_tbl[_dc], errors="coerce").abs().max()) if _dc in compact_tbl.columns else 0.0
-            if _m > 0:
-                styled_compact = styled_compact.background_gradient(
-                    cmap="RdYlGn",
-                    subset=[_dc],
-                    vmin=-_m,
-                    vmax=_m,
-                )
+        compact_tbl_fmt["CW"] = pd.to_numeric(compact_tbl_fmt["CW"], errors="coerce").fillna(0).astype(int).map(str)
+        compact_tbl_fmt["Δ CW"] = pd.to_numeric(compact_tbl_fmt["Δ CW"], errors="coerce").fillna(0.0).map(
+            lambda v: f"{'▲' if v > 0 else '▼' if v < 0 else '→'} {int(abs(v)):,}"
+        )
+        compact_tbl_fmt["SQL %"] = pd.to_numeric(compact_tbl_fmt["SQL %"], errors="coerce").fillna(0.0).map(lambda v: f"{v:.1f}%")
+        compact_tbl_fmt["Q win %"] = pd.to_numeric(compact_tbl_fmt["Q win %"], errors="coerce").fillna(0.0).map(lambda v: f"{v:.1f}%")
         st.dataframe(
-            styled_compact,
+            compact_tbl_fmt,
             width="stretch",
             hide_index=True,
             height=320,
             column_config={
                 "Month": st.column_config.TextColumn("Month", width="small"),
                 "Market": st.column_config.TextColumn("Market", width="medium"),
-                "Spend": st.column_config.NumberColumn("Spend", format="$%,.0f", width="small"),
-                "Δ Spend": st.column_config.NumberColumn("Δ Spend", format="$%,.0f", width="small"),
-                "CW": st.column_config.NumberColumn("CW", format="%d", width="small"),
-                "Δ CW": st.column_config.NumberColumn("Δ CW", format="%d", width="small"),
-                "SQL %": st.column_config.NumberColumn("SQL %", format="%.1f%%", width="small"),
-                "Q win %": st.column_config.NumberColumn("Q win %", format="%.1f%%", width="small"),
+                "Spend": st.column_config.TextColumn("Spend", width="small"),
+                "Δ Spend": st.column_config.TextColumn("Δ Spend", width="small"),
+                "CW": st.column_config.TextColumn("CW", width="small"),
+                "Δ CW": st.column_config.TextColumn("Δ CW", width="small"),
+                "SQL %": st.column_config.TextColumn("SQL %", width="small"),
+                "Q win %": st.column_config.TextColumn("Q win %", width="small"),
             },
             key=f"{key_suffix}_df_mom_delta",
         )
