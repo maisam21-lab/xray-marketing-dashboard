@@ -26,7 +26,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-15-mom-visible-me-month-totals"
+DASHBOARD_BUILD = "2026-04-15-mom-me-in-master-style-row"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
