@@ -26,7 +26,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-15-market-label-only"
+DASHBOARD_BUILD = "2026-04-15-mom-simple-table-twocharts"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -9083,77 +9083,51 @@ def render_page_market_mom(
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
+    st.markdown('<div class="looker-table-title">Month × market summary</div>', unsafe_allow_html=True)
+    _master_performance_table(df, key_suffix=f"{key_suffix}_mom", section_title="")
+
     _plot_mom = dict(template="plotly_white", paper_bgcolor="white", plot_bgcolor="white", font=dict(size=12))
     _xaxis = dict(showgrid=True, gridcolor="rgba(148,163,184,0.25)", title="")
-
-    st.markdown('<div class="dash-chart-stack">', unsafe_allow_html=True)
-    with st.container(border=True):
-        st.markdown('<div class="looker-table-title" style="margin-top:0;">Demand & spend trajectory</div>', unsafe_allow_html=True)
-        st.caption("Are we funding enough reach, and is demand holding month to month?")
-        c_sp, c_vol = st.columns(2)
-        with c_sp:
-            fig_sp = go.Figure()
-            fig_sp.add_trace(
-                go.Bar(
-                    x=monthly["month_lbl"],
-                    y=monthly["spend"],
-                    name="Spend",
-                    marker_color="#4f8483",
-                    hovertemplate="%{x}<br>Spend: $%{y:,.0f}<extra></extra>",
-                )
+    c_vol, c_qlt = st.columns(2)
+    with c_vol:
+        st.markdown('<div class="looker-table-title" style="margin-top:0;">Funnel volume</div>', unsafe_allow_html=True)
+        fig_v = go.Figure()
+        fig_v.add_trace(
+            go.Bar(
+                x=monthly["month_lbl"],
+                y=monthly["cw"],
+                name="CW",
+                marker_color="#059669",
             )
-            fig_sp.update_layout(
-                title=dict(text="Paid spend by month", font=dict(size=14)),
-                **_plot_mom,
-                margin=dict(l=8, r=8, t=52, b=8),
-                showlegend=False,
-                yaxis=dict(title="USD", showgrid=True, gridcolor="rgba(148,163,184,0.2)"),
-                xaxis=_xaxis,
+        )
+        fig_v.add_trace(
+            go.Bar(
+                x=monthly["month_lbl"],
+                y=monthly["leads"],
+                name="Lead rows",
+                marker_color="#3b82f6",
             )
-            st.plotly_chart(fig_sp, width="stretch", key=f"{key_suffix}_pl_spend")
-        with c_vol:
-            fig_v = go.Figure()
-            fig_v.add_trace(
-                go.Bar(
-                    x=monthly["month_lbl"],
-                    y=monthly["cw"],
-                    name="CW",
-                    marker_color="#059669",
-                )
+        )
+        fig_v.add_trace(
+            go.Bar(
+                x=monthly["month_lbl"],
+                y=monthly["qualified"],
+                name="Qualified",
+                marker_color="#8b5cf6",
             )
-            fig_v.add_trace(
-                go.Bar(
-                    x=monthly["month_lbl"],
-                    y=monthly["leads"],
-                    name="Lead rows",
-                    marker_color="#3b82f6",
-                )
-            )
-            fig_v.add_trace(
-                go.Bar(
-                    x=monthly["month_lbl"],
-                    y=monthly["qualified"],
-                    name="Qualified",
-                    marker_color="#8b5cf6",
-                )
-            )
-            fig_v.update_layout(
-                title=dict(text="Funnel volume (by month)", font=dict(size=14)),
-                barmode="group",
-                **_plot_mom,
-                margin=dict(l=8, r=8, t=52, b=8),
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
-                yaxis=dict(title="Count", showgrid=True, gridcolor="rgba(148,163,184,0.2)"),
-                xaxis=_xaxis,
-            )
-            st.plotly_chart(fig_v, width="stretch", key=f"{key_suffix}_pl_volume")
-
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    st.markdown('<div class="dash-chart-stack">', unsafe_allow_html=True)
-    with st.container(border=True):
+        )
+        fig_v.update_layout(
+            title=dict(text="CW, leads, and qualified by month", font=dict(size=14)),
+            barmode="group",
+            **_plot_mom,
+            margin=dict(l=8, r=8, t=52, b=8),
+            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
+            yaxis=dict(title="Count", showgrid=True, gridcolor="rgba(148,163,184,0.2)"),
+            xaxis=_xaxis,
+        )
+        st.plotly_chart(fig_v, width="stretch", key=f"{key_suffix}_pl_volume")
+    with c_qlt:
         st.markdown('<div class="looker-table-title" style="margin-top:0;">Conversion quality</div>', unsafe_allow_html=True)
-        st.caption("SQL % and qualified-stage win rate — are we improving qualification and downstream wins?")
         fig_q = go.Figure()
         fig_q.add_trace(
             go.Scatter(
@@ -9176,7 +9150,7 @@ def render_page_market_mom(
             )
         )
         fig_q.update_layout(
-            title=dict(text="Quality rates over time", font=dict(size=14)),
+            title=dict(text="SQL % and Q win % over time", font=dict(size=14)),
             **_plot_mom,
             margin=dict(l=8, r=8, t=52, b=8),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
@@ -9184,51 +9158,6 @@ def render_page_market_mom(
             xaxis=_xaxis,
         )
         st.plotly_chart(fig_q, width="stretch", key=f"{key_suffix}_pl_quality")
-
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    if monthly["spend"].sum() > 1e-9 and (monthly["cpl"].notna().any() or monthly["cpsql"].notna().any()):
-        st.markdown('<div class="dash-chart-stack">', unsafe_allow_html=True)
-        with st.container(border=True):
-            st.markdown('<div class="looker-table-title" style="margin-top:0;">Unit economics (estimated)</div>', unsafe_allow_html=True)
-            st.caption(
-                "CPL and CPSQL use the same paid-media spend as Marketing performance (per month above); "
-                "lead and qualified counts stay on this tab’s slice — directional only, not GAAP."
-            )
-            fig_ue = go.Figure()
-            fig_ue.add_trace(
-                go.Scatter(
-                    x=monthly["month_lbl"],
-                    y=monthly["cpl"],
-                    name="CPL (spend ÷ lead rows)",
-                    mode="lines+markers",
-                    line=dict(color="#0369a1", width=2),
-                    connectgaps=False,
-                )
-            )
-            fig_ue.add_trace(
-                go.Scatter(
-                    x=monthly["month_lbl"],
-                    y=monthly["cpsql"],
-                    name="CPSQL (spend ÷ qualified)",
-                    mode="lines+markers",
-                    line=dict(color="#7c3aed", width=2),
-                    connectgaps=False,
-                )
-            )
-            fig_ue.update_layout(
-                title=dict(text="Cost per lead & per SQL", font=dict(size=14)),
-                **_plot_mom,
-                margin=dict(l=8, r=8, t=52, b=8),
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
-                yaxis=dict(title="USD", showgrid=True, gridcolor="rgba(148,163,184,0.2)"),
-                xaxis=_xaxis,
-            )
-            st.plotly_chart(fig_ue, width="stretch", key=f"{key_suffix}_pl_ue")
-        st.markdown("</div>", unsafe_allow_html=True)
-
-    with st.expander("Month × market operating detail (full pivot)", expanded=False):
-        _master_performance_table(df, key_suffix=f"{key_suffix}_mom", section_title="")
 
     grand = pd.DataFrame(
         [
