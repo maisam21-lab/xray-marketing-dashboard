@@ -26,7 +26,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-15-spend-tab-has-two-inner-tabs"
+DASHBOARD_BUILD = "2026-04-15-charts-decluttered"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -9662,7 +9662,7 @@ def _pmc_by_channel_summary(u: pd.DataFrame) -> pd.DataFrame:
 
 
 def _pmc_render_charts(by_ch: pd.DataFrame, key_suffix: str) -> None:
-    """KitchenPark reference layout: dual-axis combos + bubble quality matrix."""
+    """Cleaner channel chart pack: two core combos (volume and spend value)."""
     if by_ch.empty:
         st.caption("Not enough channel-level rows for charts.")
         return
@@ -9789,58 +9789,7 @@ def _pmc_render_charts(by_ch: pd.DataFrame, key_suffix: str) -> None:
     fig2.update_xaxes(title_text="Unified Channel", tickangle=-12, showgrid=False)
     st.plotly_chart(fig2, width="stretch", key=f"{key_suffix}_pmc_spend_tcv")
 
-    # --- 3) Bubble matrix: CPL × SQL % (labels on hover only — avoids overlap clutter)
-    st.markdown('<p class="mpo-perf-chart-title">Paid Channel Lead Quality Matrix</p>', unsafe_allow_html=True)
-    qm = by_ch.dropna(subset=["CPL"]).copy()
-    if qm.empty:
-        qm = by_ch.copy()
-    vol = pd.to_numeric(qm["leads"], errors="coerce").fillna(0.0)
-    mx = float(vol.max()) if len(vol) and float(vol.max()) > 0 else 1.0
-    bubble_sz = (22 + 48 * (vol / mx).clip(lower=0.12)).tolist()
-    _cd = [
-        [str(qm["unified_channel"].iloc[i]), float(vol.iloc[i])]
-        for i in range(len(qm))
-    ]
-
-    fig3 = go.Figure(
-        data=[
-            go.Scatter(
-                name="Unified Channel",
-                x=qm["CPL"],
-                y=qm["SQL%"],
-                mode="markers",
-                marker=dict(
-                    size=bubble_sz,
-                    color="rgba(125, 211, 252, 0.72)",
-                    line=dict(color="#38bdf8", width=1.2),
-                    sizemode="diameter",
-                ),
-                customdata=_cd,
-                hovertemplate="<b>%{customdata[0]}</b><br>CPL: $%{x:,.0f}<br>SQL %: %{y:.1f}<br>Leads: %{customdata[1]:,.0f}<extra></extra>",
-            )
-        ]
-    )
-    fig3.update_layout(
-        height=440,
-        margin=dict(l=56, r=24, t=24, b=48),
-        showlegend=True,
-        legend=dict(x=0, y=1.02, xanchor="left", yanchor="bottom", font=dict(size=12)),
-        xaxis=dict(
-            title="CPL ($)",
-            tickprefix="$",
-            gridcolor="rgba(148,163,184,0.35)",
-            zeroline=False,
-            range=[0, None],
-        ),
-        yaxis=dict(
-            title="SQL %",
-            ticksuffix="%",
-            gridcolor="rgba(148,163,184,0.35)",
-            zeroline=False,
-        ),
-        **_paper,
-    )
-    st.plotly_chart(fig3, width="stretch", key=f"{key_suffix}_pmc_matrix")
+    st.caption("Showing the two highest-signal channel charts only (volume and spend value).")
 
 
 def _render_page_performance_marketing_channels(
@@ -9982,7 +9931,7 @@ def render_page_channels(df_loaded: pd.DataFrame, start_date: date, end_date: da
             .agg(spend=("cost", "sum"))
             .sort_values(["month", group_col])
         )
-        top = trend.groupby(group_col)["spend"].sum().nlargest(8).index.tolist()
+        top = trend.groupby(group_col)["spend"].sum().nlargest(5).index.tolist()
         trend = trend[trend[group_col].isin(top)]
         fig2 = px.line(trend, x="month", y="spend", color=group_col, markers=True, title="Spend trend (top groups)")
         fig2.update_layout(plot_bgcolor="white", paper_bgcolor="white", margin=dict(l=8, r=8, t=45, b=8))
