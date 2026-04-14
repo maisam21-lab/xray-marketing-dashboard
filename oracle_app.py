@@ -26,7 +26,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-15-mom-main-token-colors"
+DASHBOARD_BUILD = "2026-04-15-mom-qualified-leads-labels"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -5695,9 +5695,11 @@ def _mom_executive_snapshot_scorecards_html(
 
     sub_spend = _kpi_funnel_sub_row("CPL (Σ slice)", cpl_s) + _kpi_funnel_sub_row("CPSQL (Σ slice)", cpsql_s)
     sub_cw = _kpi_funnel_sub_row("CPCW", cpcw_s) + _kpi_funnel_sub_row("Spend (Σ)", spend_k)
-    sub_tl = _kpi_funnel_sub_row("Qualified", f"{total_qual:,}") + _kpi_funnel_sub_row("SQL %", f"{sql_pct:.2f}%")
-    sub_sql = _kpi_funnel_sub_row("Qualified", f"{total_qual:,}") + _kpi_funnel_sub_row("Total leads", f"{total_leads:,}")
-    sub_qwin = _kpi_funnel_sub_row("Qualified (denom.)", f"{total_qual:,}") + _kpi_funnel_sub_row(
+    sub_tl = _kpi_funnel_sub_row("Qualified leads", f"{total_qual:,}") + _kpi_funnel_sub_row("SQL %", f"{sql_pct:.2f}%")
+    sub_sql = _kpi_funnel_sub_row("Qualified leads", f"{total_qual:,}") + _kpi_funnel_sub_row(
+        "Total leads", f"{total_leads:,}"
+    )
+    sub_qwin = _kpi_funnel_sub_row("Qualified leads (denom.)", f"{total_qual:,}") + _kpi_funnel_sub_row(
         "Closed won (num.)", f"{total_cw:,}"
     )
 
@@ -9381,25 +9383,30 @@ def render_page_market_mom(
             go.Bar(
                 x=monthly["month_lbl"],
                 y=monthly["qualified"],
-                name="Qualified",
+                name="Qualified leads",
                 marker_color="#7c3aed",
             ),
             secondary_y=False,
         )
         fig_v.update_layout(
-            title=dict(text="Closed won, leads, and qualified by month", font=dict(size=14)),
+            title=dict(text="Closed won, leads, and qualified leads by month", font=dict(size=14)),
             barmode="group",
             **_plot_mom,
             margin=dict(l=8, r=8, t=52, b=8),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
-            yaxis=dict(title="Leads / Qualified", showgrid=True, gridcolor="rgba(148,163,184,0.2)", range=[0, _lq_max + 200]),
+            yaxis=dict(
+                title="Leads / Qualified leads",
+                showgrid=True,
+                gridcolor="rgba(148,163,184,0.2)",
+                range=[0, _lq_max + 200],
+            ),
             yaxis2=dict(title="Closed won", showgrid=False, range=[0, _cw_max + 200]),
             xaxis=_xaxis,
         )
         st.plotly_chart(fig_v, width="stretch", key=f"{key_suffix}_pl_volume")
     with c_qlt:
         st.markdown('<div class="looker-table-title" style="margin-top:0;">Conversion quality</div>', unsafe_allow_html=True)
-        st.caption("SQL % and Q win % explain how efficiently qualified demand turns into **Closed won**.")
+        st.caption("SQL % and Q win % explain how efficiently qualified leads turn into **Closed won**.")
         fig_q = go.Figure()
         fig_q.add_trace(
             go.Scatter(
@@ -9415,7 +9422,7 @@ def render_page_market_mom(
             go.Scatter(
                 x=monthly["month_lbl"],
                 y=monthly["q_win_pct"],
-                name="Q win % (CW ÷ qualified)",
+                name="Q win % (CW ÷ qualified leads)",
                 mode="lines+markers",
                 line=dict(color="#7c3aed", width=2.5),
                 marker=dict(size=8),
