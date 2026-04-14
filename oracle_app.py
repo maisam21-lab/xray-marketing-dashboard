@@ -26,7 +26,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-15-mom-delta-readable"
+DASHBOARD_BUILD = "2026-04-15-mom-no-unknown-market"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -9008,6 +9008,10 @@ def _mom_market_month_delta_table(df: pd.DataFrame, spend_df: Optional[pd.DataFr
         )
         .rename(columns={"country": "market"})
     )
+    _mk_clean = grp["market"].astype(str).str.strip().str.lower()
+    grp = grp.loc[~_mk_clean.isin({"", "unknown", "nan", "none", "<na>"})].copy()
+    if grp.empty:
+        return pd.DataFrame()
     grp["leads"] = (
         base.groupby(["month", "country"]).size().reindex(list(zip(grp["month"], grp["market"])), fill_value=0).to_numpy()
     )
@@ -9093,6 +9097,9 @@ def render_page_market_mom(
     _dashboard_tab_page_header()
 
     df_mpo = _mpo_dataframe_from_session_filters(df_date, key_suffix=key_suffix)
+    if "country" in df_mpo.columns:
+        _mk_mpo = df_mpo["country"].astype(str).str.strip().str.lower()
+        df_mpo = df_mpo.loc[~_mk_mpo.isin({"", "unknown", "nan", "none", "<na>"})].copy()
     spend_sheet_for_kpis, _, _, _, _ = _mpo_load_spend_sheet_for_kpis(
         df_loaded,
         df_date,
@@ -9107,6 +9114,9 @@ def render_page_market_mom(
         reporting_start=start_date,
         reporting_end=end_date,
     )
+    if "country" in df.columns:
+        _mk = df["country"].astype(str).str.strip().str.lower()
+        df = df.loc[~_mk.isin({"", "unknown", "nan", "none", "<na>"})].copy()
 
     if df.empty:
         st.warning("No rows match the current filters — widen the date range or clear sheet filters.")
