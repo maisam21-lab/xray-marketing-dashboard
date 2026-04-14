@@ -26,7 +26,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-15-mom-simple-table-twocharts"
+DASHBOARD_BUILD = "2026-04-15-mom-delta-table"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -8990,6 +8990,92 @@ def _mom_monthly_series(df: pd.DataFrame, spend_df: Optional[pd.DataFrame] = Non
     return monthly
 
 
+def _mom_market_month_delta_table(df: pd.DataFrame, spend_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
+    """MoM table by market/month with delta columns vs previous month per market."""
+    if df.empty or "month" not in df.columns or "country" not in df.columns:
+        return pd.DataFrame()
+
+    base = df.copy()
+    if "closed_won" not in base.columns:
+        base["closed_won"] = 0
+    if "qualified" not in base.columns:
+        base["qualified"] = 0
+    grp = (
+        base.groupby(["month", "country"], as_index=False)
+        .agg(
+            cw=("closed_won", "sum"),
+            qualified=("qualified", "sum"),
+        )
+        .rename(columns={"country": "market"})
+    )
+    grp["leads"] = (
+        base.groupby(["month", "country"]).size().reindex(list(zip(grp["month"], grp["market"])), fill_value=0).to_numpy()
+    )
+    grp["cw"] = pd.to_numeric(grp["cw"], errors="coerce").fillna(0)
+    grp["qualified"] = pd.to_numeric(grp["qualified"], errors="coerce").fillna(0)
+    grp["sql_pct"] = grp.apply(
+        lambda r: (float(r["qualified"]) / float(r["leads"]) * 100.0) if r["leads"] else 0.0,
+        axis=1,
+    )
+    grp["q_win_pct"] = grp.apply(
+        lambda r: (float(r["cw"]) / float(r["qualified"]) * 100.0) if r["qualified"] else 0.0,
+        axis=1,
+    )
+
+    if spend_df is not None and not spend_df.empty and "cost" in spend_df.columns:
+        sp = spend_df.copy()
+        if "country" in sp.columns and "month" in sp.columns:
+            sp["_mk"] = sp["country"].map(_country_join_key)
+            sp["_mm"] = sp["month"].map(_month_norm_key)
+            spg = sp.groupby(["_mm", "_mk"], as_index=False)["cost"].sum().rename(columns={"cost": "spend"})
+            grp["_mk"] = grp["market"].map(_country_join_key)
+            grp["_mm"] = grp["month"].map(_month_norm_key)
+            grp = grp.merge(spg, on=["_mm", "_mk"], how="left")
+            grp["spend"] = pd.to_numeric(grp["spend"], errors="coerce").fillna(0.0)
+            grp = grp.drop(columns=["_mk", "_mm"], errors="ignore")
+        else:
+            grp["spend"] = 0.0
+    else:
+        grp["spend"] = (
+            base.groupby(["month", "country"], as_index=False)["cost"].sum()["cost"].to_numpy()
+            if "cost" in base.columns
+            else 0.0
+        )
+
+    grp["month_key"] = grp["month"].map(_month_norm_key).astype(str)
+    grp = grp.sort_values(["market", "month_key"], key=lambda c: c.map(_mpo_month_ts_for_sort) if c.name == "month_key" else c)
+
+    for col in ("spend", "cw", "leads", "qualified", "sql_pct", "q_win_pct"):
+        grp[f"delta_{col}"] = grp.groupby("market")[col].diff().fillna(0.0)
+
+    out = grp.rename(
+        columns={
+            "month_key": "Month",
+            "market": "Market",
+            "spend": "Spend",
+            "delta_spend": "Δ Spend",
+            "cw": "CW",
+            "delta_cw": "Δ CW",
+            "leads": "Leads",
+            "delta_leads": "Δ Leads",
+            "sql_pct": "SQL %",
+            "delta_sql_pct": "Δ SQL pp",
+            "q_win_pct": "Q win %",
+            "delta_q_win_pct": "Δ Q win pp",
+        }
+    )
+    out = out[
+        ["Month", "Market", "Spend", "Δ Spend", "CW", "Δ CW", "Leads", "Δ Leads", "SQL %", "Δ SQL pp", "Q win %", "Δ Q win pp"]
+    ].copy()
+    out["Spend"] = pd.to_numeric(out["Spend"], errors="coerce").fillna(0.0)
+    out["Δ Spend"] = pd.to_numeric(out["Δ Spend"], errors="coerce").fillna(0.0)
+    for c in ("CW", "Δ CW", "Leads", "Δ Leads"):
+        out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0).astype(int)
+    for c in ("SQL %", "Δ SQL pp", "Q win %", "Δ Q win pp"):
+        out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0.0).round(2)
+    return out
+
+
 def render_page_market_mom(
     df_loaded: pd.DataFrame,
     start_date: date,
@@ -9077,14 +9163,22 @@ def render_page_market_mom(
     )
 
     monthly = _mom_monthly_series(df, spend_df=spend_df_mpo)
+    mom_delta_tbl = _mom_market_month_delta_table(df, spend_df=spend_df_mpo)
     if monthly.empty:
         st.info("No calendar months in this slice — check filters and month columns.")
-        _master_performance_table(df, key_suffix=f"{key_suffix}_mom", section_title="Month × market detail")
+        if not mom_delta_tbl.empty:
+            st.markdown('<div class="looker-table-title">Month × market MoM deltas</div>', unsafe_allow_html=True)
+            st.dataframe(mom_delta_tbl, width="stretch", hide_index=True, key=f"{key_suffix}_df_mom_delta_empty")
+        else:
+            _master_performance_table(df, key_suffix=f"{key_suffix}_mom", section_title="Month × market detail")
         st.markdown("</div>", unsafe_allow_html=True)
         return
 
-    st.markdown('<div class="looker-table-title">Month × market summary</div>', unsafe_allow_html=True)
-    _master_performance_table(df, key_suffix=f"{key_suffix}_mom", section_title="")
+    st.markdown('<div class="looker-table-title">Month × market MoM deltas</div>', unsafe_allow_html=True)
+    if not mom_delta_tbl.empty:
+        st.dataframe(mom_delta_tbl, width="stretch", hide_index=True, key=f"{key_suffix}_df_mom_delta")
+    else:
+        _master_performance_table(df, key_suffix=f"{key_suffix}_mom", section_title="")
 
     _plot_mom = dict(template="plotly_white", paper_bgcolor="white", plot_bgcolor="white", font=dict(size=12))
     _xaxis = dict(showgrid=True, gridcolor="rgba(148,163,184,0.25)", title="")
