@@ -26,7 +26,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-15-mom-header-align"
+DASHBOARD_BUILD = "2026-04-15-mom-like-main-tab"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -9005,7 +9005,7 @@ def render_page_market_mom(
 
     _dashboard_tab_page_header()
 
-    df_mpo = _mpo_dataframe_from_session_filters(df_date, key_suffix="mpo")
+    df_mpo = _mpo_dataframe_from_session_filters(df_date, key_suffix=key_suffix)
     spend_sheet_for_kpis, _, _, _, _ = _mpo_load_spend_sheet_for_kpis(
         df_loaded,
         df_date,
@@ -9014,25 +9014,12 @@ def render_page_market_mom(
     )
     spend_df_mpo = _spend_slice_for_dashboard_filters(spend_sheet_for_kpis, df_mpo)
 
-    df, _ = _apply_sheet_filters(df_date, key_suffix=key_suffix, filters_in_row=True, include_country_filter=False)
-    mk_opts = sorted([x for x in df_date["country"].dropna().unique().tolist() if x and x != "Unknown"])
-    ctl1, ctl2 = st.columns((1, 1.15), gap="medium", vertical_alignment="center")
-    with ctl1:
-        pick = st.selectbox(
-            "Focus market",
-            ["All markets"] + mk_opts,
-            key=f"{key_suffix}_market",
-            help="Choose one country/region or keep the full blended scope.",
-        )
-    with ctl2:
-        st.markdown(
-            f'<p class="mom-reporting-hint">Reporting window <strong>{start_date:%d %b %Y}</strong> → '
-            f"<strong>{end_date:%d %b %Y}</strong> · Filters here apply to every chart and the operating table.</p>",
-            unsafe_allow_html=True,
-        )
-
-    if pick != "All markets":
-        df = df[df["country"] == pick].copy()
+    df, _ = _apply_marketing_performance_filters(
+        df_date,
+        key_suffix=key_suffix,
+        reporting_start=start_date,
+        reporting_end=end_date,
+    )
 
     if df.empty:
         st.warning("No rows match the current filters — widen the date range or clear sheet filters.")
@@ -9040,11 +9027,18 @@ def render_page_market_mom(
 
     st.markdown('<div class="mom-page-wrap">', unsafe_allow_html=True)
 
-    scope_lbl = pick if pick != "All markets" else "All markets (portfolio)"
+    _sel_mk = st.session_state.get(f"{key_suffix}_market", [_MPO_ALL_GEO_SENTINEL])
+    _mk_only = _mpo_market_scope_countries_only(_sel_mk)
+    if len(_mk_only) == 1:
+        scope_lbl = _mk_only[0]
+    elif _mk_only:
+        scope_lbl = f"{len(_mk_only)} markets"
+    else:
+        scope_lbl = "All markets (portfolio)"
     _hk_mom = _mpo_headline_month_keys_for_scope(
         pd.DataFrame(),
         df_mpo,
-        "mpo",
+        key_suffix,
         reporting_start=start_date,
         reporting_end=end_date,
     )
@@ -9079,7 +9073,7 @@ def render_page_market_mom(
     )
     st.caption(
         "Total spend and paid spend by month use the **same spend source** as **Marketing performance**, "
-        "with **Markets & countries** and **Month** from that tab (sidebar dates still bound the load)."
+        "with this tab's **Markets & countries** and **Month** filters (sidebar dates still bound the load)."
     )
 
     monthly = _mom_monthly_series(df, spend_df=spend_df_mpo)
@@ -10128,18 +10122,6 @@ def main() -> None:
     .dash-chart-stack .looker-table-title { margin-top: 4px !important; }
     .mom-page-wrap {
         margin: 2px 0 0 0;
-    }
-    p.mom-reporting-hint {
-        margin: 0.1rem 0 0 0;
-        padding: 2px 0 0 0;
-        font-size: 0.78rem;
-        line-height: 1.4;
-        color: #64748b;
-        font-weight: 500;
-    }
-    p.mom-reporting-hint strong {
-        color: #334155;
-        font-weight: 600;
     }
     /* KPI scorecards: glass panels, staggered entrance, hover lift */
     .kpi-section {
