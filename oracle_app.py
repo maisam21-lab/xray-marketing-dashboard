@@ -26,7 +26,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-15-mom-spend-cw-framing"
+DASHBOARD_BUILD = "2026-04-15-mom-shared-mpo-filters"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -9090,6 +9090,7 @@ def render_page_market_mom(
 ) -> None:
     """Month-over-month view framed on **Closed Won** — the outcome marketing spend is meant to produce; funnel metrics are leading signals."""
     key_suffix = "mom"
+    _mpo_filter_key = "mpo"
     df_filtered = _filter_by_date_range(df_loaded, start_date, end_date)
     df_date = df_loaded if df_filtered.empty else df_filtered
     if df_date.empty:
@@ -9098,27 +9099,17 @@ def render_page_market_mom(
 
     _dashboard_tab_page_header()
 
-    df_mpo = _mpo_dataframe_from_session_filters(df_date, key_suffix=key_suffix)
-    if "country" in df_mpo.columns:
-        _mk_mpo = df_mpo["country"].astype(str).str.strip().str.lower()
-        df_mpo = df_mpo.loc[~_mk_mpo.isin({"", "unknown", "nan", "none", "<na>"})].copy()
     spend_sheet_for_kpis, _, _, _, _ = _mpo_load_spend_sheet_for_kpis(
         df_loaded,
         df_date,
         start_date,
         end_date,
     )
-    spend_df_mpo = _spend_slice_for_dashboard_filters(spend_sheet_for_kpis, df_mpo)
-
-    df, _ = _apply_marketing_performance_filters(
-        df_date,
-        key_suffix=key_suffix,
-        reporting_start=start_date,
-        reporting_end=end_date,
-    )
+    df = _mpo_dataframe_from_session_filters(df_date, key_suffix=_mpo_filter_key)
     if "country" in df.columns:
         _mk = df["country"].astype(str).str.strip().str.lower()
         df = df.loc[~_mk.isin({"", "unknown", "nan", "none", "<na>"})].copy()
+    spend_df_mpo = _spend_slice_for_dashboard_filters(spend_sheet_for_kpis, df)
 
     if df.empty:
         st.warning("No rows match the current filters — widen the date range or clear sheet filters.")
@@ -9132,7 +9123,7 @@ def render_page_market_mom(
         "wins flat (weak conversion, lag, or wasted reach) — use **Q win % / SQL %** and **Δ CW** vs **Δ Spend** to spot that."
     )
 
-    _sel_mk = st.session_state.get(f"{key_suffix}_market", [_MPO_ALL_GEO_SENTINEL])
+    _sel_mk = st.session_state.get(f"{_mpo_filter_key}_market", [_MPO_ALL_GEO_SENTINEL])
     _mk_only = _mpo_market_scope_countries_only(_sel_mk)
     if len(_mk_only) == 1:
         scope_lbl = _mk_only[0]
@@ -9144,13 +9135,13 @@ def render_page_market_mom(
         st.caption(f"Active market filter: {', '.join(_mk_only)}")
     _hk_mom = _mpo_headline_month_keys_for_scope(
         pd.DataFrame(),
-        df_mpo,
-        key_suffix,
+        df,
+        _mpo_filter_key,
         reporting_start=start_date,
         reporting_end=end_date,
     )
     if not _hk_mom:
-        _fb_m = _mpo_month_keys_sorted_master(df_mpo)
+        _fb_m = _mpo_month_keys_sorted_master(df)
         _hk_mom = _fb_m[-1:] if _fb_m else []
     if _hk_mom:
         total_spend = float(sum(_mpo_spend_activity_for_month(spend_df_mpo, mk)[0] for mk in _hk_mom))
@@ -9179,8 +9170,9 @@ def render_page_market_mom(
         unsafe_allow_html=True,
     )
     st.caption(
-        "Spend uses the **same paid-media source** as **Marketing performance**; **Market** and **Month** match that tab. "
-        "Charts below still tie spend to the funnel that should feed **Closed Won**."
+        "Spend uses the **same paid-media source** as **Marketing performance**. "
+        "Set **Market** and **Month** on that tab — this view reuses them (no duplicate filters here). "
+        "Charts tie spend to the funnel that should feed **Closed Won**."
     )
 
     monthly = _mom_monthly_series(df, spend_df=spend_df_mpo)
