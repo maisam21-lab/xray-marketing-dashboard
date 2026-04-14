@@ -26,7 +26,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-15-mom-north-star-cw"
+DASHBOARD_BUILD = "2026-04-15-mom-spend-cw-framing"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -9126,7 +9126,10 @@ def render_page_market_mom(
 
     st.markdown('<div class="mom-page-wrap">', unsafe_allow_html=True)
     st.caption(
-        "**North star: Closed Won.** Spend funds demand; SQL % and Q win % explain whether that demand is converting into wins."
+        "**North star: Closed Won.** In paid media you usually expect **spend and Closed Won to move together** — more investment "
+        "should help produce more wins when the funnel is healthy. The **ideal** case is **more Closed Won with less spend** "
+        "(efficiency): strong organic/inbound, better targeting, or higher conversion. Watch for **edge cases**: spend up but "
+        "wins flat (weak conversion, lag, or wasted reach) — use **Q win % / SQL %** and **Δ CW** vs **Δ Spend** to spot that."
     )
 
     _sel_mk = st.session_state.get(f"{key_suffix}_market", [_MPO_ALL_GEO_SENTINEL])
@@ -9201,7 +9204,8 @@ def render_page_market_mom(
     st.markdown('<div class="looker-table-title">Month × market — momentum toward Closed Won</div>', unsafe_allow_html=True)
     st.caption(
         "Key question: **where is Closed Won momentum strongest or weakest vs last month?** "
-        "Default rank uses **Δ CW**; switch to spend or conversion rates when diagnosing drivers."
+        "Default rank is **Δ CW**; use **Δ Spend** next to **Closed won** in each row to see whether spend and wins are aligned — "
+        "or switch ranking to conversion rates when spend looks fine but wins do not."
     )
     if not mom_delta_tbl.empty:
         ctl_m, ctl_s = st.columns((1, 1.2), gap="small")
