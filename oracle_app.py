@@ -26,7 +26,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-15-mom-no-hero-cards"
+DASHBOARD_BUILD = "2026-04-15-mom-cw-axis-visible"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -9351,14 +9351,22 @@ def render_page_market_mom(
     with c_vol:
         st.markdown('<div class="looker-table-title" style="margin-top:0;">Funnel volume</div>', unsafe_allow_html=True)
         st.caption("**Closed won** is the outcome; leads and qualified show whether the funnel can support it.")
-        fig_v = go.Figure()
+        fig_v = make_subplots(specs=[[{"secondary_y": True}]])
+        _cw_max = float(pd.to_numeric(monthly["cw"], errors="coerce").fillna(0).max()) if "cw" in monthly.columns else 0.0
+        _lq_max = float(
+            max(
+                pd.to_numeric(monthly["leads"], errors="coerce").fillna(0).max() if "leads" in monthly.columns else 0.0,
+                pd.to_numeric(monthly["qualified"], errors="coerce").fillna(0).max() if "qualified" in monthly.columns else 0.0,
+            )
+        )
         fig_v.add_trace(
             go.Bar(
                 x=monthly["month_lbl"],
                 y=monthly["cw"],
                 name="Closed won",
                 marker_color="#059669",
-            )
+            ),
+            secondary_y=True,
         )
         fig_v.add_trace(
             go.Bar(
@@ -9366,7 +9374,8 @@ def render_page_market_mom(
                 y=monthly["leads"],
                 name="Lead rows",
                 marker_color="#3b82f6",
-            )
+            ),
+            secondary_y=False,
         )
         fig_v.add_trace(
             go.Bar(
@@ -9374,7 +9383,8 @@ def render_page_market_mom(
                 y=monthly["qualified"],
                 name="Qualified",
                 marker_color="#8b5cf6",
-            )
+            ),
+            secondary_y=False,
         )
         fig_v.update_layout(
             title=dict(text="Closed won, leads, and qualified by month", font=dict(size=14)),
@@ -9382,7 +9392,8 @@ def render_page_market_mom(
             **_plot_mom,
             margin=dict(l=8, r=8, t=52, b=8),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
-            yaxis=dict(title="Count", showgrid=True, gridcolor="rgba(148,163,184,0.2)"),
+            yaxis=dict(title="Leads / Qualified", showgrid=True, gridcolor="rgba(148,163,184,0.2)", range=[0, _lq_max + 200]),
+            yaxis2=dict(title="Closed won", showgrid=False, range=[0, _cw_max + 200]),
             xaxis=_xaxis,
         )
         st.plotly_chart(fig_v, width="stretch", key=f"{key_suffix}_pl_volume")
