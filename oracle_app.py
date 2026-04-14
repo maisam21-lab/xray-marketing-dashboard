@@ -4198,21 +4198,31 @@ def _apply_sheet_filters(
     *,
     key_suffix: str,
     filters_in_row: bool = False,
+    include_country_filter: bool = True,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Returns (filtered for metrics/charts, df_for_tabs mirror)."""
     country_opts = sorted([x for x in df_date["country"].dropna().unique().tolist() if x and x != "Unknown"])
     platform_opts = sorted([x for x in df_date["platform"].dropna().unique().tolist() if x and x != "Unknown"])
 
+    selected_countries = ["All Countries"]
     if filters_in_row:
-        fc, fp = st.columns(2, gap="small")
-        with fc:
-            selected_countries = st.multiselect(
-                "Country / market",
-                ["All Countries"] + country_opts,
-                default=["All Countries"],
-                key=f"{key_suffix}_country",
-            )
-        with fp:
+        if include_country_filter:
+            fc, fp = st.columns(2, gap="small")
+            with fc:
+                selected_countries = st.multiselect(
+                    "Country / market",
+                    ["All Countries"] + country_opts,
+                    default=["All Countries"],
+                    key=f"{key_suffix}_country",
+                )
+            with fp:
+                selected_platforms = st.multiselect(
+                    "Platform",
+                    ["All Platforms"] + platform_opts,
+                    default=["All Platforms"],
+                    key=f"{key_suffix}_platform",
+                )
+        else:
             selected_platforms = st.multiselect(
                 "Platform",
                 ["All Platforms"] + platform_opts,
@@ -4234,7 +4244,7 @@ def _apply_sheet_filters(
         )
 
     df = df_date.copy()
-    if "All Countries" not in selected_countries and selected_countries:
+    if include_country_filter and "All Countries" not in selected_countries and selected_countries:
         df = df[df["country"].isin(selected_countries)]
     if "All Platforms" not in selected_platforms and selected_platforms:
         df = df[df["platform"].isin(selected_platforms)]
@@ -9004,7 +9014,7 @@ def render_page_market_mom(
     )
     spend_df_mpo = _spend_slice_for_dashboard_filters(spend_sheet_for_kpis, df_mpo)
 
-    df, _ = _apply_sheet_filters(df_date, key_suffix=key_suffix, filters_in_row=True)
+    df, _ = _apply_sheet_filters(df_date, key_suffix=key_suffix, filters_in_row=True, include_country_filter=False)
     mk_opts = sorted([x for x in df_date["country"].dropna().unique().tolist() if x and x != "Unknown"])
     ctl1, ctl2 = st.columns((1, 1.15), gap="medium", vertical_alignment="center")
     with ctl1:
