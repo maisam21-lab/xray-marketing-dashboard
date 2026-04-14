@@ -26,7 +26,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-15-mom-like-main-tab"
+DASHBOARD_BUILD = "2026-04-15-market-label-only"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -4204,15 +4204,15 @@ def _apply_sheet_filters(
     country_opts = sorted([x for x in df_date["country"].dropna().unique().tolist() if x and x != "Unknown"])
     platform_opts = sorted([x for x in df_date["platform"].dropna().unique().tolist() if x and x != "Unknown"])
 
-    selected_countries = ["All Countries"]
+    selected_countries = ["All markets"]
     if filters_in_row:
         if include_country_filter:
             fc, fp = st.columns(2, gap="small")
             with fc:
                 selected_countries = st.multiselect(
-                    "Country / market",
-                    ["All Countries"] + country_opts,
-                    default=["All Countries"],
+                    "Market",
+                    ["All markets"] + country_opts,
+                    default=["All markets"],
                     key=f"{key_suffix}_country",
                 )
             with fp:
@@ -4231,9 +4231,9 @@ def _apply_sheet_filters(
             )
     else:
         selected_countries = st.multiselect(
-            "Country / market",
-            ["All Countries"] + country_opts,
-            default=["All Countries"],
+            "Market",
+            ["All markets"] + country_opts,
+            default=["All markets"],
             key=f"{key_suffix}_country",
         )
         selected_platforms = st.multiselect(
@@ -4244,7 +4244,7 @@ def _apply_sheet_filters(
         )
 
     df = df_date.copy()
-    if include_country_filter and "All Countries" not in selected_countries and selected_countries:
+    if include_country_filter and "All markets" not in selected_countries and selected_countries:
         df = df[df["country"].isin(selected_countries)]
     if "All Platforms" not in selected_platforms and selected_platforms:
         df = df[df["platform"].isin(selected_platforms)]
@@ -4465,7 +4465,7 @@ def _apply_marketing_performance_filters(
         _c_mk, _c_mo = st.columns(2, gap="medium")
         with _c_mk:
             st.multiselect(
-                "Markets & countries",
+                "Market",
                 [_MPO_ALL_GEO_SENTINEL] + market_opts,
                 key=_k_mpo_market,
             )
@@ -4499,7 +4499,7 @@ def _mpo_dataframe_from_session_filters(
     *,
     key_suffix: str = "mpo",
 ) -> pd.DataFrame:
-    """Apply **Markets & countries** + **Month** session state (same rules as the Marketing performance tab) without rendering widgets."""
+    """Apply **Market** + **Month** session state (same rules as the Marketing performance tab) without rendering widgets."""
     df = df_date.copy()
     selected_markets = st.session_state.get(f"{key_suffix}_market", [_MPO_ALL_GEO_SENTINEL])
     selected_months = st.session_state.get(f"{key_suffix}_month", [_MPO_ALL_MONTHS_SENTINEL])
@@ -9073,7 +9073,7 @@ def render_page_market_mom(
     )
     st.caption(
         "Total spend and paid spend by month use the **same spend source** as **Marketing performance**, "
-        "with this tab's **Markets & countries** and **Month** filters (sidebar dates still bound the load)."
+        "with this tab's **Market** and **Month** filters (sidebar dates still bound the load)."
     )
 
     monthly = _mom_monthly_series(df, spend_df=spend_df_mpo)
