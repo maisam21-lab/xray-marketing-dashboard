@@ -9644,7 +9644,50 @@ def _pmc_order_channels_df(by_ch: pd.DataFrame) -> pd.DataFrame:
     return d
 
 
-def _pmc_by_channel_summary(u: pd.DataFrame) -> pd.DataFrame:
+def _pmc_leads_channel_lut_from_leads_sheet(df_loaded: pd.DataFrame, df_scope: pd.DataFrame) -> pd.DataFrame:
+    """Qualified/lead counts by Unified Channel from Leads sheet (Lead Status-based qualified)."""
+    if df_loaded.empty or "source_tab" not in df_loaded.columns:
+        return pd.DataFrame(columns=["unified_channel", "leads_from_leads", "qualified_from_leads"])
+    s = df_loaded["source_tab"].astype(str).str.lower()
+    mask = pd.Series(False, index=df_loaded.index)
+    for pat in _MPO_LEAD_TAB_PATTERNS:
+        mask = mask | s.str.contains(pat.lower(), na=False, regex=True)
+    leads = df_loaded.loc[mask].copy()
+    if leads.empty:
+        return pd.DataFrame(columns=["unified_channel", "leads_from_leads", "qualified_from_leads"])
+    leads = _mpo_slice_by_dashboard_ref(leads, df_scope)
+    if leads.empty:
+        return pd.DataFrame(columns=["unified_channel", "leads_from_leads", "qualified_from_leads"])
+
+    uc = leads.get("Unified Channel", pd.Series(index=leads.index, dtype=object)).astype(str).str.strip()
+    ch = uc
+    ch = ch.where(~ch.str.lower().isin(["", "unknown", "nan", "none", "nat"]), "Other")
+    leads["_pmc_ch"] = ch.map(_pmc_align_channel_label_for_xray_pivot)
+    # Keep Leads lookup on the exact same selected channel scope as the Spend-by-channel tab.
+    scope_channels = {
+        str(x).strip()
+        for x in _pmc_unified_channel_series(df_scope).tolist()
+        if str(x).strip() and str(x).strip().lower() not in ("unknown", "nan", "none", "nat")
+    }
+    if scope_channels:
+        leads = leads.loc[leads["_pmc_ch"].astype(str).str.strip().isin(scope_channels)].copy()
+        if leads.empty:
+            return pd.DataFrame(columns=["unified_channel", "leads_from_leads", "qualified_from_leads"])
+
+    stxt = leads.get("lead_status_text", pd.Series(index=leads.index, dtype=object)).astype(str).str.strip().str.lower()
+    if stxt.eq("").all():
+        stxt = leads.get("Lead Status", pd.Series(index=leads.index, dtype=object)).astype(str).str.strip().str.lower()
+    leads["_is_qualified"] = stxt.eq("qualified").astype(int)
+
+    lut = (
+        leads.groupby("_pmc_ch", as_index=False)
+        .agg(leads_from_leads=("_pmc_ch", "count"), qualified_from_leads=("_is_qualified", "sum"))
+        .rename(columns={"_pmc_ch": "unified_channel"})
+    )
+    return _pmc_order_channels_df(lut)
+
+
+def _pmc_by_channel_summary(u: pd.DataFrame, leads_lut: Optional[pd.DataFrame] = None) -> pd.DataFrame:
     g = (
         u.groupby("unified_channel", as_index=False)
         .agg(
@@ -9658,6 +9701,17 @@ def _pmc_by_channel_summary(u: pd.DataFrame) -> pd.DataFrame:
     )
     g["CPL"] = g.apply(lambda r: (r["spend"] / r["leads"]) if r["leads"] else float("nan"), axis=1)
     g["SQL%"] = g.apply(lambda r: (r["qualified"] / r["leads"] * 100.0) if r["leads"] else 0.0, axis=1)
+    if leads_lut is not None and not leads_lut.empty:
+        g = g.merge(leads_lut, on="unified_channel", how="left")
+        if "leads_from_leads" in g.columns:
+            _lv = pd.to_numeric(g["leads_from_leads"], errors="coerce").fillna(0)
+            g["leads"] = _lv.where(_lv > 0, pd.to_numeric(g["leads"], errors="coerce").fillna(0))
+        if "qualified_from_leads" in g.columns:
+            _qv = pd.to_numeric(g["qualified_from_leads"], errors="coerce").fillna(0)
+            g["qualified"] = _qv.where(_qv > 0, pd.to_numeric(g["qualified"], errors="coerce").fillna(0))
+        g = g.drop(columns=["leads_from_leads", "qualified_from_leads"], errors="ignore")
+        g["CPL"] = g.apply(lambda r: (r["spend"] / r["leads"]) if r["leads"] else float("nan"), axis=1)
+        g["SQL%"] = g.apply(lambda r: (r["qualified"] / r["leads"] * 100.0) if r["leads"] else 0.0, axis=1)
     return _pmc_order_channels_df(g)
 
 
@@ -9789,9 +9843,6 @@ def _pmc_render_charts(by_ch: pd.DataFrame, key_suffix: str) -> None:
     fig2.update_xaxes(title_text="Unified Channel", tickangle=-12, showgrid=False)
     st.plotly_chart(fig2, width="stretch", key=f"{key_suffix}_pmc_spend_tcv")
 
-    st.caption("Showing the two highest-signal channel charts only (volume and spend value).")
-
-
 def _render_page_performance_marketing_channels(
     df_loaded: pd.DataFrame,
     df_scope: pd.DataFrame,
@@ -9836,13 +9887,6 @@ def _render_page_performance_marketing_channels(
     m = _normalize_master_merge_frame(m)
 
     st.markdown('<div class="dash-master-surface">', unsafe_allow_html=True)
-    st.markdown(
-        f'<p class="mpo-perf-chart-title" style="margin-top:0;margin-bottom:10px;font-weight:400;">'
-        f'<a href="{html.escape(ME_XRAY_SPEND_SHEET_URL)}" target="_blank" rel="noopener noreferrer">'
-        "ME X-Ray source sheet</a> — from <strong>March</strong> onward; table shows <strong>Spend</strong> only by "
-        "<strong>Unified Channel</strong> (charts below still use full funnel fields when present).</p>",
-        unsafe_allow_html=True,
-    )
     _master_performance_table(
         m,
         key_suffix=f"{key_suffix}_ch_master",
@@ -9857,7 +9901,8 @@ def _render_page_performance_marketing_channels(
 
     st.markdown('<div class="dash-chart-stack">', unsafe_allow_html=True)
     st.markdown('<div class="looker-table-title">Channel charts</div>', unsafe_allow_html=True)
-    _pmc_render_charts(_pmc_by_channel_summary(u), key_suffix=key_suffix)
+    leads_lut = _pmc_leads_channel_lut_from_leads_sheet(df_loaded, df_scope)
+    _pmc_render_charts(_pmc_by_channel_summary(u, leads_lut=leads_lut), key_suffix=key_suffix)
     st.markdown("</div>", unsafe_allow_html=True)
 
 
@@ -9874,13 +9919,6 @@ def render_page_channels(df_loaded: pd.DataFrame, start_date: date, end_date: da
         st.caption("Spend & efficiency by source — filters below apply to this tab.")
         df, _ = _apply_sheet_filters(df_date, key_suffix=key_suffix, filters_in_row=True)
     else:
-        st.caption(
-            f"**Build `{DASHBOARD_BUILD}`** — if the main table has only five channels plus **Other** and **Middle East**, you are "
-            "on an **old deploy**: run `git pull` on **xray-marketing-dashboard-git** `main`, then restart Streamlit from that repo. "
-            f"Reporting window **{start_date:%d %b %Y}** → **{end_date:%d %b %Y}**. Spend uses the same **ME X-Ray workbook + "
-            f"Supermetrics** merge as **Marketing performance**; **Data scope** filters by **channel** and **month**. "
-            f"Source: [ME X-Ray spend]({ME_XRAY_SPEND_SHEET_URL})."
-        )
         spend_base = _mpo_spend_sheet_for_channel_master(df_loaded, start_date, end_date)
         if spend_base.empty:
             st.warning(
