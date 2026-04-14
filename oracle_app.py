@@ -9132,63 +9132,6 @@ def _mom_market_month_delta_table(df: pd.DataFrame, spend_df: Optional[pd.DataFr
     return out
 
 
-def _mom_middle_east_month_totals(df: pd.DataFrame, spend_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
-    """Dedicated month-level Middle East totals for MoM (visible summary block)."""
-    if df.empty or "month" not in df.columns:
-        return pd.DataFrame()
-    work = df.copy()
-    if "country" in work.columns:
-        _jk = work["country"].map(_country_join_key)
-        work = work.loc[_jk.isin(_MIDDLE_EAST_MARKET_KEYS) | _jk.eq("middle east")].copy()
-    if work.empty:
-        return pd.DataFrame()
-    if "closed_won" not in work.columns:
-        work["closed_won"] = 0
-    if "qualified" not in work.columns:
-        work["qualified"] = 0
-    out = (
-        work.groupby("month", as_index=False)
-        .agg(cw=("closed_won", "sum"), qualified=("qualified", "sum"))
-        .sort_values("month")
-    )
-    out["leads"] = [int(_lead_rows_count(work.loc[work["month"] == m])) for m in out["month"].tolist()]
-    out["sql_pct"] = out.apply(lambda r: (float(r["qualified"]) / float(r["leads"]) * 100.0) if r["leads"] else 0.0, axis=1)
-    out["q_win_pct"] = out.apply(
-        lambda r: (float(r["cw"]) / float(r["qualified"]) * 100.0) if r["qualified"] else 0.0,
-        axis=1,
-    )
-    if spend_df is not None and not spend_df.empty and "cost" in spend_df.columns and "month" in spend_df.columns:
-        sp = spend_df.copy()
-        if "country" in sp.columns:
-            sp = sp.loc[sp["country"].map(_country_join_key).isin(_MIDDLE_EAST_MARKET_KEYS) | sp["country"].map(_country_join_key).eq("middle east")].copy()
-        sp["month_key"] = sp["month"].map(_month_norm_key)
-        spg = sp.groupby("month_key", as_index=False)["cost"].sum().rename(columns={"cost": "spend"})
-        out["month_key"] = out["month"].map(_month_norm_key)
-        out = out.merge(spg, on="month_key", how="left")
-        out["spend"] = pd.to_numeric(out["spend"], errors="coerce").fillna(0.0)
-    else:
-        if "cost" in work.columns:
-            _spm = (
-                work.groupby(work["month"].map(_month_norm_key), as_index=False)["cost"]
-                .sum()
-                .rename(columns={"cost": "spend", "month": "month_key"})
-            )
-            out["month_key"] = out["month"].map(_month_norm_key)
-            out = out.merge(_spm, on="month_key", how="left")
-            out["spend"] = pd.to_numeric(out["spend"], errors="coerce").fillna(0.0)
-        else:
-            out["spend"] = 0.0
-    out["Month"] = out["month"].map(_month_norm_key)
-    out["CW"] = pd.to_numeric(out["cw"], errors="coerce").fillna(0).astype(int)
-    out["Leads"] = pd.to_numeric(out["leads"], errors="coerce").fillna(0).astype(int)
-    out["SQL %"] = pd.to_numeric(out["sql_pct"], errors="coerce").fillna(0.0).round(2)
-    out["Q win %"] = pd.to_numeric(out["q_win_pct"], errors="coerce").fillna(0.0).round(2)
-    out["Spend"] = pd.to_numeric(out["spend"], errors="coerce").fillna(0.0)
-    out = out[["Month", "Spend", "CW", "Leads", "SQL %", "Q win %"]].copy()
-    out = out.sort_values("Month", key=lambda s: s.map(_mpo_month_ts_for_sort), ascending=False).reset_index(drop=True)
-    return out
-
-
 def render_page_market_mom(
     df_loaded: pd.DataFrame,
     start_date: date,
@@ -9283,7 +9226,6 @@ def render_page_market_mom(
 
     monthly = _mom_monthly_series(df, spend_df=spend_df_mpo)
     mom_delta_tbl = _mom_market_month_delta_table(df, spend_df=spend_df_mpo)
-    me_month_tbl = _mom_middle_east_month_totals(df, spend_df=spend_df_mpo)
     if monthly.empty:
         st.info("No calendar months in this slice — check filters and month columns.")
         if not mom_delta_tbl.empty:
@@ -9326,13 +9268,17 @@ def render_page_market_mom(
         tbl_view = mom_delta_tbl.copy()
         if month_focus != "All months":
             tbl_view = tbl_view.loc[tbl_view["Month"].astype(str) == str(month_focus)].copy()
-            tbl_view = tbl_view.sort_values(sort_label, ascending=False)
+            _me_sort = tbl_view["Market"].astype(str).eq(_MIDDLE_EAST_REGION_LABEL)
+            tbl_view = tbl_view.assign(_me_sort=_me_sort).sort_values(["_me_sort", sort_label], ascending=[True, False]).drop(
+                columns=["_me_sort"]
+            )
         else:
             _month_rank = tbl_view["Month"].map(_mpo_month_ts_for_sort)
+            _me_sort = tbl_view["Market"].astype(str).eq(_MIDDLE_EAST_REGION_LABEL)
             tbl_view = (
-                tbl_view.assign(_month_rank=_month_rank)
-                .sort_values(["_month_rank", sort_label], ascending=[False, False])
-                .drop(columns=["_month_rank"])
+                tbl_view.assign(_month_rank=_month_rank, _me_sort=_me_sort)
+                .sort_values(["_month_rank", "_me_sort", sort_label], ascending=[False, True, False])
+                .drop(columns=["_month_rank", "_me_sort"])
             )
         if not tbl_view.empty:
             _metric_s = pd.to_numeric(tbl_view[sort_label], errors="coerce").fillna(0.0)
@@ -9409,8 +9355,14 @@ def render_page_market_mom(
             cw = int(pd.to_numeric(r["CW"], errors="coerce") or 0)
             sql = float(pd.to_numeric(r["SQL %"], errors="coerce") or 0.0)
             qwin = float(pd.to_numeric(r["Q win %"], errors="coerce") or 0.0)
+            _is_me = str(r["Market"]) == _MIDDLE_EAST_REGION_LABEL
+            _row_style = (
+                ' style="background:#f0fdfa;font-weight:700;border-top:1px solid #99f6e4;"'
+                if _is_me
+                else ""
+            )
             rows_html.append(
-                "<tr>"
+                f"<tr{_row_style}>"
                 f"<td>{html.escape(str(r['Month']))}</td>"
                 f"<td>{html.escape(str(r['Market']))}</td>"
                 f"<td>${spend:,.0f}</td>"
@@ -9439,24 +9391,6 @@ def render_page_market_mom(
         st.markdown(table_html, unsafe_allow_html=True)
     else:
         _master_performance_table(df, key_suffix=f"{key_suffix}_mom", section_title="")
-
-    if not me_month_tbl.empty:
-        st.markdown('<div class="looker-table-title">Middle East month totals</div>', unsafe_allow_html=True)
-        st.dataframe(
-            me_month_tbl,
-            width="stretch",
-            hide_index=True,
-            height=260,
-            column_config={
-                "Month": st.column_config.TextColumn("Month", width="small"),
-                "Spend": st.column_config.NumberColumn("Spend", format="$%,.0f", width="small"),
-                "CW": st.column_config.NumberColumn("Closed won", format="%d", width="small"),
-                "Leads": st.column_config.NumberColumn("Leads", format="%d", width="small"),
-                "SQL %": st.column_config.NumberColumn("SQL %", format="%.2f%%", width="small"),
-                "Q win %": st.column_config.NumberColumn("Q win %", format="%.2f%%", width="small"),
-            },
-            key=f"{key_suffix}_df_me_month_totals",
-        )
 
     _plot_mom = dict(template="plotly_white", paper_bgcolor="white", plot_bgcolor="white", font=dict(size=12))
     _xaxis = dict(showgrid=True, gridcolor="rgba(148,163,184,0.25)", title="")
