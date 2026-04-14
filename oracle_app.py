@@ -26,7 +26,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-15-mom-hero-dynamic"
+DASHBOARD_BUILD = "2026-04-15-mom-cell-color-arrows"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -9259,34 +9259,58 @@ def render_page_market_mom(
                 )
         compact_cols = ["Month", "Market", "Spend", "Δ Spend", "CW", "Δ CW", "SQL %", "Q win %"]
         compact_tbl = tbl_view[compact_cols].copy()
-        compact_tbl_fmt = compact_tbl.copy()
-        compact_tbl_fmt["Spend"] = pd.to_numeric(compact_tbl_fmt["Spend"], errors="coerce").fillna(0.0).map(lambda v: f"${v:,.0f}")
-        compact_tbl_fmt["Δ Spend"] = pd.to_numeric(compact_tbl_fmt["Δ Spend"], errors="coerce").fillna(0.0).map(
-            lambda v: f"{'GAIN ▲' if v > 0 else 'DROP ▼' if v < 0 else 'FLAT →'} ${abs(v):,.0f}"
+
+        def _delta_cell(v: float, money: bool) -> str:
+            if v > 0:
+                bg, fg, arrow = "#ecfdf5", "#166534", "▲"
+            elif v < 0:
+                bg, fg, arrow = "#fef2f2", "#991b1b", "▼"
+            else:
+                bg, fg, arrow = "#f8fafc", "#475569", "→"
+            txt = f"${abs(v):,.0f}" if money else f"{int(abs(v)):,}"
+            return (
+                f'<span style="display:inline-block;padding:2px 8px;border-radius:999px;'
+                f'background:{bg};color:{fg};font-weight:700;">{arrow} {txt}</span>'
+            )
+
+        rows_html: list[str] = []
+        for _, r in compact_tbl.head(120).iterrows():
+            spend = float(pd.to_numeric(r["Spend"], errors="coerce") or 0.0)
+            d_sp = float(pd.to_numeric(r["Δ Spend"], errors="coerce") or 0.0)
+            cw = int(pd.to_numeric(r["CW"], errors="coerce") or 0)
+            d_cw = float(pd.to_numeric(r["Δ CW"], errors="coerce") or 0.0)
+            sql = float(pd.to_numeric(r["SQL %"], errors="coerce") or 0.0)
+            qwin = float(pd.to_numeric(r["Q win %"], errors="coerce") or 0.0)
+            rows_html.append(
+                "<tr>"
+                f"<td>{html.escape(str(r['Month']))}</td>"
+                f"<td>{html.escape(str(r['Market']))}</td>"
+                f"<td>${spend:,.0f}</td>"
+                f"<td>{_delta_cell(d_sp, money=True)}</td>"
+                f"<td>{cw:,}</td>"
+                f"<td>{_delta_cell(d_cw, money=False)}</td>"
+                f"<td>{sql:.1f}%</td>"
+                f"<td>{qwin:.1f}%</td>"
+                "</tr>"
+            )
+        table_html = (
+            '<div style="max-height:360px;overflow:auto;border:1px solid #e2e8f0;border-radius:12px;background:#fff;">'
+            '<table style="width:100%;border-collapse:collapse;font-size:12px;">'
+            '<thead style="position:sticky;top:0;background:#f8fafc;z-index:1;">'
+            '<tr>'
+            '<th style="text-align:left;padding:8px;border-bottom:1px solid #e2e8f0;">Month</th>'
+            '<th style="text-align:left;padding:8px;border-bottom:1px solid #e2e8f0;">Market</th>'
+            '<th style="text-align:right;padding:8px;border-bottom:1px solid #e2e8f0;">Spend</th>'
+            '<th style="text-align:left;padding:8px;border-bottom:1px solid #e2e8f0;">Δ Spend</th>'
+            '<th style="text-align:right;padding:8px;border-bottom:1px solid #e2e8f0;">CW</th>'
+            '<th style="text-align:left;padding:8px;border-bottom:1px solid #e2e8f0;">Δ CW</th>'
+            '<th style="text-align:right;padding:8px;border-bottom:1px solid #e2e8f0;">SQL %</th>'
+            '<th style="text-align:right;padding:8px;border-bottom:1px solid #e2e8f0;">Q win %</th>'
+            "</tr></thead>"
+            f"<tbody>{''.join(rows_html)}</tbody>"
+            "</table></div>"
         )
-        compact_tbl_fmt["CW"] = pd.to_numeric(compact_tbl_fmt["CW"], errors="coerce").fillna(0).astype(int).map(str)
-        compact_tbl_fmt["Δ CW"] = pd.to_numeric(compact_tbl_fmt["Δ CW"], errors="coerce").fillna(0.0).map(
-            lambda v: f"{'GAIN ▲' if v > 0 else 'DROP ▼' if v < 0 else 'FLAT →'} {int(abs(v)):,}"
-        )
-        compact_tbl_fmt["SQL %"] = pd.to_numeric(compact_tbl_fmt["SQL %"], errors="coerce").fillna(0.0).map(lambda v: f"{v:.1f}%")
-        compact_tbl_fmt["Q win %"] = pd.to_numeric(compact_tbl_fmt["Q win %"], errors="coerce").fillna(0.0).map(lambda v: f"{v:.1f}%")
-        st.dataframe(
-            compact_tbl_fmt,
-            width="stretch",
-            hide_index=True,
-            height=320,
-            column_config={
-                "Month": st.column_config.TextColumn("Month", width="small"),
-                "Market": st.column_config.TextColumn("Market", width="medium"),
-                "Spend": st.column_config.TextColumn("Spend", width="small"),
-                "Δ Spend": st.column_config.TextColumn("Δ Spend", width="small"),
-                "CW": st.column_config.TextColumn("CW", width="small"),
-                "Δ CW": st.column_config.TextColumn("Δ CW", width="small"),
-                "SQL %": st.column_config.TextColumn("SQL %", width="small"),
-                "Q win %": st.column_config.TextColumn("Q win %", width="small"),
-            },
-            key=f"{key_suffix}_df_mom_delta",
-        )
+        st.markdown(table_html, unsafe_allow_html=True)
     else:
         _master_performance_table(df, key_suffix=f"{key_suffix}_mom", section_title="")
 
