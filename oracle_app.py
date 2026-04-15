@@ -10048,12 +10048,14 @@ def _pmc_render_charts(by_ch: pd.DataFrame, key_suffix: str) -> None:
     st.caption("**Closed won** on the right axis; lead rows and qualified leads on the left — same palette as Market MoM.")
     fig1 = make_subplots(specs=[[{"secondary_y": True}]])
     fig1.add_trace(
-        go.Bar(
+        go.Scatter(
             x=chans,
             y=cw,
             name="Closed won",
-            marker_color="#0f766e",
-            marker_line=dict(width=0),
+            mode="lines+markers",
+            line=dict(color="#0f766e", width=2.5),
+            marker=dict(size=8, color="#0f766e", line=dict(width=1, color="#fff")),
+            hovertemplate="<b>%{x}</b><br>Closed won: %{y:,.0f}<extra></extra>",
         ),
         secondary_y=True,
     )
@@ -10078,15 +10080,15 @@ def _pmc_render_charts(by_ch: pd.DataFrame, key_suffix: str) -> None:
         secondary_y=False,
     )
     fig1.update_layout(
-        title=dict(text="Closed won, leads, and qualified leads by channel", font=dict(size=14)),
+        title=dict(text="Lead rows and qualified leads by channel (with Closed won trend)", font=dict(size=14)),
         barmode="group",
         height=_chart_h,
         margin=_margin,
         legend=_legend_top,
         hovermode="x unified",
         hoverlabel=dict(font_size=12),
-        bargap=0.22,
-        bargroupgap=0.12,
+        bargap=0.3,
+        bargroupgap=0.18,
         **_plot_mom,
     )
     fig1.update_yaxes(
