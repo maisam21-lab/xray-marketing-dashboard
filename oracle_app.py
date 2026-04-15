@@ -9715,6 +9715,191 @@ def _pmc_by_channel_summary(u: pd.DataFrame, leads_lut: Optional[pd.DataFrame] =
     return _pmc_order_channels_df(g)
 
 
+def _pmc_delta_chip(v: float, *, money: bool = False) -> str:
+    n = float(pd.to_numeric(pd.Series([v]), errors="coerce").fillna(0).iloc[0])
+    if n > 0:
+        arr, bg, fg = "▲", "#ecfdf3", "#166534"
+    elif n < 0:
+        arr, bg, fg = "▼", "#fef2f2", "#991b1b"
+    else:
+        arr, bg, fg = "→", "#f8fafc", "#475569"
+    fmt = f"${abs(n):,.0f}" if money else f"{abs(n):,.0f}"
+    return (
+        f'<span style="display:inline-block;padding:2px 8px;border-radius:999px;'
+        f'background:{bg};color:{fg};font-weight:700;">{arr} {fmt}</span>'
+    )
+
+
+def _pmc_blended_channel_insights(
+    df_loaded: pd.DataFrame,
+    df_scope: pd.DataFrame,
+    u: pd.DataFrame,
+    by_ch: pd.DataFrame,
+) -> tuple[pd.DataFrame, list[str]]:
+    """Leadership-ready channel insight table + narrative bullets, blending Spend + Leads + Post Qual + CW tabs."""
+    if by_ch.empty:
+        return by_ch, []
+    base = by_ch.copy()
+    base["channel"] = base["unified_channel"].astype(str).str.strip()
+
+    # Blend Post-Qualification signals by channel when available.
+    post = _tab_subset_by_patterns(df_loaded, list(_POST_LEAD_SOURCE_TAB_PATTERNS))
+    post = _mpo_slice_by_dashboard_ref(post, df_scope) if not post.empty else post
+    if not post.empty:
+        post = _pmc_frame_with_metrics(post)
+        post["channel"] = post["unified_channel"].astype(str).str.strip()
+        pcol = "qualifying" if "qualifying" in post.columns else "qualified"
+        p = (
+            post.groupby("channel", as_index=False)
+            .agg(post_qual=(pcol, "sum"))
+            .assign(post_qual=lambda d: pd.to_numeric(d["post_qual"], errors="coerce").fillna(0))
+        )
+        base = base.merge(p, on="channel", how="left")
+    else:
+        base["post_qual"] = 0.0
+
+    # Optional RAW CW overlay by channel (fallback only where base CW is zero).
+    cw_tab = _tab_subset_by_patterns(df_loaded, list(_RAW_CW_TAB_PATTERNS))
+    cw_tab = _mpo_slice_by_dashboard_ref(cw_tab, df_scope) if not cw_tab.empty else cw_tab
+    if not cw_tab.empty:
+        cw_tab = _pmc_frame_with_metrics(cw_tab)
+        cw_tab["channel"] = cw_tab["unified_channel"].astype(str).str.strip()
+        c = cw_tab.groupby("channel", as_index=False).agg(cw_from_cw=("closed_won", "sum"))
+        c["cw_from_cw"] = pd.to_numeric(c["cw_from_cw"], errors="coerce").fillna(0)
+        base = base.merge(c, on="channel", how="left")
+    else:
+        base["cw_from_cw"] = 0.0
+
+    for col in ("spend", "cw", "qualified", "leads", "tcv", "post_qual", "cw_from_cw"):
+        base[col] = pd.to_numeric(base.get(col, 0), errors="coerce").fillna(0.0)
+    base["cw"] = base["cw_from_cw"].where((base["cw"] <= 0) & (base["cw_from_cw"] > 0), base["cw"])
+    base["sql_pct"] = base.apply(lambda r: (r["qualified"] / r["leads"] * 100.0) if r["leads"] else 0.0, axis=1)
+    base["qwin_pct"] = base.apply(lambda r: (r["cw"] / r["qualified"] * 100.0) if r["qualified"] else 0.0, axis=1)
+    base["cpcw"] = base.apply(lambda r: (r["spend"] / r["cw"]) if r["cw"] else float("nan"), axis=1)
+    base["cpsql"] = base.apply(lambda r: (r["spend"] / r["qualified"]) if r["qualified"] else float("nan"), axis=1)
+
+    tot_spend = float(base["spend"].sum())
+    tot_cw = float(base["cw"].sum())
+    tot_qual = float(base["qualified"].sum())
+    base["spend_share_pct"] = (base["spend"] / tot_spend * 100.0) if tot_spend else 0.0
+    base["cw_share_pct"] = (base["cw"] / tot_cw * 100.0) if tot_cw else 0.0
+    base["qual_share_pct"] = (base["qualified"] / tot_qual * 100.0) if tot_qual else 0.0
+
+    # MoM deltas (latest visible month vs previous) from in-scope spend frame.
+    months = sorted({str(_month_norm_key(m)) for m in u.get("month", pd.Series(dtype=object)).tolist() if _month_norm_key(m)})
+    cur_m = months[-1] if months else None
+    prev_m = months[-2] if len(months) > 1 else None
+    if cur_m and prev_m:
+        um = u.copy()
+        um["month_key"] = um["month"].map(_month_norm_key)
+        mm = (
+            um.loc[um["month_key"].isin([cur_m, prev_m])]
+            .groupby(["month_key", "unified_channel"], as_index=False)
+            .agg(spend=("cost", "sum"), cw=("closed_won", "sum"), qualified=("qualified", "sum"), leads=("cost", "count"))
+        )
+        cur = mm.loc[mm["month_key"].eq(cur_m)].rename(
+            columns={"unified_channel": "channel", "spend": "_sp_cur", "cw": "_cw_cur", "qualified": "_q_cur", "leads": "_l_cur"}
+        )
+        prv = mm.loc[mm["month_key"].eq(prev_m)].rename(
+            columns={"unified_channel": "channel", "spend": "_sp_prev", "cw": "_cw_prev", "qualified": "_q_prev", "leads": "_l_prev"}
+        )
+        base = base.merge(cur.drop(columns=["month_key"], errors="ignore"), on="channel", how="left")
+        base = base.merge(prv.drop(columns=["month_key"], errors="ignore"), on="channel", how="left")
+        for col in ("_sp_cur", "_cw_cur", "_q_cur", "_l_cur", "_sp_prev", "_cw_prev", "_q_prev", "_l_prev"):
+            base[col] = pd.to_numeric(base.get(col, 0), errors="coerce").fillna(0.0)
+        base["mom_spend_delta"] = base["_sp_cur"] - base["_sp_prev"]
+        base["mom_cw_delta"] = base["_cw_cur"] - base["_cw_prev"]
+        base["mom_sql_delta_pp"] = (
+            base.apply(lambda r: (r["_q_cur"] / r["_l_cur"] * 100.0) if r["_l_cur"] else 0.0, axis=1)
+            - base.apply(lambda r: (r["_q_prev"] / r["_l_prev"] * 100.0) if r["_l_prev"] else 0.0, axis=1)
+        )
+    else:
+        base["mom_spend_delta"] = 0.0
+        base["mom_cw_delta"] = 0.0
+        base["mom_sql_delta_pp"] = 0.0
+
+    base["eff_score"] = (
+        (base["cw_share_pct"] - base["spend_share_pct"])
+        + (base["qwin_pct"] * 0.20)
+        + (base["sql_pct"] * 0.10)
+    )
+    base = base.sort_values(["eff_score", "cw", "spend"], ascending=[False, False, False])
+
+    bullets: list[str] = []
+    if not base.empty:
+        top = base.iloc[0]
+        bullets.append(
+            f"{top['channel']}: {top['cw_share_pct']:.1f}% of CW on {top['spend_share_pct']:.1f}% of spend (best efficiency signal)."
+        )
+        cw_jump = base.sort_values("mom_cw_delta", ascending=False).iloc[0]
+        if float(cw_jump["mom_cw_delta"]) > 0:
+            bullets.append(
+                f"Fastest CW momentum: {cw_jump['channel']} ({cw_jump['mom_cw_delta']:+.0f} MoM) while spend moved {cw_jump['mom_spend_delta']:+.0f}."
+            )
+        spend_drag = base.sort_values("eff_score", ascending=True).iloc[0]
+        bullets.append(
+            f"Watchlist: {spend_drag['channel']} (spend share {spend_drag['spend_share_pct']:.1f}% vs CW share {spend_drag['cw_share_pct']:.1f}%)."
+        )
+    return base, bullets
+
+
+def _pmc_render_magic_insights(df_loaded: pd.DataFrame, df_scope: pd.DataFrame, u: pd.DataFrame, by_ch: pd.DataFrame) -> None:
+    if by_ch.empty:
+        return
+    table, bullets = _pmc_blended_channel_insights(df_loaded, df_scope, u, by_ch)
+    if table.empty:
+        return
+    st.markdown('<div class="dash-master-surface">', unsafe_allow_html=True)
+    st.markdown('<div class="looker-table-title">Channel intelligence snapshot</div>', unsafe_allow_html=True)
+    st.caption("Blended from Spend + Leads + Post-Qualification + Closed Won tabs, aligned to current channel/month scope.")
+    for b in bullets[:5]:
+        st.markdown(f"- {b}")
+
+    view = table.copy()
+    view["MoM Spend"] = view["mom_spend_delta"].map(lambda v: _pmc_delta_chip(v, money=True))
+    view["MoM CW"] = view["mom_cw_delta"].map(lambda v: _pmc_delta_chip(v, money=False))
+    view["MoM SQL pp"] = view["mom_sql_delta_pp"].map(lambda v: _pmc_delta_chip(v, money=False))
+    out = view[
+        [
+            "channel",
+            "spend",
+            "leads",
+            "qualified",
+            "post_qual",
+            "cw",
+            "sql_pct",
+            "qwin_pct",
+            "cpsql",
+            "cpcw",
+            "spend_share_pct",
+            "cw_share_pct",
+            "MoM Spend",
+            "MoM CW",
+            "MoM SQL pp",
+        ]
+    ].rename(
+        columns={
+            "channel": "Channel",
+            "spend": "Spend",
+            "leads": "Leads",
+            "qualified": "Qualified",
+            "post_qual": "Post-qual",
+            "cw": "Closed won",
+            "sql_pct": "SQL %",
+            "qwin_pct": "Q win %",
+            "cpsql": "CPSQL",
+            "cpcw": "CPCW",
+            "spend_share_pct": "Spend share %",
+            "cw_share_pct": "CW share %",
+        }
+    )
+    st.markdown(
+        out.to_html(index=False, escape=False, classes=["mpo-detail-table"]),
+        unsafe_allow_html=True,
+    )
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
 def _pmc_render_charts(by_ch: pd.DataFrame, key_suffix: str) -> None:
     """Cleaner channel chart pack: two core combos (volume and spend value)."""
     if by_ch.empty:
@@ -9899,10 +10084,13 @@ def _render_page_performance_marketing_channels(
     )
     st.markdown("</div>", unsafe_allow_html=True)
 
+    leads_lut = _pmc_leads_channel_lut_from_leads_sheet(df_loaded, df_scope)
+    by_ch = _pmc_by_channel_summary(u, leads_lut=leads_lut)
+    _pmc_render_magic_insights(df_loaded, df_scope, u, by_ch)
+
     st.markdown('<div class="dash-chart-stack">', unsafe_allow_html=True)
     st.markdown('<div class="looker-table-title">Channel charts</div>', unsafe_allow_html=True)
-    leads_lut = _pmc_leads_channel_lut_from_leads_sheet(df_loaded, df_scope)
-    _pmc_render_charts(_pmc_by_channel_summary(u, leads_lut=leads_lut), key_suffix=key_suffix)
+    _pmc_render_charts(by_ch, key_suffix=key_suffix)
     st.markdown("</div>", unsafe_allow_html=True)
 
 
