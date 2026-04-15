@@ -10092,17 +10092,22 @@ def _render_page_performance_marketing_channels(
 
 def render_page_channels(df_loaded: pd.DataFrame, start_date: date, end_date: date, *, inbound: bool) -> None:
     key_suffix = "inb" if inbound else "pmc"
-    # Spend pivots are by **month**; ``date`` alone often drops sheet rows (same fix as ``_filter_spend_for_dashboard`` elsewhere).
-    df_date = _filter_spend_for_dashboard(df_loaded, start_date, end_date)
-    if df_date.empty:
-        st.info("No rows in the selected date range.")
-        return
 
     _dashboard_tab_page_header("Inbound channels" if inbound else "Spend by channel")
     if inbound:
+        # Keep inbound source aligned with the same ME X-Ray spend source used by Spend-by-channel.
+        inbound_base = _mpo_spend_sheet_for_channel_master(df_loaded, start_date, end_date)
+        if inbound_base.empty:
+            st.warning("No ME X-Ray spend rows found for inbound channels in the selected date range.")
+            return
         st.caption("Spend & efficiency by source — filters below apply to this tab.")
-        df, _ = _apply_sheet_filters(df_date, key_suffix=key_suffix, filters_in_row=True)
+        df, _ = _apply_sheet_filters(inbound_base, key_suffix=key_suffix, filters_in_row=True)
     else:
+        # Spend pivots are by **month**; ``date`` alone often drops sheet rows (same fix as ``_filter_spend_for_dashboard`` elsewhere).
+        df_date = _filter_spend_for_dashboard(df_loaded, start_date, end_date)
+        if df_date.empty:
+            st.info("No rows in the selected date range.")
+            return
         spend_base = _mpo_spend_sheet_for_channel_master(df_loaded, start_date, end_date)
         if spend_base.empty:
             st.warning(
