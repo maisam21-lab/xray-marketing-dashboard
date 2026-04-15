@@ -10327,11 +10327,7 @@ def render_main_dashboard(
     with tab_mom:
         render_page_market_mom(df_loaded, start_date, end_date)
     with tab_channels:
-        ch_pmc, ch_inb = st.tabs(["Performance Marketing Channels", "All Inbound Channels"])
-        with ch_pmc:
-            render_page_channels(df_loaded, start_date, end_date, inbound=False)
-        with ch_inb:
-            render_page_channels(df_loaded, start_date, end_date, inbound=True)
+        render_page_channels(df_loaded, start_date, end_date, inbound=False)
 
 
 def main() -> None:
