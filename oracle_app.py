@@ -5054,25 +5054,19 @@ def _mpo_merge_pool_clicks_impressions_onto_spend(
 
 
 def _mpo_spend_sheet_for_channel_master(df_loaded: pd.DataFrame, start_date: date, end_date: date) -> pd.DataFrame:
-    """ME X-Ray workbook spend with Supermetrics clicks/impressions — same load path as **Marketing performance** spend."""
+    """Spend-by-channel source: force ME X-Ray workbook **gid=0 Spend** rows for channel/spend truth."""
     sheet_id, _ = _workbook_id_resolution()
-    spend_blended = _mpo_blend_paid_media_for_master_df(_rows_for_workbook_id(df_loaded, sheet_id))
-    if spend_blended.empty and not df_loaded.empty:
-        _dl = _rows_for_workbook_id(df_loaded, sheet_id)
-        if not _dl.empty:
-            spend_blended = _mpo_blend_paid_media_for_master_df(_dl)
-            if not spend_blended.empty:
-                spend_blended = _filter_by_date_range(spend_blended, start_date, end_date)
-    if spend_blended.empty:
+    _fp = _secret_fingerprint(_service_account_from_streamlit_secrets())
+    spend_gid0 = load_spend_gid0_normalized(sheet_id, _fp)
+    if spend_gid0.empty:
+        # Fallback to already-loaded rows only if gid=0 fetch fails.
+        spend_gid0 = _mpo_blend_paid_media_for_master_df(_rows_for_workbook_id(df_loaded, sheet_id))
+    if spend_gid0.empty:
         return pd.DataFrame()
-    spend_sheet_master = _filter_spend_for_dashboard(spend_blended, start_date, end_date)
+    spend_sheet_master = _filter_spend_for_dashboard(spend_gid0, start_date, end_date)
     if spend_sheet_master.empty:
-        spend_sheet_master = spend_blended.copy()
-    return _mpo_merge_pool_clicks_impressions_onto_spend(
-        spend_sheet_master,
-        df_loaded,
-        primary_sheet_id=sheet_id,
-    )
+        spend_sheet_master = spend_gid0.copy()
+    return spend_sheet_master
 
 
 def _mpo_render_paid_media_by_platform_summary(
@@ -9666,7 +9660,7 @@ def _pmc_leads_channel_lut_from_leads_sheet(df_loaded: pd.DataFrame, df_scope: p
     # Keep Leads lookup on the exact same selected channel scope as the Spend-by-channel tab.
     scope_channels = {
         str(x).strip()
-        for x in _pmc_unified_channel_series(df_scope).tolist()
+        for x in _pmc_sheet_channel_series(df_scope).tolist()
         if str(x).strip() and str(x).strip().lower() not in ("unknown", "nan", "none", "nat")
     }
     if scope_channels:
@@ -10045,6 +10039,8 @@ def _render_page_performance_marketing_channels(
         st.info("No spend rows on or after March for the selected window.")
         return
     u = _pmc_frame_with_metrics(df_scope.copy())
+    # Keep chart/intelligence channel bins identical to the month×channel master table.
+    u["unified_channel"] = _pmc_sheet_channel_series(u)
     spend_g = _spend_sheet_pivot_by_month_channel(u)
     if spend_g.empty:
         st.info("No spend to aggregate for this scope (check **month** and **channel** filters).")
