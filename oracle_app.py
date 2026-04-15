@@ -9653,7 +9653,9 @@ def _pmc_scoped_leads_rows_for_channel_metrics(df_loaded: pd.DataFrame, df_scope
     if leads.empty:
         return leads
     uc = leads.get("Unified Channel", pd.Series(index=leads.index, dtype=object)).astype(str).str.strip()
-    ch = uc.where(~uc.str.lower().isin(["", "unknown", "nan", "none", "nat"]), "Other")
+    usd = leads.get("UTM Source Detail", pd.Series(index=leads.index, dtype=object)).astype(str).str.strip()
+    ch = uc.where(~uc.str.lower().isin(["", "unknown", "nan", "none", "nat"]), usd)
+    ch = ch.where(~ch.str.lower().isin(["", "unknown", "nan", "none", "nat"]), "Other")
     leads["_pmc_ch"] = ch.map(_pmc_align_channel_label_for_xray_pivot)
     stxt = leads.get("lead_status_text", pd.Series(index=leads.index, dtype=object)).astype(str).str.strip().str.lower()
     if stxt.eq("").all():
@@ -9696,8 +9698,12 @@ def _pmc_by_channel_summary(u: pd.DataFrame, leads_lut: Optional[pd.DataFrame] =
     )
     if leads_lut is not None and not leads_lut.empty:
         g = g.merge(leads_lut, on="unified_channel", how="left")
-        g["leads"] = pd.to_numeric(g["leads_from_leads"], errors="coerce").fillna(0).astype(int)
-        g["qualified"] = pd.to_numeric(g["qualified_from_leads"], errors="coerce").fillna(0).astype(int)
+        _lv = pd.to_numeric(g["leads_from_leads"], errors="coerce").fillna(0)
+        _qv = pd.to_numeric(g["qualified_from_leads"], errors="coerce").fillna(0)
+        _lr = pd.to_numeric(g["spend_rows"], errors="coerce").fillna(0)
+        _qs = pd.to_numeric(g["qualified_spend"], errors="coerce").fillna(0)
+        g["leads"] = _lv.where(_lv > 0, _lr).astype(int)
+        g["qualified"] = _qv.where(_qv > 0, _qs).astype(int)
         g = g.drop(columns=["leads_from_leads", "qualified_from_leads"], errors="ignore")
     else:
         g["leads"] = pd.to_numeric(g["spend_rows"], errors="coerce").fillna(0).astype(int)
@@ -10228,11 +10234,13 @@ def _render_page_performance_marketing_channels(
 
     leads_lut = _pmc_leads_channel_lut_from_leads_sheet(df_loaded, df_scope)
     by_ch = _pmc_by_channel_summary(u, leads_lut=leads_lut)
+    chart_base, _ = _pmc_blended_channel_insights(df_loaded, df_scope, u, by_ch)
+    by_ch_chart = chart_base[["unified_channel", "spend", "leads", "qualified", "cw", "tcv"]].copy()
     _pmc_render_magic_insights(df_loaded, df_scope, u, by_ch)
 
     st.markdown('<div class="dash-chart-stack">', unsafe_allow_html=True)
     st.markdown('<div class="looker-table-title">Channel charts</div>', unsafe_allow_html=True)
-    _pmc_render_charts(by_ch, key_suffix=key_suffix)
+    _pmc_render_charts(by_ch_chart, key_suffix=key_suffix)
     st.markdown("</div>", unsafe_allow_html=True)
 
 
