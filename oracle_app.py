@@ -9343,10 +9343,21 @@ def render_page_market_mom(
 
     _plot_mom = dict(template="plotly_white", paper_bgcolor="white", plot_bgcolor="white", font=dict(size=12))
     _xaxis = dict(showgrid=True, gridcolor="rgba(148,163,184,0.25)", title="")
+    # Legend below plot keeps the in-chart title clear of the series and matches MoM / spend-channel charts.
+    _mom_chart_legend = dict(
+        orientation="h",
+        yanchor="top",
+        y=-0.22,
+        xanchor="center",
+        x=0.5,
+        font=dict(size=11),
+    )
+    _mom_chart_margin = dict(l=12, r=12, t=58, b=92)
     c_vol, c_qlt = st.columns(2)
     with c_vol:
         st.markdown('<div class="looker-table-title" style="margin-top:0;">Funnel volume</div>', unsafe_allow_html=True)
         st.caption("**Closed won** is the outcome; leads and qualified show whether the funnel can support it.")
+        st.markdown('<div style="height:14px" aria-hidden="true"></div>', unsafe_allow_html=True)
         fig_v = make_subplots(specs=[[{"secondary_y": True}]])
         _cw_max = float(pd.to_numeric(monthly["cw"], errors="coerce").fillna(0).max()) if "cw" in monthly.columns else 0.0
         _lq_max = float(
@@ -9383,11 +9394,16 @@ def render_page_market_mom(
             secondary_y=False,
         )
         fig_v.update_layout(
-            title=dict(text="Closed won, lead rows, and qualified leads by month", font=dict(size=14)),
+            title=dict(
+                text="Closed won, lead rows, and qualified leads by month",
+                font=dict(size=14),
+                pad=dict(t=4, b=14),
+            ),
             barmode="group",
+            height=420,
             **_plot_mom,
-            margin=dict(l=8, r=8, t=52, b=8),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
+            margin=_mom_chart_margin,
+            legend=_mom_chart_legend,
             yaxis=dict(
                 title="Leads / Qualified leads",
                 showgrid=True,
@@ -9401,6 +9417,7 @@ def render_page_market_mom(
     with c_qlt:
         st.markdown('<div class="looker-table-title" style="margin-top:0;">Conversion quality</div>', unsafe_allow_html=True)
         st.caption("SQL % and Q win % explain how efficiently qualified leads turn into **Closed won**.")
+        st.markdown('<div style="height:14px" aria-hidden="true"></div>', unsafe_allow_html=True)
         fig_q = go.Figure()
         fig_q.add_trace(
             go.Scatter(
@@ -9423,10 +9440,11 @@ def render_page_market_mom(
             )
         )
         fig_q.update_layout(
-            title=dict(text="SQL % and Q win % over time", font=dict(size=14)),
+            title=dict(text="SQL % and Q win % over time", font=dict(size=14), pad=dict(t=4, b=14)),
+            height=420,
             **_plot_mom,
-            margin=dict(l=8, r=8, t=52, b=8),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5),
+            margin=_mom_chart_margin,
+            legend=_mom_chart_legend,
             yaxis=dict(title="Percent", ticksuffix="%", showgrid=True, gridcolor="rgba(148,163,184,0.2)"),
             xaxis=_xaxis,
         )
@@ -10036,9 +10054,17 @@ def _pmc_render_charts(by_ch: pd.DataFrame, key_suffix: str) -> None:
         showgrid=True,
         gridcolor="rgba(148,163,184,0.25)",
     )
-    _legend_top = dict(orientation="h", yanchor="bottom", y=1.02, xanchor="center", x=0.5, font=dict(size=10))
+    _legend_below = dict(
+        orientation="h",
+        yanchor="top",
+        y=-0.22,
+        xanchor="center",
+        x=0.5,
+        font=dict(size=11),
+    )
     _chart_h = 420
-    _margin = dict(l=8, r=8, t=52, b=88)
+    _margin = dict(l=12, r=12, t=58, b=96)
+    _title_pad = dict(t=4, b=14)
 
     _cw_max = float(cw.max()) if len(cw) else 0.0
     _lq_max = float(max(leads.max() if len(leads) else 0.0, qual.max() if len(qual) else 0.0))
@@ -10046,6 +10072,7 @@ def _pmc_render_charts(by_ch: pd.DataFrame, key_suffix: str) -> None:
     # --- 1) Same visual language as MoM **Funnel volume** (grouped bars + dual Y).
     st.markdown('<div class="looker-table-title" style="margin-top:0;">Funnel volume by channel</div>', unsafe_allow_html=True)
     st.caption("**Closed won** on the right axis; lead rows and qualified leads on the left — same palette as Market MoM.")
+    st.markdown('<div style="height:14px" aria-hidden="true"></div>', unsafe_allow_html=True)
     fig1 = make_subplots(specs=[[{"secondary_y": True}]])
     fig1.add_trace(
         go.Scatter(
@@ -10080,11 +10107,15 @@ def _pmc_render_charts(by_ch: pd.DataFrame, key_suffix: str) -> None:
         secondary_y=False,
     )
     fig1.update_layout(
-        title=dict(text="Lead rows and qualified leads by channel (with Closed won trend)", font=dict(size=14)),
+        title=dict(
+            text="Lead rows and qualified leads by channel (with Closed won trend)",
+            font=dict(size=14),
+            pad=_title_pad,
+        ),
         barmode="group",
         height=_chart_h,
         margin=_margin,
-        legend=_legend_top,
+        legend=_legend_below,
         hovermode="x unified",
         hoverlabel=dict(font_size=12),
         bargap=0.3,
@@ -10116,6 +10147,7 @@ def _pmc_render_charts(by_ch: pd.DataFrame, key_suffix: str) -> None:
     # --- 2) Spend (main-tab teal) + TCV line (MoM secondary line indigo).
     st.markdown('<div class="looker-table-title" style="margin-top:8px;">Spend and TCV by channel</div>', unsafe_allow_html=True)
     st.caption("Spend uses the same teal accent as **Marketing performance** cost trends; TCV follows the MoM line style.")
+    st.markdown('<div style="height:14px" aria-hidden="true"></div>', unsafe_allow_html=True)
     _sp_max = float(spend.max()) if len(spend) else 0.0
     _tcv_max = float(tcv.max()) if len(tcv) else 0.0
     fig2 = make_subplots(specs=[[{"secondary_y": True}]])
@@ -10143,10 +10175,10 @@ def _pmc_render_charts(by_ch: pd.DataFrame, key_suffix: str) -> None:
         secondary_y=True,
     )
     fig2.update_layout(
-        title=dict(text="Spend and actual TCV by channel", font=dict(size=14)),
+        title=dict(text="Spend and actual TCV by channel", font=dict(size=14), pad=_title_pad),
         height=_chart_h,
         margin=_margin,
-        legend=_legend_top,
+        legend=_legend_below,
         hovermode="x unified",
         hoverlabel=dict(font_size=12),
         bargap=0.22,
