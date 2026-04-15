@@ -9383,7 +9383,7 @@ def render_page_market_mom(
             secondary_y=False,
         )
         fig_v.update_layout(
-            title=dict(text="Closed won, leads, and qualified leads by month", font=dict(size=14)),
+            title=dict(text="Closed won, lead rows, and qualified leads by month", font=dict(size=14)),
             barmode="group",
             **_plot_mom,
             margin=dict(l=8, r=8, t=52, b=8),
@@ -10247,7 +10247,7 @@ def _render_page_performance_marketing_channels(
 def render_page_channels(df_loaded: pd.DataFrame, start_date: date, end_date: date, *, inbound: bool) -> None:
     key_suffix = "inb" if inbound else "pmc"
 
-    _dashboard_tab_page_header("Inbound channels" if inbound else "Spend by channel")
+    _dashboard_tab_page_header("Inbound channels" if inbound else None)
     if inbound:
         # Keep inbound source aligned with the same ME X-Ray spend source used by Spend-by-channel.
         inbound_base = _mpo_spend_sheet_for_channel_master(df_loaded, start_date, end_date)
