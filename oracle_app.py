@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-15-channel-link-and-badge-removal"
+DASHBOARD_BUILD = "2026-04-15-global-ask-ai-fab"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -4674,6 +4674,41 @@ def _apply_channel_tab_data_scope(
 
     df = df.drop(columns=["_sch", "_sch_disp"], errors="ignore")
     return df, df.copy()
+
+
+def _pmc_spend_scope_for_ask_ai(
+    spend_df: pd.DataFrame,
+    *,
+    key_suffix: str,
+    reporting_start: date,
+    reporting_end: date,
+) -> pd.DataFrame:
+    """Same **Channels** / **Month** scope as Spend by channel, without rendering filter widgets (global Ask AI)."""
+    if spend_df.empty:
+        return spend_df.iloc[0:0].copy()
+    work = _pmc_dedupe_regional_vs_country_spend(_pmc_filter_middle_east(_pmc_frame_with_metrics(spend_df.copy())))
+    if work.empty:
+        work = _pmc_frame_with_metrics(spend_df.copy())
+    work["_sch"] = _pmc_sheet_channel_series(work)
+    work["_sch_disp"] = work["_sch"].map(_market_display_from_join_key).astype(str).str.strip()
+    _mpo_normalize_month_multiselect_state(key_suffix)
+    _mpo_normalize_channel_multiselect_state(key_suffix)
+    selected_ch = st.session_state.get(f"{key_suffix}_channel_scope", [_MPO_ALL_CHANNELS_SENTINEL])
+    selected_months = st.session_state.get(f"{key_suffix}_month", [_MPO_ALL_MONTHS_SENTINEL])
+    df = work.copy()
+    if not _mpo_channel_multiselect_is_all(selected_ch):
+        picks = set(_mpo_channel_scope_explicit(selected_ch))
+        if picks:
+            mch = df["_sch_disp"].isin(picks) | df["_sch"].astype(str).str.strip().isin(picks)
+            df = df.loc[mch].copy()
+    if not _mpo_month_multiselect_is_all(selected_months):
+        _mo_pick = _mpo_month_multiselect_explicit(selected_months)
+        if _mo_pick and "month" in df.columns:
+            allow_k = {str(_month_norm_key(m)) for m in _mo_pick if _month_norm_key(m)}
+            if allow_k:
+                km = df["month"].map(_month_norm_key)
+                df = df[km.isin(allow_k) | (km == "")]
+    return df.drop(columns=["_sch", "_sch_disp"], errors="ignore")
 
 
 def _mpo_apply_market_only(df_date: pd.DataFrame, key_suffix: str) -> pd.DataFrame:
@@ -10066,12 +10101,84 @@ def _ai_channel_scope_payload(by_ch_blended: pd.DataFrame, u_scope: pd.DataFrame
     return {"totals": totals, "channels": ch_rows, "months": month_keys[-12:]}
 
 
+def _ai_workbook_fallback_payload(df_loaded: pd.DataFrame, start_date: date, end_date: date) -> dict[str, Any]:
+    """When channel blend cannot run, still give the LLM workbook-level totals for the reporting window."""
+    df = _filter_spend_for_dashboard(df_loaded, start_date, end_date) if not df_loaded.empty else df_loaded
+    spend = float(pd.to_numeric(df["cost"], errors="coerce").fillna(0).sum()) if not df.empty and "cost" in df.columns else 0.0
+    cw = float(pd.to_numeric(df["closed_won"], errors="coerce").fillna(0).sum()) if not df.empty and "closed_won" in df.columns else 0.0
+    leads = float(_lead_rows_count(df)) if not df.empty else 0.0
+    qual = float(pd.to_numeric(df["qualified"], errors="coerce").fillna(0).sum()) if not df.empty and "qualified" in df.columns else 0.0
+    tcv = float(pd.to_numeric(df["tcv"], errors="coerce").fillna(0).sum()) if not df.empty and "tcv" in df.columns else 0.0
+    months: list[str] = []
+    if not df.empty and "month" in df.columns:
+        months = sorted(
+            {str(_month_norm_key(m)) for m in df["month"].tolist() if _month_norm_key(m)},
+            key=_mpo_month_ts_for_sort,
+        )
+    return {
+        "totals": {
+            "spend": spend,
+            "leads": leads,
+            "qualified": qual,
+            "closed_won": cw,
+            "tcv": tcv,
+        },
+        "channels": [],
+        "months": months[-12:],
+    }
+
+
+def _build_global_ask_ai_payload(df_loaded: pd.DataFrame, start_date: date, end_date: date) -> tuple[dict[str, Any], str]:
+    """Blended channel metrics when possible; otherwise workbook totals. Second value is a short scope caption."""
+    key_suffix = "pmc"
+    try:
+        spend_base = _mpo_spend_sheet_for_channel_master(df_loaded, start_date, end_date)
+        if spend_base.empty:
+            raise ValueError("no spend base")
+        df_scope = _pmc_spend_scope_for_ask_ai(
+            spend_base,
+            key_suffix=key_suffix,
+            reporting_start=start_date,
+            reporting_end=end_date,
+        )
+        _m0 = _pmc_floor_march_or_later(start_date)
+        df_scope = _pmc_filter_month_not_before(df_scope, _m0)
+        if df_scope.empty:
+            raise ValueError("empty after march floor")
+        u = _pmc_frame_with_metrics(df_scope.copy())
+        u["unified_channel"] = _pmc_sheet_channel_series(u)
+        leads_lut = _pmc_leads_channel_lut_from_leads_sheet(df_loaded, df_scope)
+        by_ch = _pmc_by_channel_summary(u, leads_lut=leads_lut)
+        chart_base, _ = _pmc_blended_channel_insights(df_loaded, df_scope, u, by_ch)
+        payload = _ai_channel_scope_payload(chart_base if not chart_base.empty else pd.DataFrame(), u)
+        payload["blend"] = "channel_master"
+        note = (
+            "Uses **Spend by channel** month/channel filters (that tab) and the same blended metrics as Channel intelligence."
+        )
+        return payload, note
+    except Exception:
+        pl = _ai_workbook_fallback_payload(df_loaded, start_date, end_date)
+        pl["blend"] = "workbook_fallback"
+        note = (
+            "Channel blend unavailable for this window — using workbook-level totals only. "
+            "Visit **Spend by channel** once if filters were never initialized."
+        )
+        return pl, note
+
+
 def _ai_rule_based_channel_insights(payload: dict[str, Any]) -> list[str]:
     """Deterministic backup insights when no LLM key is configured."""
     totals = payload.get("totals", {})
     ch = payload.get("channels", []) or []
     if not ch:
-        return ["No channel rows in this filter scope."]
+        sp = float(totals.get("spend") or 0)
+        if sp <= 0 and float(totals.get("closed_won") or 0) <= 0:
+            return ["No channel rows in this filter scope."]
+        return [
+            f"Workbook-scope totals: ${sp:,.0f} spend, {float(totals.get('leads') or 0):,.0f} leads, "
+            f"{float(totals.get('qualified') or 0):,.0f} qualified, {float(totals.get('closed_won') or 0):,.0f} closed won "
+            f"(channel breakdown unavailable — check filters or open **Spend by channel** once)."
+        ]
     out: list[str] = []
     top_spend = ch[0]
     out.append(
@@ -10147,16 +10254,22 @@ def _ai_openai_answer(question: str, payload: dict[str, Any], *, model: str, api
         return f"AI request failed. {str(e)}"
 
 
-def _pmc_render_ai_assistant(by_ch_blended: pd.DataFrame, u_scope: pd.DataFrame, key_suffix: str) -> None:
-    """Ask-the-dashboard panel backed by blended channel metrics for this scope."""
-    payload = _ai_channel_scope_payload(by_ch_blended, u_scope)
-    st.markdown('<div class="dash-master-surface">', unsafe_allow_html=True)
-    st.markdown('<div class="looker-table-title">Ask the dashboard (AI)</div>', unsafe_allow_html=True)
-    st.caption(
-        "Answers are constrained to the current scope and blended metrics (spend, leads, qualified, closed won, TCV). "
-        "If no AI key is configured, deterministic insight bullets are shown."
+@st.dialog("Ask AI", width="large")
+def _xray_ask_ai_dialog() -> None:
+    """Floating assistant: metrics come from session state refreshed each run."""
+    payload = st.session_state.get("_xray_ai_payload") or {}
+    note = str(st.session_state.get("_xray_ai_scope_note") or "")
+    st.markdown(
+        '<p style="margin:0 0 10px 0;font-size:10px;font-weight:600;letter-spacing:0.08em;color:#94a3b8;">AI GENERATED</p>',
+        unsafe_allow_html=True,
     )
-    for b in _ai_rule_based_channel_insights(payload)[:4]:
+    st.caption(
+        "Answers use only the JSON metrics below (blended where available). "
+        "Add `OPENAI_API_KEY` in app secrets for LLM wording; otherwise use the bullets."
+    )
+    if note:
+        st.caption(note)
+    for b in _ai_rule_based_channel_insights(payload)[:5]:
         st.markdown(f"- {b}")
 
     presets = [
@@ -10167,16 +10280,16 @@ def _pmc_render_ai_assistant(by_ch_blended: pd.DataFrame, u_scope: pd.DataFrame,
     ]
     c1, c2 = st.columns((1, 2))
     with c1:
-        preset = st.selectbox("Question template", presets, index=0, key=f"{key_suffix}_ai_q_preset")
+        preset = st.selectbox("Question template", presets, index=0, key="xray_ai_q_preset")
     with c2:
-        q_default = st.session_state.get(f"{key_suffix}_ai_q_text") or preset
+        q_default = st.session_state.get("xray_ai_q_text") or preset
         question = st.text_area(
             "Your question",
             value=q_default,
-            height=90,
-            key=f"{key_suffix}_ai_q_text",
+            height=100,
+            key="xray_ai_q_text",
         )
-    ask = st.button("Generate AI insight", key=f"{key_suffix}_ai_ask_btn", type="primary")
+    ask = st.button("Generate AI insight", key="xray_ai_ask_btn", type="primary")
     if ask:
         q = (question or "").strip()
         if not q:
@@ -10187,15 +10300,31 @@ def _pmc_render_ai_assistant(by_ch_blended: pd.DataFrame, u_scope: pd.DataFrame,
             if not api_key:
                 st.info(
                     "AI key not configured. Add `OPENAI_API_KEY` in Streamlit secrets to enable LLM answers. "
-                    "Showing deterministic insights above."
+                    "Deterministic bullets above still apply."
                 )
             else:
                 with st.spinner("Generating insight..."):
                     answer = _ai_openai_answer(q, payload, model=model, api_key=api_key)
                 st.markdown("**AI answer**")
                 st.markdown(answer)
-                st.caption(f"Model: `{model}` · scope months: {', '.join(payload.get('months') or ['n/a'])}")
-    st.markdown("</div>", unsafe_allow_html=True)
+                st.caption(
+                    f"Model: `{model}` · blend: `{payload.get('blend', 'n/a')}` · months: "
+                    f"{', '.join(payload.get('months') or ['n/a'])}"
+                )
+
+
+def _render_xray_floating_ask_ai(df_loaded: pd.DataFrame, start_date: date, end_date: date) -> None:
+    """Fixed-position Ask AI control — available on every tab (same scope logic as blended channel metrics)."""
+    payload, note = _build_global_ask_ai_payload(df_loaded, start_date, end_date)
+    st.session_state["_xray_ai_payload"] = payload
+    st.session_state["_xray_ai_scope_note"] = note
+    if st.button(
+        "Ask AI",
+        key="xray_ask_ai_fab",
+        type="secondary",
+        help="Insights for the current data scope (blended metrics when available)",
+    ):
+        _xray_ask_ai_dialog()
 
 
 def _pmc_by_ch_top_n_for_charts(by_ch: pd.DataFrame, *, max_channels: int = 6) -> pd.DataFrame:
@@ -10475,7 +10604,6 @@ def _render_page_performance_marketing_channels(
     chart_base, _ = _pmc_blended_channel_insights(df_loaded, df_scope, u, by_ch)
     by_ch_chart = chart_base[["unified_channel", "spend", "leads", "qualified", "cw", "tcv"]].copy()
     _pmc_render_magic_insights(df_loaded, df_scope, u, by_ch)
-    _pmc_render_ai_assistant(chart_base, u, key_suffix=key_suffix)
 
     st.markdown('<div class="dash-chart-stack">', unsafe_allow_html=True)
     st.markdown('<div class="looker-table-title">Channel charts</div>', unsafe_allow_html=True)
@@ -10721,6 +10849,8 @@ def render_main_dashboard(
         render_page_market_mom(df_loaded, start_date, end_date)
     with tab_channels:
         render_page_channels(df_loaded, start_date, end_date, inbound=False)
+
+    _render_xray_floating_ask_ai(df_loaded, start_date, end_date)
 
 
 def main() -> None:
@@ -11896,6 +12026,32 @@ def main() -> None:
     /* Replace red-like status accents with app green palette */
     [data-testid="stAlert"] svg, [data-testid="stNotification"] svg { color: #4f8483 !important; fill: #4f8483 !important; }
     [data-baseweb="tag"][class*="danger"], [class*="danger"], [class*="error"] { color: #19766f !important; }
+    /* Global Ask AI — fixed “ghost” FAB (all tabs); key matches st.button key=xray_ask_ai_fab */
+    .st-key-xray_ask_ai_fab {
+        position: fixed !important;
+        bottom: 1.25rem !important;
+        right: 1.25rem !important;
+        z-index: 99999 !important;
+        width: auto !important;
+        pointer-events: auto !important;
+    }
+    .st-key-xray_ask_ai_fab button {
+        border-radius: 999px !important;
+        background: rgba(255,255,255,0.94) !important;
+        border: 1px solid #e2e8f0 !important;
+        box-shadow: 0 8px 28px rgba(15,23,42,0.12) !important;
+        color: #334155 !important;
+        font-weight: 600 !important;
+        padding: 0.55rem 1.15rem !important;
+        backdrop-filter: blur(6px);
+    }
+    .st-key-xray_ask_ai_fab button:hover {
+        border-color: #cbd5e1 !important;
+        box-shadow: 0 10px 32px rgba(15,23,42,0.16) !important;
+    }
+    section.main .block-container {
+        padding-bottom: 4.5rem !important;
+    }
     </style>
     """,
         unsafe_allow_html=True,
