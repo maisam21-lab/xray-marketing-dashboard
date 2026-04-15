@@ -14,6 +14,8 @@ import json
 import os
 import re
 import base64
+import urllib.error
+import urllib.request
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Literal, Optional, Union
@@ -9994,6 +9996,208 @@ def _pmc_render_magic_insights(df_loaded: pd.DataFrame, df_scope: pd.DataFrame, 
     st.markdown("</div>", unsafe_allow_html=True)
 
 
+def _ai_openai_key_from_secrets_or_env() -> str:
+    """Read OpenAI key from Streamlit secrets first, then env."""
+    try:
+        s = st.secrets
+        for k in ("OPENAI_API_KEY", "openai_api_key"):
+            v = (s.get(k) or "").strip()
+            if v:
+                return v
+    except Exception:
+        pass
+    return (os.environ.get("OPENAI_API_KEY") or "").strip()
+
+
+def _ai_openai_model_from_secrets_or_env() -> str:
+    """Allow model override without code edits."""
+    try:
+        s = st.secrets
+        for k in ("OPENAI_MODEL", "openai_model"):
+            v = (s.get(k) or "").strip()
+            if v:
+                return v
+    except Exception:
+        pass
+    return (os.environ.get("OPENAI_MODEL") or "").strip() or "gpt-4o-mini"
+
+
+def _ai_channel_scope_payload(by_ch_blended: pd.DataFrame, u_scope: pd.DataFrame) -> dict[str, Any]:
+    """Compact numeric payload for LLM answers bound to current dashboard scope."""
+    if by_ch_blended.empty:
+        return {
+            "totals": {"spend": 0.0, "leads": 0.0, "qualified": 0.0, "closed_won": 0.0, "tcv": 0.0},
+            "channels": [],
+            "months": [],
+        }
+    d = by_ch_blended.copy()
+    for c in ("spend", "leads", "qualified", "cw", "tcv", "sql_pct", "qwin_pct", "mom_spend_delta", "mom_cw_delta"):
+        d[c] = pd.to_numeric(d.get(c, 0), errors="coerce").fillna(0.0)
+    d = d.sort_values("spend", ascending=False)
+    ch_rows: list[dict[str, Any]] = []
+    for _, r in d.head(10).iterrows():
+        ch_rows.append(
+            {
+                "channel": str(r.get("channel") or r.get("unified_channel") or ""),
+                "spend": float(r.get("spend") or 0.0),
+                "leads": float(r.get("leads") or 0.0),
+                "qualified": float(r.get("qualified") or 0.0),
+                "closed_won": float(r.get("cw") or 0.0),
+                "tcv": float(r.get("tcv") or 0.0),
+                "sql_pct": float(r.get("sql_pct") or 0.0),
+                "qwin_pct": float(r.get("qwin_pct") or 0.0),
+                "mom_spend_delta": float(r.get("mom_spend_delta") or 0.0),
+                "mom_cw_delta": float(r.get("mom_cw_delta") or 0.0),
+            }
+        )
+    totals = {
+        "spend": float(d["spend"].sum()),
+        "leads": float(d["leads"].sum()),
+        "qualified": float(d["qualified"].sum()),
+        "closed_won": float(d["cw"].sum()),
+        "tcv": float(d["tcv"].sum()),
+    }
+    month_keys = []
+    if not u_scope.empty and "month" in u_scope.columns:
+        month_keys = sorted(
+            {str(_month_norm_key(m)) for m in u_scope["month"].tolist() if _month_norm_key(m)},
+            key=_mpo_month_ts_for_sort,
+        )
+    return {"totals": totals, "channels": ch_rows, "months": month_keys[-12:]}
+
+
+def _ai_rule_based_channel_insights(payload: dict[str, Any]) -> list[str]:
+    """Deterministic backup insights when no LLM key is configured."""
+    totals = payload.get("totals", {})
+    ch = payload.get("channels", []) or []
+    if not ch:
+        return ["No channel rows in this filter scope."]
+    out: list[str] = []
+    top_spend = ch[0]
+    out.append(
+        f"Top spend channel is {top_spend['channel']} (${top_spend['spend']:,.0f}) with {top_spend['closed_won']:,.0f} closed won."
+    )
+    best_qw = max(ch, key=lambda r: float(r.get("qwin_pct") or 0.0))
+    out.append(
+        f"Best Q win % is {best_qw['channel']} at {best_qw['qwin_pct']:.1f}% (CW / qualified)."
+    )
+    worst_eff = min(ch, key=lambda r: (float(r.get("closed_won") or 0.0) / max(float(r.get("spend") or 0.0), 1.0)))
+    out.append(
+        f"Efficiency watchlist: {worst_eff['channel']} has low CW per spend (CW {worst_eff['closed_won']:,.0f} on ${worst_eff['spend']:,.0f})."
+    )
+    if float(totals.get("qualified") or 0) > 0:
+        out.append(
+            f"Scope totals: ${float(totals.get('spend') or 0):,.0f} spend, {float(totals.get('leads') or 0):,.0f} leads, "
+            f"{float(totals.get('qualified') or 0):,.0f} qualified, {float(totals.get('closed_won') or 0):,.0f} closed won."
+        )
+    return out
+
+
+def _ai_openai_answer(question: str, payload: dict[str, Any], *, model: str, api_key: str) -> str:
+    """Call OpenAI Chat Completions via HTTPS without extra package dependency."""
+    system_prompt = (
+        "You are a marketing analytics copilot. Use only the provided JSON metrics. "
+        "Never invent numbers. Keep the answer concise and actionable with bullets. "
+        "When recommending actions, tie each action to a metric from the payload."
+    )
+    user_prompt = (
+        "Question:\n"
+        f"{question.strip()}\n\n"
+        "Metrics payload (current dashboard filter scope):\n"
+        f"{json.dumps(payload, ensure_ascii=True)}\n\n"
+        "Return:\n"
+        "- 3-6 bullets\n"
+        "- include exact numbers when referenced\n"
+        "- include a short confidence line at the end."
+    )
+    body = {
+        "model": model,
+        "temperature": 0.2,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+    }
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/chat/completions",
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=45) as resp:
+            raw = resp.read().decode("utf-8")
+        parsed = json.loads(raw)
+        choices = parsed.get("choices") or []
+        if not choices:
+            return "No model response was returned."
+        msg = choices[0].get("message") or {}
+        txt = str(msg.get("content") or "").strip()
+        return txt or "Model returned an empty response."
+    except urllib.error.HTTPError as e:
+        try:
+            detail = e.read().decode("utf-8")
+        except Exception:
+            detail = str(e)
+        return f"AI request failed (HTTP {e.code}). {detail[:400]}"
+    except Exception as e:
+        return f"AI request failed. {str(e)}"
+
+
+def _pmc_render_ai_assistant(by_ch_blended: pd.DataFrame, u_scope: pd.DataFrame, key_suffix: str) -> None:
+    """Ask-the-dashboard panel backed by blended channel metrics for this scope."""
+    payload = _ai_channel_scope_payload(by_ch_blended, u_scope)
+    st.markdown('<div class="dash-master-surface">', unsafe_allow_html=True)
+    st.markdown('<div class="looker-table-title">Ask the dashboard (AI)</div>', unsafe_allow_html=True)
+    st.caption(
+        "Answers are constrained to the current scope and blended metrics (spend, leads, qualified, closed won, TCV). "
+        "If no AI key is configured, deterministic insight bullets are shown."
+    )
+    for b in _ai_rule_based_channel_insights(payload)[:4]:
+        st.markdown(f"- {b}")
+
+    presets = [
+        "Why did closed won change in this scope?",
+        "Which channels are over-invested vs conversion quality?",
+        "What should we scale and what should we cut next month?",
+        "Where do leads look strong but downstream conversion is weak?",
+    ]
+    c1, c2 = st.columns((1, 2))
+    with c1:
+        preset = st.selectbox("Question template", presets, index=0, key=f"{key_suffix}_ai_q_preset")
+    with c2:
+        q_default = st.session_state.get(f"{key_suffix}_ai_q_text") or preset
+        question = st.text_area(
+            "Your question",
+            value=q_default,
+            height=90,
+            key=f"{key_suffix}_ai_q_text",
+        )
+    ask = st.button("Generate AI insight", key=f"{key_suffix}_ai_ask_btn", type="primary")
+    if ask:
+        q = (question or "").strip()
+        if not q:
+            st.warning("Type a question first.")
+        else:
+            api_key = _ai_openai_key_from_secrets_or_env()
+            model = _ai_openai_model_from_secrets_or_env()
+            if not api_key:
+                st.info(
+                    "AI key not configured. Add `OPENAI_API_KEY` in Streamlit secrets to enable LLM answers. "
+                    "Showing deterministic insights above."
+                )
+            else:
+                with st.spinner("Generating insight..."):
+                    answer = _ai_openai_answer(q, payload, model=model, api_key=api_key)
+                st.markdown("**AI answer**")
+                st.markdown(answer)
+                st.caption(f"Model: `{model}` · scope months: {', '.join(payload.get('months') or ['n/a'])}")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
 def _pmc_by_ch_top_n_for_charts(by_ch: pd.DataFrame, *, max_channels: int = 6) -> pd.DataFrame:
     """Keep charts readable: top channels by spend, roll the rest into **Other** (table above stays full)."""
     if by_ch.empty or len(by_ch) <= max_channels:
@@ -10271,6 +10475,7 @@ def _render_page_performance_marketing_channels(
     chart_base, _ = _pmc_blended_channel_insights(df_loaded, df_scope, u, by_ch)
     by_ch_chart = chart_base[["unified_channel", "spend", "leads", "qualified", "cw", "tcv"]].copy()
     _pmc_render_magic_insights(df_loaded, df_scope, u, by_ch)
+    _pmc_render_ai_assistant(chart_base, u, key_suffix=key_suffix)
 
     st.markdown('<div class="dash-chart-stack">', unsafe_allow_html=True)
     st.markdown('<div class="looker-table-title">Channel charts</div>', unsafe_allow_html=True)
