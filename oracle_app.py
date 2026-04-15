@@ -11331,30 +11331,18 @@ def main() -> None:
     )
     refreshed_text = datetime.now().strftime("Refreshed %I:%M %p").lstrip("0")
     st.markdown('<div class="looker-header">', unsafe_allow_html=True)
-    hl, hr = st.columns([8, 2])
-    with hl:
-        st.markdown(
-            f"""
-        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;row-gap:6px;">
-          {logo_html}
-          <h1 class="looker-header-title">KitchenPark Marketing Dashboard</h1>
-          <span class="live-pill">● Live</span>
-          <span class="refresh-note">{refreshed_text}</span>
-          <span class="deploy-build" title="Deploy / cache bust string. If this does not match the latest commit, Streamlit Cloud may not have pulled GitHub yet — redeploy or reboot the app.">Build: {html.escape(DASHBOARD_BUILD)}</span>
-        </div>
-        """,
-            unsafe_allow_html=True,
-        )
-    with hr:
-        b1, b2, b3 = st.columns([1, 1, 1])
-        with b1:
-            if st.button("?", key="hdr_help_btn"):
-                st.info("Help panel coming soon.")
-        with b2:
-            st.button("MA", key="hdr_user_btn")
-        with b3:
-            if st.button("↗", key="hdr_signout_btn"):
-                st.info("Signed out.")
+    st.markdown(
+        f"""
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;row-gap:6px;">
+      {logo_html}
+      <h1 class="looker-header-title">KitchenPark Marketing Dashboard</h1>
+      <span class="live-pill">● Live</span>
+      <span class="refresh-note">{refreshed_text}</span>
+      <span class="deploy-build" title="Deploy / cache bust string. If this does not match the latest commit, Streamlit Cloud may not have pulled GitHub yet — redeploy or reboot the app.">Build: {html.escape(DASHBOARD_BUILD)}</span>
+    </div>
+    """,
+        unsafe_allow_html=True,
+    )
     st.markdown("</div>", unsafe_allow_html=True)
 
     _start = date(2025, 1, 1)
