@@ -9638,41 +9638,43 @@ def _pmc_order_channels_df(by_ch: pd.DataFrame) -> pd.DataFrame:
     return d
 
 
-def _pmc_leads_channel_lut_from_leads_sheet(df_loaded: pd.DataFrame, df_scope: pd.DataFrame) -> pd.DataFrame:
-    """Qualified/lead counts by Unified Channel from Leads sheet (Lead Status-based qualified)."""
+def _pmc_scoped_leads_rows_for_channel_metrics(df_loaded: pd.DataFrame, df_scope: pd.DataFrame) -> pd.DataFrame:
+    """Leads-sheet rows scoped to the same **market + month** slice as spend (not filtered to spend channel names)."""
     if df_loaded.empty or "source_tab" not in df_loaded.columns:
-        return pd.DataFrame(columns=["unified_channel", "leads_from_leads", "qualified_from_leads"])
+        return pd.DataFrame()
     s = df_loaded["source_tab"].astype(str).str.lower()
     mask = pd.Series(False, index=df_loaded.index)
     for pat in _MPO_LEAD_TAB_PATTERNS:
         mask = mask | s.str.contains(pat.lower(), na=False, regex=True)
     leads = df_loaded.loc[mask].copy()
     if leads.empty:
-        return pd.DataFrame(columns=["unified_channel", "leads_from_leads", "qualified_from_leads"])
+        return leads
     leads = _mpo_slice_by_dashboard_ref(leads, df_scope)
     if leads.empty:
-        return pd.DataFrame(columns=["unified_channel", "leads_from_leads", "qualified_from_leads"])
-
+        return leads
     uc = leads.get("Unified Channel", pd.Series(index=leads.index, dtype=object)).astype(str).str.strip()
-    ch = uc
-    ch = ch.where(~ch.str.lower().isin(["", "unknown", "nan", "none", "nat"]), "Other")
+    ch = uc.where(~uc.str.lower().isin(["", "unknown", "nan", "none", "nat"]), "Other")
     leads["_pmc_ch"] = ch.map(_pmc_align_channel_label_for_xray_pivot)
-    # Keep Leads lookup on the exact same selected channel scope as the Spend-by-channel tab.
-    scope_channels = {
-        str(x).strip()
-        for x in _pmc_sheet_channel_series(df_scope).tolist()
-        if str(x).strip() and str(x).strip().lower() not in ("unknown", "nan", "none", "nat")
-    }
-    if scope_channels:
-        leads = leads.loc[leads["_pmc_ch"].astype(str).str.strip().isin(scope_channels)].copy()
-        if leads.empty:
-            return pd.DataFrame(columns=["unified_channel", "leads_from_leads", "qualified_from_leads"])
-
     stxt = leads.get("lead_status_text", pd.Series(index=leads.index, dtype=object)).astype(str).str.strip().str.lower()
     if stxt.eq("").all():
         stxt = leads.get("Lead Status", pd.Series(index=leads.index, dtype=object)).astype(str).str.strip().str.lower()
     leads["_is_qualified"] = stxt.eq("qualified").astype(int)
+    if "month" in leads.columns:
+        leads["_month_key"] = leads["month"].map(_month_norm_key).astype(str).str.strip()
+        leads = leads.loc[
+            leads["_month_key"].ne("")
+            & ~leads["_month_key"].str.lower().isin(["nan", "nat", "none"])
+        ].copy()
+    else:
+        leads["_month_key"] = ""
+    return leads
 
+
+def _pmc_leads_channel_lut_from_leads_sheet(df_loaded: pd.DataFrame, df_scope: pd.DataFrame) -> pd.DataFrame:
+    """Qualified / lead **counts** by Unified Channel from the Leads sheet only (Lead Status = Qualified)."""
+    leads = _pmc_scoped_leads_rows_for_channel_metrics(df_loaded, df_scope)
+    if leads.empty:
+        return pd.DataFrame(columns=["unified_channel", "leads_from_leads", "qualified_from_leads"])
     lut = (
         leads.groupby("_pmc_ch", as_index=False)
         .agg(leads_from_leads=("_pmc_ch", "count"), qualified_from_leads=("_is_qualified", "sum"))
@@ -9687,26 +9689,26 @@ def _pmc_by_channel_summary(u: pd.DataFrame, leads_lut: Optional[pd.DataFrame] =
         .agg(
             spend=("cost", "sum"),
             cw=("closed_won", "sum"),
-            qualified=("qualified", "sum"),
+            qualified_spend=("qualified", "sum"),
             tcv=("tcv", "sum"),
-            rows=("cost", "count"),
+            spend_rows=("cost", "count"),
         )
-        .rename(columns={"rows": "leads"})
     )
-    g["CPL"] = g.apply(lambda r: (r["spend"] / r["leads"]) if r["leads"] else float("nan"), axis=1)
-    g["SQL%"] = g.apply(lambda r: (r["qualified"] / r["leads"] * 100.0) if r["leads"] else 0.0, axis=1)
     if leads_lut is not None and not leads_lut.empty:
         g = g.merge(leads_lut, on="unified_channel", how="left")
-        if "leads_from_leads" in g.columns:
-            _lv = pd.to_numeric(g["leads_from_leads"], errors="coerce").fillna(0)
-            g["leads"] = _lv.where(_lv > 0, pd.to_numeric(g["leads"], errors="coerce").fillna(0))
-        if "qualified_from_leads" in g.columns:
-            _qv = pd.to_numeric(g["qualified_from_leads"], errors="coerce").fillna(0)
-            g["qualified"] = _qv.where(_qv > 0, pd.to_numeric(g["qualified"], errors="coerce").fillna(0))
+        g["leads"] = pd.to_numeric(g["leads_from_leads"], errors="coerce").fillna(0).astype(int)
+        g["qualified"] = pd.to_numeric(g["qualified_from_leads"], errors="coerce").fillna(0).astype(int)
         g = g.drop(columns=["leads_from_leads", "qualified_from_leads"], errors="ignore")
-        g["CPL"] = g.apply(lambda r: (r["spend"] / r["leads"]) if r["leads"] else float("nan"), axis=1)
-        g["SQL%"] = g.apply(lambda r: (r["qualified"] / r["leads"] * 100.0) if r["leads"] else 0.0, axis=1)
-    return _pmc_order_channels_df(g)
+    else:
+        g["leads"] = pd.to_numeric(g["spend_rows"], errors="coerce").fillna(0).astype(int)
+        g["qualified"] = pd.to_numeric(g["qualified_spend"], errors="coerce").fillna(0).astype(int)
+    g = g.drop(columns=["qualified_spend"], errors="ignore")
+    g["CPL"] = g.apply(lambda r: (r["spend"] / r["leads"]) if r["leads"] else float("nan"), axis=1)
+    g["SQL%"] = g.apply(
+        lambda r: (r["qualified"] / r["leads"] * 100.0) if r["leads"] else float("nan"),
+        axis=1,
+    )
+    return _pmc_order_channels_df(g.drop(columns=["spend_rows"], errors="ignore"))
 
 
 def _pmc_delta_chip(v: float, *, money: bool = False) -> str:
@@ -9722,6 +9724,34 @@ def _pmc_delta_chip(v: float, *, money: bool = False) -> str:
         f'<span style="display:inline-block;padding:2px 8px;border-radius:999px;'
         f'background:{bg};color:{fg};font-weight:700;">{arr} {fmt}</span>'
     )
+
+
+def _pmc_insights_fmt_money(v: Any) -> str:
+    x = pd.to_numeric(v, errors="coerce")
+    if pd.isna(x):
+        return "—"
+    return f"${float(x):,.0f}"
+
+
+def _pmc_insights_fmt_int(v: Any) -> str:
+    x = pd.to_numeric(v, errors="coerce")
+    if pd.isna(x):
+        return "—"
+    return f"{int(round(float(x))):,}"
+
+
+def _pmc_insights_fmt_pct(v: Any) -> str:
+    x = pd.to_numeric(v, errors="coerce")
+    if pd.isna(x):
+        return "—"
+    return f"{float(x):.1f}%"
+
+
+def _pmc_insights_mom_sql_chip(v: Any) -> str:
+    x = pd.to_numeric(v, errors="coerce")
+    if pd.isna(x):
+        return '<span style="color:#64748b;font-weight:600;">—</span>'
+    return _pmc_delta_chip(float(x), money=False)
 
 
 def _pmc_blended_channel_insights(
@@ -9766,9 +9796,15 @@ def _pmc_blended_channel_insights(
 
     for col in ("spend", "cw", "qualified", "leads", "tcv", "post_qual", "cw_from_cw"):
         base[col] = pd.to_numeric(base.get(col, 0), errors="coerce").fillna(0.0)
-    base["cw"] = base["cw_from_cw"].where((base["cw"] <= 0) & (base["cw_from_cw"] > 0), base["cw"])
-    base["sql_pct"] = base.apply(lambda r: (r["qualified"] / r["leads"] * 100.0) if r["leads"] else 0.0, axis=1)
-    base["qwin_pct"] = base.apply(lambda r: (r["cw"] / r["qualified"] * 100.0) if r["qualified"] else 0.0, axis=1)
+    base["cw"] = pd.concat([base["cw"], base["cw_from_cw"]], axis=1).max(axis=1)
+    base["sql_pct"] = base.apply(
+        lambda r: (r["qualified"] / r["leads"] * 100.0) if r["leads"] else float("nan"),
+        axis=1,
+    )
+    base["qwin_pct"] = base.apply(
+        lambda r: (r["cw"] / r["qualified"] * 100.0) if r["qualified"] else float("nan"),
+        axis=1,
+    )
     base["cpcw"] = base.apply(lambda r: (r["spend"] / r["cw"]) if r["cw"] else float("nan"), axis=1)
     base["cpsql"] = base.apply(lambda r: (r["spend"] / r["qualified"]) if r["qualified"] else float("nan"), axis=1)
 
@@ -9779,7 +9815,7 @@ def _pmc_blended_channel_insights(
     base["cw_share_pct"] = (base["cw"] / tot_cw * 100.0) if tot_cw else 0.0
     base["qual_share_pct"] = (base["qualified"] / tot_qual * 100.0) if tot_qual else 0.0
 
-    # MoM deltas (latest visible month vs previous) from in-scope spend frame.
+    # MoM: spend + CW from spend rows; SQL pp from **Leads sheet** (latest vs prior month in scope).
     months = sorted({str(_month_norm_key(m)) for m in u.get("month", pd.Series(dtype=object)).tolist() if _month_norm_key(m)})
     cur_m = months[-1] if months else None
     prev_m = months[-2] if len(months) > 1 else None
@@ -9789,42 +9825,67 @@ def _pmc_blended_channel_insights(
         mm = (
             um.loc[um["month_key"].isin([cur_m, prev_m])]
             .groupby(["month_key", "unified_channel"], as_index=False)
-            .agg(spend=("cost", "sum"), cw=("closed_won", "sum"), qualified=("qualified", "sum"), leads=("cost", "count"))
+            .agg(spend=("cost", "sum"), cw=("closed_won", "sum"))
         )
         cur = mm.loc[mm["month_key"].eq(cur_m)].rename(
-            columns={"unified_channel": "channel", "spend": "_sp_cur", "cw": "_cw_cur", "qualified": "_q_cur", "leads": "_l_cur"}
+            columns={"unified_channel": "channel", "spend": "_sp_cur", "cw": "_cw_cur"}
         )
         prv = mm.loc[mm["month_key"].eq(prev_m)].rename(
-            columns={"unified_channel": "channel", "spend": "_sp_prev", "cw": "_cw_prev", "qualified": "_q_prev", "leads": "_l_prev"}
+            columns={"unified_channel": "channel", "spend": "_sp_prev", "cw": "_cw_prev"}
         )
         base = base.merge(cur.drop(columns=["month_key"], errors="ignore"), on="channel", how="left")
         base = base.merge(prv.drop(columns=["month_key"], errors="ignore"), on="channel", how="left")
-        for col in ("_sp_cur", "_cw_cur", "_q_cur", "_l_cur", "_sp_prev", "_cw_prev", "_q_prev", "_l_prev"):
+        for col in ("_sp_cur", "_cw_cur", "_sp_prev", "_cw_prev"):
             base[col] = pd.to_numeric(base.get(col, 0), errors="coerce").fillna(0.0)
         base["mom_spend_delta"] = base["_sp_cur"] - base["_sp_prev"]
         base["mom_cw_delta"] = base["_cw_cur"] - base["_cw_prev"]
-        base["mom_sql_delta_pp"] = (
-            base.apply(lambda r: (r["_q_cur"] / r["_l_cur"] * 100.0) if r["_l_cur"] else 0.0, axis=1)
-            - base.apply(lambda r: (r["_q_prev"] / r["_l_prev"] * 100.0) if r["_l_prev"] else 0.0, axis=1)
-        )
+
+        lr_mom = _pmc_scoped_leads_rows_for_channel_metrics(df_loaded, df_scope)
+
+        def _sql_pct_for_month(mk: str) -> pd.DataFrame:
+            if lr_mom.empty or "_month_key" not in lr_mom.columns:
+                return pd.DataFrame(columns=["channel", "_sql"])
+            sub = lr_mom.loc[lr_mom["_month_key"].eq(str(mk))]
+            if sub.empty:
+                return pd.DataFrame(columns=["channel", "_sql"])
+            gg = sub.groupby("_pmc_ch", as_index=False).agg(_n=("_pmc_ch", "count"), _q=("_is_qualified", "sum"))
+            gg["_sql"] = gg.apply(
+                lambda r: (r["_q"] / r["_n"] * 100.0) if r["_n"] else float("nan"),
+                axis=1,
+            )
+            return gg.rename(columns={"_pmc_ch": "channel"})[["channel", "_sql"]]
+
+        cur_sql = _sql_pct_for_month(str(cur_m))
+        prev_sql = _sql_pct_for_month(str(prev_m))
+        msql = cur_sql.merge(prev_sql, on="channel", how="outer", suffixes=("_c", "_p"))
+        if not msql.empty:
+            msql["mom_sql_delta_pp"] = pd.to_numeric(msql["_sql_c"], errors="coerce") - pd.to_numeric(
+                msql["_sql_p"], errors="coerce"
+            )
+            base = base.merge(msql[["channel", "mom_sql_delta_pp"]], on="channel", how="left")
+        else:
+            base["mom_sql_delta_pp"] = float("nan")
     else:
         base["mom_spend_delta"] = 0.0
         base["mom_cw_delta"] = 0.0
-        base["mom_sql_delta_pp"] = 0.0
+        base["mom_sql_delta_pp"] = float("nan")
 
-    base["eff_score"] = (
-        (base["cw_share_pct"] - base["spend_share_pct"])
-        + (base["qwin_pct"] * 0.20)
-        + (base["sql_pct"] * 0.10)
-    )
+    _sql_eff = pd.to_numeric(base["sql_pct"], errors="coerce").fillna(0.0)
+    _qw_eff = pd.to_numeric(base["qwin_pct"], errors="coerce").fillna(0.0)
+    base["eff_score"] = (base["cw_share_pct"] - base["spend_share_pct"]) + (_qw_eff * 0.20) + (_sql_eff * 0.10)
     base = base.sort_values(["eff_score", "cw", "spend"], ascending=[False, False, False])
 
     bullets: list[str] = []
     if not base.empty:
         top = base.iloc[0]
-        bullets.append(
-            f"{top['channel']}: {top['cw_share_pct']:.1f}% of CW on {top['spend_share_pct']:.1f}% of spend (best efficiency signal)."
-        )
+        if tot_cw > 1e-9:
+            bullets.append(
+                f"{top['channel']}: {top['cw_share_pct']:.1f}% of CW on {top['spend_share_pct']:.1f}% of spend (efficiency read)."
+            )
+        else:
+            bullets.append(
+                "No **closed won** in this channel scope — confirm RAW CW / month filters, or that deals map to **Unified Channel**."
+            )
         cw_jump = base.sort_values("mom_cw_delta", ascending=False).iloc[0]
         if float(cw_jump["mom_cw_delta"]) > 0:
             bullets.append(
@@ -9845,14 +9906,29 @@ def _pmc_render_magic_insights(df_loaded: pd.DataFrame, df_scope: pd.DataFrame, 
         return
     st.markdown('<div class="dash-master-surface">', unsafe_allow_html=True)
     st.markdown('<div class="looker-table-title">Channel intelligence snapshot</div>', unsafe_allow_html=True)
-    st.caption("Blended from Spend + Leads + Post-Qualification + Closed Won tabs, aligned to current channel/month scope.")
+    st.caption(
+        "**Spend** = Σ cost (ME X-Ray scope). **Leads** / **Qualified** = Leads-sheet rows; **Qualified** uses Lead Status. "
+        "**Post-qual** = Σ qualifying (post-qual tab). **Closed won** = higher of spend-row CW and RAW CW tab, by channel. "
+        "**SQL %** = Qualified / Leads; **Q win %** = Closed won / Qualified. **MoM SQL pp** = Leads-sheet SQL % (latest vs prior month)."
+    )
     for b in bullets[:5]:
         st.markdown(f"- {b}")
 
     view = table.copy()
     view["MoM Spend"] = view["mom_spend_delta"].map(lambda v: _pmc_delta_chip(v, money=True))
     view["MoM CW"] = view["mom_cw_delta"].map(lambda v: _pmc_delta_chip(v, money=False))
-    view["MoM SQL pp"] = view["mom_sql_delta_pp"].map(lambda v: _pmc_delta_chip(v, money=False))
+    view["MoM SQL pp"] = view["mom_sql_delta_pp"].map(_pmc_insights_mom_sql_chip)
+    view["spend"] = view["spend"].map(_pmc_insights_fmt_money)
+    view["leads"] = view["leads"].map(_pmc_insights_fmt_int)
+    view["qualified"] = view["qualified"].map(_pmc_insights_fmt_int)
+    view["post_qual"] = view["post_qual"].map(_pmc_insights_fmt_int)
+    view["cw"] = view["cw"].map(_pmc_insights_fmt_int)
+    view["sql_pct"] = view["sql_pct"].map(_pmc_insights_fmt_pct)
+    view["qwin_pct"] = view["qwin_pct"].map(_pmc_insights_fmt_pct)
+    view["cpsql"] = view["cpsql"].map(_pmc_insights_fmt_money)
+    view["cpcw"] = view["cpcw"].map(_pmc_insights_fmt_money)
+    view["spend_share_pct"] = view["spend_share_pct"].map(_pmc_insights_fmt_pct)
+    view["cw_share_pct"] = view["cw_share_pct"].map(_pmc_insights_fmt_pct)
     out = view[
         [
             "channel",
@@ -9875,9 +9951,9 @@ def _pmc_render_magic_insights(df_loaded: pd.DataFrame, df_scope: pd.DataFrame, 
         columns={
             "channel": "Channel",
             "spend": "Spend",
-            "leads": "Leads",
+            "leads": "Leads (sheet)",
             "qualified": "Qualified",
-            "post_qual": "Post-qual",
+            "post_qual": "Post-qual (Σ)",
             "cw": "Closed won",
             "sql_pct": "SQL %",
             "qwin_pct": "Q win %",
