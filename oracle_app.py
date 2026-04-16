@@ -10396,11 +10396,11 @@ def _xray_render_ai_panel() -> None:
         if "xray_ai_input" not in st.session_state:
             st.session_state["xray_ai_input"] = ""
         if "xray_ai_mode" not in st.session_state:
-            st.session_state["xray_ai_mode"] = "عام"
+            st.session_state["xray_ai_mode"] = "General"
         if "xray_ai_model_pick" not in st.session_state:
             st.session_state["xray_ai_model_pick"] = "o3"
 
-        st.markdown('<div class="xray-ai-panel-title">اسأل بصيرة</div>', unsafe_allow_html=True)
+        st.markdown('<div class="xray-ai-panel-title">Ask KitchenPark AI</div>', unsafe_allow_html=True)
         h1, h2, h3, h4 = st.columns([2.5, 1.2, 0.4, 0.4], gap="small")
         with h2:
             st.selectbox("Model", ["o3", "GPT-4o", "GPT-5", "GPT-5.2"], key="xray_ai_model_pick", label_visibility="collapsed")
@@ -10413,9 +10413,9 @@ def _xray_render_ai_panel() -> None:
 
         if not st.session_state["xray_ai_messages"]:
             intro = (
-                "اهلا! انا **بصيرة**، مساعد تحليلات التسويق.\n\n"
-                f"الوضع الحالي: **{st.session_state.get('xray_ai_mode','عام')}**.\n\n"
-                "اسألني عن التسرب، جودة القنوات، تحسين الدفع، وخطة زيادة التحويل."
+                "Hi! I'm **KitchenPark AI**, your marketing analytics assistant.\n\n"
+                f"I'm currently in **{st.session_state.get('xray_ai_mode','General')}** mode.\n\n"
+                "Ask about drop-offs, channel quality, checkout friction, and conversion optimization."
             )
             st.session_state["xray_ai_messages"].append({"role": "assistant", "content": intro})
 
@@ -10428,9 +10428,14 @@ def _xray_render_ai_panel() -> None:
 
         in1, in2, in3 = st.columns([4.4, 1.7, 0.8], gap="small")
         with in1:
-            st.text_input("Ask", key="xray_ai_input", label_visibility="collapsed", placeholder="اكتب سؤالك التسويقي...")
+            st.text_input("Ask", key="xray_ai_input", label_visibility="collapsed", placeholder="Ask anything about your dashboard...")
         with in2:
-            analyzer_mode = st.selectbox("Mode", ["عام", "مدفوع", "قمع", "CMO"], key="xray_ai_mode", label_visibility="collapsed")
+            analyzer_mode = st.selectbox(
+                "Mode",
+                ["General", "Paid media optimizer", "Funnel doctor", "CMO brief"],
+                key="xray_ai_mode",
+                label_visibility="collapsed",
+            )
         with in3:
             send_clicked = st.button("➤", key="xray_ai_send_btn", type="primary")
 
@@ -10456,9 +10461,7 @@ def _xray_render_ai_panel() -> None:
                     payload,
                     model=model,
                     api_key=api_key,
-                    mode={"عام": "General", "مدفوع": "Paid media optimizer", "قمع": "Funnel doctor", "CMO": "CMO brief"}.get(
-                        analyzer_mode, "General"
-                    ),
+                    mode=analyzer_mode,
                     history=st.session_state.get("xray_ai_messages", [])[:-1],
                 )
             footer = (
@@ -10476,7 +10479,7 @@ def _render_xray_floating_ask_ai(df_loaded: pd.DataFrame, start_date: date, end_
     if "xray_ai_payload_ready" not in st.session_state:
         st.session_state["xray_ai_payload_ready"] = False
     if st.button(
-        "اسأل بصيرة",
+        "Ask KitchenPark AI",
         key="xray_ask_ai_fab",
         type="secondary",
         help="Insights for the current data scope (blended metrics when available)",
