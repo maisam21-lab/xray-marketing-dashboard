@@ -10031,17 +10031,36 @@ def _pmc_render_magic_insights(df_loaded: pd.DataFrame, df_scope: pd.DataFrame, 
     st.markdown("</div>", unsafe_allow_html=True)
 
 
-def _ai_openai_key_from_secrets_or_env() -> str:
-    """Read OpenAI key from Streamlit secrets first, then env."""
+def _ai_openai_key_and_source() -> tuple[str, str]:
+    """Read OpenAI key from common secret/env names and report source for debugging."""
     try:
         s = st.secrets
-        for k in ("OPENAI_API_KEY", "openai_api_key"):
+        for k in ("OPENAI_API_KEY", "openai_api_key", "OPENAI_KEY", "openai_key", "OPEN_AI_API_KEY"):
             v = (s.get(k) or "").strip()
             if v:
-                return v
+                return v, f"secrets.{k}"
+        # Also support nested secret blocks like [openai] api_key="..."
+        for parent in ("openai", "OPENAI"):
+            try:
+                blk = s.get(parent)  # type: ignore[assignment]
+                if hasattr(blk, "get"):
+                    v = (blk.get("api_key") or blk.get("OPENAI_API_KEY") or "").strip()
+                    if v:
+                        return v, f"secrets.{parent}.api_key"
+            except Exception:
+                pass
     except Exception:
         pass
-    return (os.environ.get("OPENAI_API_KEY") or "").strip()
+    for k in ("OPENAI_API_KEY", "openai_api_key", "OPENAI_KEY", "OPEN_AI_API_KEY"):
+        v = (os.environ.get(k) or "").strip()
+        if v:
+            return v, f"env.{k}"
+    return "", "none"
+
+
+def _ai_openai_key_from_secrets_or_env() -> str:
+    """Backward-compatible getter used by existing call sites."""
+    return _ai_openai_key_and_source()[0]
 
 
 def _ai_openai_model_from_secrets_or_env() -> str:
@@ -10259,6 +10278,7 @@ def _xray_ask_ai_dialog() -> None:
     """Floating assistant: metrics come from session state refreshed each run."""
     payload = st.session_state.get("_xray_ai_payload") or {}
     note = str(st.session_state.get("_xray_ai_scope_note") or "")
+    _k, _k_src = _ai_openai_key_and_source()
     st.markdown(
         '<p style="margin:0 0 10px 0;font-size:10px;font-weight:600;letter-spacing:0.08em;color:#94a3b8;">AI GENERATED</p>',
         unsafe_allow_html=True,
@@ -10269,6 +10289,7 @@ def _xray_ask_ai_dialog() -> None:
     )
     if note:
         st.caption(note)
+    st.caption(f"AI key detected: {'yes' if _k else 'no'} ({_k_src})")
     for b in _ai_rule_based_channel_insights(payload)[:5]:
         st.markdown(f"- {b}")
 
@@ -10295,7 +10316,7 @@ def _xray_ask_ai_dialog() -> None:
         if not q:
             st.warning("Type a question first.")
         else:
-            api_key = _ai_openai_key_from_secrets_or_env()
+            api_key = _k or _ai_openai_key_from_secrets_or_env()
             model = _ai_openai_model_from_secrets_or_env()
             if not api_key:
                 st.info(
