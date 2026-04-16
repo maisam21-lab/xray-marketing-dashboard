@@ -9300,12 +9300,6 @@ def render_page_market_mom(
         return
 
     st.markdown('<div class="mom-page-wrap">', unsafe_allow_html=True)
-    st.caption(
-        "**North star: Closed Won.** In paid media you usually expect **spend and Closed Won to move together** — more investment "
-        "should help produce more wins when the funnel is healthy. The **ideal** case is **more Closed Won with less spend** "
-        "(efficiency): strong organic/inbound, better targeting, or higher conversion. Watch for **edge cases**: spend up but "
-        "wins flat (weak conversion, lag, or wasted reach) — use **Q win % / SQL %** and **Δ CW** vs **Δ Spend** to spot that."
-    )
 
     _sel_mk = st.session_state.get(f"{_mpo_filter_key}_market", [_MPO_ALL_GEO_SENTINEL])
     _mk_only = _mpo_market_scope_countries_only(_sel_mk)
