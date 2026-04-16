@@ -5708,8 +5708,12 @@ def _mom_executive_snapshot_scorecards_html(
     sql_pct: float,
     qwin_pct: float,
     spend_per_cw: float,
+    mom_spend_delta: float = 0.0,
+    mom_spend_current: float = 0.0,
+    mom_spend_prior: float = 0.0,
+    mom_spend_compare_ok: bool = False,
 ) -> str:
-    """Market MoM headline tiles — **same card components** as Marketing performance (no period comparison)."""
+    """Market MoM headline tiles — same card components as Marketing performance; MoM spend vs prior month when ≥2 months."""
     _delta_off = _kpi_funnel_delta_html(0.0, 0.0, disabled=True)
     d = 0.0
 
@@ -5741,6 +5745,28 @@ def _mom_executive_snapshot_scorecards_html(
         value_s=spend_k,
         delta_html=_delta_off,
         sub_html=sub_spend,
+        delay=_step(),
+        hue="cw",
+        biz_signal="na",
+    )
+    if mom_spend_compare_ok:
+        spend_mom_delta_html = _kpi_funnel_delta_html(
+            float(mom_spend_current), float(mom_spend_prior), vs_label="prior month", disabled=False
+        )
+        mom_val_s = f"${mom_spend_delta:+,.0f}"
+        mom_sub = _kpi_funnel_sub_row("Current spend", f"${mom_spend_current:,.0f}") + _kpi_funnel_sub_row(
+            "Prior spend", f"${mom_spend_prior:,.0f}"
+        )
+    else:
+        spend_mom_delta_html = _delta_off
+        mom_val_s = "—"
+        mom_sub = _kpi_funnel_sub_row("MoM", "Needs 2+ calendar months in scope")
+    card_mom_spend = _kpi_funnel_pastel_card_html(
+        icon="↕",
+        title="MoM Spend Change",
+        value_s=mom_val_s,
+        delta_html=spend_mom_delta_html,
+        sub_html=mom_sub,
         delay=_step(),
         hue="cw",
         biz_signal="na",
@@ -5802,7 +5828,7 @@ def _mom_executive_snapshot_scorecards_html(
         f'<div class="kpi-funnel-section">'
         f'<div class="kpi-funnel-section-title kpi-funnel-section-title--cw">{title_esc}</div>'
         f'<div class="kpi-funnel-grid">'
-        f"{card_spend}{card_cw}{card_leads}{card_sql}{card_qwin}{card_cpcw}"
+        f"{card_spend}{card_mom_spend}{card_cw}{card_leads}{card_sql}{card_qwin}{card_cpcw}"
         f"</div></div></div>"
     )
 
@@ -5813,9 +5839,8 @@ def _pmc_spend_executive_scorecards_html(
     active_channels: int,
     top_channel: str,
     top_share_pct: float,
-    mom_spend_delta: float,
 ) -> str:
-    """Spend-by-channel hero cards using the same pastel scorecard style as main KPI tiles."""
+    """Spend-by-channel hero cards (ranking / concentration). MoM spend change lives on **Market MoM**."""
     d = 0.0
 
     def _step() -> float:
@@ -5823,16 +5848,14 @@ def _pmc_spend_executive_scorecards_html(
         d += 0.035
         return d
 
-    prev_spend = float(total_spend - mom_spend_delta)
-    spend_delta = _kpi_funnel_delta_html(float(total_spend), prev_spend, vs_label="prior month", disabled=False)
     _delta_off = _kpi_funnel_delta_html(0.0, 0.0, disabled=True)
 
     card_spend = _kpi_funnel_pastel_card_html(
         icon="💲",
         title="Total Spend",
         value_s=f"${total_spend:,.0f}",
-        delta_html=spend_delta,
-        sub_html=_kpi_funnel_sub_row("MoM delta", f"${mom_spend_delta:+,.0f}") + _kpi_funnel_sub_row("Scope", "Spend by channel"),
+        delta_html=_delta_off,
+        sub_html=_kpi_funnel_sub_row("Scope", "Spend by channel") + _kpi_funnel_sub_row("MoM spend", "Market MoM tab"),
         delay=_step(),
         hue="cw",
     )
@@ -5863,20 +5886,11 @@ def _pmc_spend_executive_scorecards_html(
         delay=_step(),
         hue="leads",
     )
-    card_mom = _kpi_funnel_pastel_card_html(
-        icon="↕",
-        title="MoM Spend Change",
-        value_s=f"${mom_spend_delta:+,.0f}",
-        delta_html=spend_delta,
-        sub_html=_kpi_funnel_sub_row("Current spend", f"${total_spend:,.0f}") + _kpi_funnel_sub_row("Prior spend", f"${prev_spend:,.0f}"),
-        delay=_step(),
-        hue="cw",
-    )
     return (
         '<div class="kpi-funnel-wrap kpi-funnel-wrap--pastel-scorecard mpo-kpi-shell">'
         '<div class="kpi-funnel-section">'
         '<div class="kpi-funnel-section-title kpi-funnel-section-title--cw">Spend snapshot — by channel</div>'
-        f'<div class="kpi-funnel-grid">{card_spend}{card_active}{card_top}{card_share}{card_mom}</div>'
+        f'<div class="kpi-funnel-grid">{card_spend}{card_active}{card_top}{card_share}</div>'
         "</div></div>"
     )
 
@@ -9338,6 +9352,18 @@ def render_page_market_mom(
     qwin_all = (total_cw / total_qual * 100.0) if total_qual else 0.0
     cpcw_all = (total_spend / total_cw) if total_cw else 0.0
 
+    monthly = _mom_monthly_series(df, spend_df=spend_df_mpo)
+    _mom_d = 0.0
+    _mom_cur = 0.0
+    _mom_prev = 0.0
+    _mom_ok = False
+    if not monthly.empty and len(monthly) >= 2:
+        _ms = monthly.sort_values("month_key")
+        _mom_cur = float(_ms.iloc[-1]["spend"])
+        _mom_prev = float(_ms.iloc[-2]["spend"])
+        _mom_d = _mom_cur - _mom_prev
+        _mom_ok = True
+
     st.markdown(
         _mom_executive_snapshot_scorecards_html(
             scope_lbl=scope_lbl,
@@ -9348,6 +9374,10 @@ def render_page_market_mom(
             sql_pct=sql_all,
             qwin_pct=qwin_all,
             spend_per_cw=cpcw_all,
+            mom_spend_delta=_mom_d,
+            mom_spend_current=_mom_cur,
+            mom_spend_prior=_mom_prev,
+            mom_spend_compare_ok=_mom_ok,
         ),
         unsafe_allow_html=True,
     )
@@ -9377,7 +9407,6 @@ def render_page_market_mom(
         "Charts tie spend to the funnel that should feed **Closed Won**."
     )
 
-    monthly = _mom_monthly_series(df, spend_df=spend_df_mpo)
     mom_delta_tbl = _mom_market_month_delta_table(df, spend_df=spend_df_mpo)
     if monthly.empty:
         st.info("No calendar months in this slice — check filters and month columns.")
@@ -10910,14 +10939,12 @@ def _render_page_performance_marketing_channels(
     top_row = d.iloc[0]
     top_channel = str(top_row["channel"])
     top_share = float(top_row["share_pct"])
-    mom_spend_change = float(pd.to_numeric(d.get("mom_spend_delta", 0), errors="coerce").fillna(0).sum())
     st.markdown(
         _pmc_spend_executive_scorecards_html(
             total_spend=total_spend,
             active_channels=active_channels,
             top_channel=top_channel,
             top_share_pct=top_share,
-            mom_spend_delta=mom_spend_change,
         ),
         unsafe_allow_html=True,
     )
