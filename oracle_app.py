@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-15-global-ask-ai-fab"
+DASHBOARD_BUILD = "2026-04-16-is-qualifying-pmc"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -3816,11 +3816,7 @@ def _leads_qualified_overlay_frame_by_month_market(ld: pd.DataFrame) -> pd.DataF
         return pd.DataFrame(columns=["month", "Market", "leads", "qualified"])
     x["month"] = x["_mk"]
     x = x.drop(columns=["_mk"], errors="ignore")
-    if "lead_status_text" in x.columns:
-        stext = x["lead_status_text"].astype(str).str.strip().str.lower()
-        x["_qual"] = stext.eq("qualified").astype(int)
-    else:
-        x["_qual"] = 0
+    x["_qual"] = _leads_is_qualified_mask(x).astype(int)
     _gb = x.groupby(["month", "country"], dropna=False)
     g = _gb.size().reset_index(name="leads")
     g = g.merge(_gb["_qual"].sum().reset_index(name="qualified"), on=["month", "country"], how="left")
@@ -3868,6 +3864,35 @@ def _overlay_gm_leads_qualified_from_raw_leads(gm: pd.DataFrame, leads_df: pd.Da
     return out
 
 
+def _leads_is_qualifying_column_name(cols: Any) -> Optional[str]:
+    """Detect spreadsheet SQL flag column (e.g. ``Is_Qualifying`` on AB post lead tab)."""
+    for c in cols:
+        key = re.sub(r"[^a-z0-9]", "", str(c).strip().lower())
+        if key == "isqualifying":
+            return str(c)
+    return None
+
+
+def _leads_is_qualified_mask(frame: pd.DataFrame) -> pd.Series:
+    """True when lead counts as SQL/qualified: status ``Qualified`` **or** ``Is_Qualifying``-style flag = 1."""
+    if frame.empty:
+        return pd.Series(False, index=frame.index, dtype=bool)
+    out = pd.Series(False, index=frame.index, dtype=bool)
+    if "lead_status_text" in frame.columns:
+        st = frame["lead_status_text"].astype(str).str.strip().str.lower()
+        out = out | st.eq("qualified")
+    if "Lead Status" in frame.columns:
+        st = frame["Lead Status"].astype(str).str.strip().str.lower()
+        out = out | st.eq("qualified")
+    _iq = _leads_is_qualifying_column_name(frame.columns)
+    if _iq is not None:
+        v = frame[_iq]
+        num = pd.to_numeric(v, errors="coerce")
+        yn = v.astype(str).str.strip().str.lower().isin({"1", "true", "yes", "y"})
+        out = out | (num.fillna(0) > 0) | yn
+    return out
+
+
 def _new_working_count_from_leads(frame: pd.DataFrame) -> int:
     """Count leads where Lead Status is exactly New or Working."""
     if frame.empty or "lead_status_text" not in frame.columns:
@@ -3877,11 +3902,10 @@ def _new_working_count_from_leads(frame: pd.DataFrame) -> int:
 
 
 def _qualified_count_from_leads(frame: pd.DataFrame) -> int:
-    """Count leads where Lead Status is exactly Qualified."""
-    if frame.empty or "lead_status_text" not in frame.columns:
+    """Count SQL/qualified leads (status **Qualified** and/or ``Is_Qualifying`` = 1)."""
+    if frame.empty:
         return 0
-    s = frame["lead_status_text"].astype(str).str.strip().str.lower()
-    return int(s.eq("qualified").sum())
+    return int(_leads_is_qualified_mask(frame).sum())
 
 
 def _master_view_drop_empty_months(gm: pd.DataFrame) -> pd.DataFrame:
@@ -9921,10 +9945,7 @@ def _pmc_scoped_leads_rows_for_channel_metrics(df_loaded: pd.DataFrame, df_scope
     ch = uc.where(~uc.str.lower().isin(["", "unknown", "nan", "none", "nat"]), usd)
     ch = ch.where(~ch.str.lower().isin(["", "unknown", "nan", "none", "nat"]), "Other")
     leads["_pmc_ch"] = ch.map(_pmc_align_channel_label_for_xray_pivot)
-    stxt = leads.get("lead_status_text", pd.Series(index=leads.index, dtype=object)).astype(str).str.strip().str.lower()
-    if stxt.eq("").all():
-        stxt = leads.get("Lead Status", pd.Series(index=leads.index, dtype=object)).astype(str).str.strip().str.lower()
-    leads["_is_qualified"] = stxt.eq("qualified").astype(int)
+    leads["_is_qualified"] = _leads_is_qualified_mask(leads).astype(int)
     if "month" in leads.columns:
         leads["_month_key"] = leads["month"].map(_month_norm_key).astype(str).str.strip()
         leads = leads.loc[
@@ -9937,7 +9958,7 @@ def _pmc_scoped_leads_rows_for_channel_metrics(df_loaded: pd.DataFrame, df_scope
 
 
 def _pmc_leads_channel_lut_from_leads_sheet(df_loaded: pd.DataFrame, df_scope: pd.DataFrame) -> pd.DataFrame:
-    """Qualified / lead **counts** by Unified Channel from the Leads sheet only (Lead Status = Qualified)."""
+    """Qualified / lead **counts** by Unified Channel from the Leads sheet (Qualified status and/or ``Is_Qualifying``)."""
     leads = _pmc_scoped_leads_rows_for_channel_metrics(df_loaded, df_scope)
     if leads.empty:
         return pd.DataFrame(columns=["unified_channel", "leads_from_leads", "qualified_from_leads"])
