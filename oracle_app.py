@@ -10576,183 +10576,113 @@ def _pmc_by_ch_top_n_for_charts(by_ch: pd.DataFrame, *, max_channels: int = 6) -
     return out
 
 
+def _pmc_spend_exec_frame(by_ch: pd.DataFrame) -> pd.DataFrame:
+    """Spend-first channel view with rank/share/MoM/flags used by Spend-by-Channel executive UI."""
+    if by_ch.empty:
+        return by_ch.copy()
+    d = by_ch.copy()
+    if "channel" not in d.columns and "unified_channel" in d.columns:
+        d["channel"] = d["unified_channel"].astype(str)
+    d["channel"] = d["channel"].astype(str).str.strip()
+    for c in ("spend", "leads", "qualified", "cw", "mom_spend_delta"):
+        d[c] = pd.to_numeric(d.get(c, 0), errors="coerce").fillna(0.0)
+    d["share_pct"] = (d["spend"] / float(d["spend"].sum()) * 100.0) if float(d["spend"].sum()) > 0 else 0.0
+    d["CPL"] = d.apply(lambda r: (float(r["spend"]) / float(r["leads"])) if float(r["leads"]) > 0 else float("nan"), axis=1)
+    d = d.sort_values(["spend", "qualified", "cw"], ascending=[False, False, False], kind="mergesort").reset_index(drop=True)
+    d["rank"] = d.index + 1
+
+    def _flag(r: pd.Series) -> str:
+        sp = float(r.get("spend") or 0.0)
+        q = float(r.get("qualified") or 0.0)
+        cw = float(r.get("cw") or 0.0)
+        if sp > 0 and q <= 0 and cw <= 0:
+            return "No visible output"
+        if sp > 0 and q <= 0:
+            return "Low quality"
+        if pd.notna(r.get("CPL")) and float(r.get("CPL") or 0.0) > 0 and float(r.get("CPL") or 0.0) > d["CPL"].replace([float("inf")], pd.NA).dropna().median() * 1.35:
+            return "High CPL"
+        return "Healthy"
+
+    d["flag"] = d.apply(_flag, axis=1)
+    return d
+
+
 def _pmc_render_charts(by_ch: pd.DataFrame, key_suffix: str) -> None:
-    """Channel charts aligned with **Market MoM** + **Marketing performance** (colors, template, legend placement)."""
+    """Spend-by-channel executive charts: horizontal spend ranking + spend vs qualified."""
     if by_ch.empty:
         st.caption("Not enough channel-level rows for charts.")
         return
-    plot_ch = _pmc_by_ch_top_n_for_charts(by_ch, max_channels=6)
-    if len(plot_ch) < len(by_ch):
-        st.caption(f"Charts show top {len(plot_ch) - 1} channels by spend plus **Other**; full breakdown is in the table above.")
+    d = _pmc_spend_exec_frame(by_ch)
+    if d.empty:
+        st.caption("No spend rows for charts.")
+        return
+    _plot = dict(template="plotly_white", paper_bgcolor="white", plot_bgcolor="white", font=dict(size=12))
+    _margin = dict(l=12, r=12, t=54, b=68)
+    _legend = dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5, font=dict(size=11))
 
-    chans = plot_ch["unified_channel"].astype(str).tolist()
-    leads = pd.to_numeric(plot_ch["leads"], errors="coerce").fillna(0.0)
-    qual = pd.to_numeric(plot_ch["qualified"], errors="coerce").fillna(0.0)
-    cw = pd.to_numeric(plot_ch["cw"], errors="coerce").fillna(0.0)
-    spend = pd.to_numeric(plot_ch["spend"], errors="coerce").fillna(0.0)
-    tcv = pd.to_numeric(plot_ch["tcv"], errors="coerce").fillna(0.0)
-
-    _plot_mom = dict(template="plotly_white", paper_bgcolor="white", plot_bgcolor="white", font=dict(size=12))
-    _xaxis = dict(
-        title="Channel",
-        tickangle=-18,
-        automargin=True,
-        showgrid=True,
-        gridcolor="rgba(148,163,184,0.25)",
-    )
-    _legend_below = dict(
-        orientation="h",
-        yanchor="top",
-        y=-0.22,
-        xanchor="center",
-        x=0.5,
-        font=dict(size=11),
-    )
-    _chart_h = 420
-    _margin = dict(l=12, r=12, t=58, b=96)
-    _title_pad = dict(t=4, b=14)
-
-    _cw_max = float(cw.max()) if len(cw) else 0.0
-    _lq_max = float(max(leads.max() if len(leads) else 0.0, qual.max() if len(qual) else 0.0))
-
-    # --- 1) Same visual language as MoM **Funnel volume** (grouped bars + dual Y).
-    st.markdown('<div class="looker-table-title" style="margin-top:0;">Funnel volume by channel</div>', unsafe_allow_html=True)
-    st.caption("**Closed won** on the right axis; lead rows and qualified leads on the left — same palette as Market MoM.")
-    st.markdown('<div style="height:14px" aria-hidden="true"></div>', unsafe_allow_html=True)
-    fig1 = make_subplots(specs=[[{"secondary_y": True}]])
-    fig1.add_trace(
-        go.Scatter(
-            x=chans,
-            y=cw,
-            name="Closed won",
-            mode="lines+markers",
-            line=dict(color="#0f766e", width=2.5),
-            marker=dict(size=8, color="#0f766e", line=dict(width=1, color="#fff")),
-            hovertemplate="<b>%{x}</b><br>Closed won: %{y:,.0f}<extra></extra>",
-        ),
-        secondary_y=True,
-    )
-    fig1.add_trace(
+    # 1) Horizontal spend bar ranking (descending).
+    fig_sp = go.Figure()
+    fig_sp.add_trace(
         go.Bar(
-            x=chans,
-            y=leads,
-            name="Lead rows",
-            marker_color="#93c5fd",
-            marker_line=dict(width=0),
-        ),
-        secondary_y=False,
-    )
-    fig1.add_trace(
-        go.Bar(
-            x=chans,
-            y=qual,
-            name="Qualified leads",
-            marker_color="#a78bfa",
-            marker_line=dict(width=0),
-        ),
-        secondary_y=False,
-    )
-    fig1.update_layout(
-        title=dict(
-            text="Lead rows and qualified leads by channel (with Closed won trend)",
-            font=dict(size=14),
-            pad=_title_pad,
-        ),
-        barmode="group",
-        height=_chart_h,
-        margin=_margin,
-        legend=_legend_below,
-        hovermode="x unified",
-        hoverlabel=dict(font_size=12),
-        bargap=0.3,
-        bargroupgap=0.18,
-        **_plot_mom,
-    )
-    fig1.update_yaxes(
-        title=dict(text="Leads / Qualified leads", font=dict(size=12, color="#334155")),
-        tickformat=",.0f",
-        tickfont=dict(size=11, color="#475569"),
-        showgrid=True,
-        gridcolor="rgba(148,163,184,0.2)",
-        zeroline=False,
-        range=[0, _lq_max * 1.15 + 1] if _lq_max > 0 else None,
-        secondary_y=False,
-    )
-    fig1.update_yaxes(
-        title=dict(text="Closed won", font=dict(size=12, color="#334155")),
-        tickformat=",.0f",
-        tickfont=dict(size=11, color="#475569"),
-        showgrid=False,
-        zeroline=False,
-        range=[0, _cw_max * 1.15 + 1] if _cw_max > 0 else None,
-        secondary_y=True,
-    )
-    fig1.update_xaxes(**{**_xaxis, "tickfont": dict(size=11, color="#334155")})
-    st.plotly_chart(fig1, width="stretch", key=f"{key_suffix}_pmc_vol")
-
-    # --- 2) Spend (main-tab teal) + TCV line (MoM secondary line indigo).
-    st.markdown('<div class="looker-table-title" style="margin-top:8px;">Spend and TCV by channel</div>', unsafe_allow_html=True)
-    st.caption("Spend uses the same teal accent as **Marketing performance** cost trends; TCV follows the MoM line style.")
-    st.markdown('<div style="height:14px" aria-hidden="true"></div>', unsafe_allow_html=True)
-    _sp_max = float(spend.max()) if len(spend) else 0.0
-    _tcv_max = float(tcv.max()) if len(tcv) else 0.0
-    fig2 = make_subplots(specs=[[{"secondary_y": True}]])
-    fig2.add_trace(
-        go.Bar(
+            y=d["channel"],
+            x=d["spend"],
+            orientation="h",
+            marker=dict(color="#0d9488"),
+            text=[f"${v:,.0f}" for v in d["spend"]],
+            textposition="outside",
+            cliponaxis=False,
+            hovertemplate="<b>%{y}</b><br>Spend: $%{x:,.0f}<extra></extra>",
             name="Spend",
-            x=chans,
-            y=spend,
+        )
+    )
+    fig_sp.update_layout(
+        title=dict(text="Spend ranking by channel", font=dict(size=14)),
+        height=max(360, 60 + 42 * len(d)),
+        margin=_margin,
+        showlegend=False,
+        **_plot,
+    )
+    fig_sp.update_xaxes(title="Spend ($)", tickprefix="$", tickformat=",.0f", showgrid=True, gridcolor="rgba(148,163,184,0.2)")
+    fig_sp.update_yaxes(title="", autorange="reversed")
+    st.plotly_chart(fig_sp, width="stretch", key=f"{key_suffix}_spend_rank_barh")
+
+    # 2) Spend vs qualified leads (dual axis).
+    fig_sq = make_subplots(specs=[[{"secondary_y": True}]])
+    fig_sq.add_trace(
+        go.Bar(
+            x=d["channel"],
+            y=d["spend"],
+            name="Spend",
             marker_color="#0d9488",
-            marker_line=dict(width=0),
             hovertemplate="<b>%{x}</b><br>Spend: $%{y:,.0f}<extra></extra>",
         ),
         secondary_y=False,
     )
-    fig2.add_trace(
+    fig_sq.add_trace(
         go.Scatter(
-            name="Actual TCV",
-            x=chans,
-            y=tcv,
+            x=d["channel"],
+            y=d["qualified"],
             mode="lines+markers",
+            name="Qualified leads",
             line=dict(color="#6366f1", width=2.5),
-            marker=dict(size=8, color="#6366f1", line=dict(width=1, color="#fff")),
-            hovertemplate="<b>%{x}</b><br>TCV: $%{y:,.0f}<extra></extra>",
+            marker=dict(size=8),
+            hovertemplate="<b>%{x}</b><br>Qualified: %{y:,.0f}<extra></extra>",
         ),
         secondary_y=True,
     )
-    fig2.update_layout(
-        title=dict(text="Spend and actual TCV by channel", font=dict(size=14), pad=_title_pad),
-        height=_chart_h,
+    fig_sq.update_layout(
+        title=dict(text="Spend vs qualified leads by channel", font=dict(size=14)),
+        height=420,
         margin=_margin,
-        legend=_legend_below,
+        legend=_legend,
         hovermode="x unified",
-        hoverlabel=dict(font_size=12),
-        bargap=0.22,
-        **_plot_mom,
+        **_plot,
     )
-    fig2.update_yaxes(
-        title=dict(text="Spend ($)", font=dict(size=12, color="#334155")),
-        tickprefix="$",
-        tickformat=",.0f",
-        tickfont=dict(size=11, color="#475569"),
-        showgrid=True,
-        gridcolor="rgba(148,163,184,0.2)",
-        zeroline=False,
-        range=[0, _sp_max * 1.12 + 1] if _sp_max > 0 else None,
-        secondary_y=False,
-    )
-    fig2.update_yaxes(
-        title=dict(text="Actual TCV ($)", font=dict(size=12, color="#334155")),
-        tickprefix="$",
-        tickformat=",.0f",
-        tickfont=dict(size=11, color="#475569"),
-        showgrid=False,
-        zeroline=False,
-        range=[0, _tcv_max * 1.12 + 1] if _tcv_max > 0 else None,
-        secondary_y=True,
-    )
-    fig2.update_xaxes(**{**_xaxis, "tickfont": dict(size=11, color="#334155")})
-    st.plotly_chart(fig2, width="stretch", key=f"{key_suffix}_pmc_spend_tcv")
+    fig_sq.update_xaxes(title="Channel", tickangle=-18, automargin=True, showgrid=True, gridcolor="rgba(148,163,184,0.25)")
+    fig_sq.update_yaxes(title="Spend ($)", tickprefix="$", tickformat=",.0f", showgrid=True, gridcolor="rgba(148,163,184,0.2)", secondary_y=False)
+    fig_sq.update_yaxes(title="Qualified leads", tickformat=",.0f", showgrid=False, secondary_y=True)
+    st.plotly_chart(fig_sq, width="stretch", key=f"{key_suffix}_spend_vs_qualified")
+
 
 def _render_page_performance_marketing_channels(
     df_loaded: pd.DataFrame,
@@ -10777,50 +10707,116 @@ def _render_page_performance_marketing_channels(
     if spend_g.empty:
         st.info("No spend to aggregate for this scope (check **month** and **channel** filters).")
         return
-    m = spend_g.copy()
-    for col, dv in (
-        ("closed_won", 0),
-        ("qualified", 0),
-        ("leads", 0.0),
-        ("tcv", 0.0),
-        ("first_month_lf", 0.0),
-        ("pitching", 0),
-        ("new", 0),
-        ("working", 0),
-        ("qualifying", 0),
-        ("negotiation", 0),
-        ("commitment", 0),
-        ("closed_lost", 0),
-    ):
-        if col not in m.columns:
-            m[col] = dv
-    for col in ("clicks", "impressions"):
-        if col not in m.columns:
-            m[col] = 0
-    m = _normalize_master_merge_frame(m)
-
-    st.markdown('<div class="dash-master-surface">', unsafe_allow_html=True)
-    _master_performance_table(
-        m,
-        key_suffix=f"{key_suffix}_ch_master",
-        section_title="Channel spend by month",
-        spend_grid=None,
-        detail_sources={"spend": u},
-        pivot_dimension="channel",
-        table_mode="spend_only",
-        month_not_before=_pmc_m0,
-    )
-    st.markdown("</div>", unsafe_allow_html=True)
-
     leads_lut = _pmc_leads_channel_lut_from_leads_sheet(df_loaded, df_scope)
     by_ch = _pmc_by_channel_summary(u, leads_lut=leads_lut)
-    chart_base, _ = _pmc_blended_channel_insights(df_loaded, df_scope, u, by_ch)
-    by_ch_chart = chart_base[["unified_channel", "spend", "leads", "qualified", "cw", "tcv"]].copy()
-    _pmc_render_magic_insights(df_loaded, df_scope, u, by_ch)
+    chart_base, _magic_bullets = _pmc_blended_channel_insights(df_loaded, df_scope, u, by_ch)
+    d = _pmc_spend_exec_frame(chart_base if not chart_base.empty else by_ch)
+    if d.empty:
+        st.info("No channel-level spend rows to display.")
+        return
+
+    # KPI cards.
+    total_spend = float(d["spend"].sum())
+    active_channels = int((d["spend"] > 0).sum())
+    top_row = d.iloc[0]
+    top_channel = str(top_row["channel"])
+    top_share = float(top_row["share_pct"])
+    mom_spend_change = float(pd.to_numeric(d.get("mom_spend_delta", 0), errors="coerce").fillna(0).sum())
+    c1, c2, c3, c4, c5 = st.columns(5, gap="small")
+    c1.metric("Total Spend", f"${total_spend:,.0f}")
+    c2.metric("Active Channels", f"{active_channels:,}")
+    c3.metric("Top Channel", top_channel)
+    c4.metric("Top Channel Share %", f"{top_share:.1f}%")
+    c5.metric("MoM Spend Change", f"${mom_spend_change:,.0f}", delta=f"{mom_spend_change:+,.0f}")
+
+    # Insight strip.
+    _warn_conc = top_share >= 45.0
+    _warn_no_out = bool((d["flag"] == "No visible output").any())
+    _insight = (
+        f"Top spend concentration: **{top_channel}** holds **{top_share:.1f}%** of channel spend."
+        + (" Concentration risk is elevated." if _warn_conc else " Concentration is within a manageable range.")
+        + (" Spend with no visible output exists; prioritize immediate review." if _warn_no_out else " No major zero-output spend pockets detected.")
+    )
+    st.markdown(
+        f'<div style="padding:10px 12px;border:1px solid #e2e8f0;border-radius:10px;background:#f8fafc;'
+        f'font-size:13px;color:#334155;margin:8px 0 12px 0;">{_insight}</div>',
+        unsafe_allow_html=True,
+    )
+
+    # Ranked spend table.
+    ranked = d[["rank", "channel", "spend", "share_pct", "mom_spend_delta", "flag"]].copy()
+    ranked = ranked.rename(
+        columns={
+            "rank": "Rank",
+            "channel": "Channel",
+            "spend": "Spend",
+            "share_pct": "Share %",
+            "mom_spend_delta": "MoM delta",
+            "flag": "Flag",
+        }
+    )
+    ranked["Spend"] = ranked["Spend"].map(lambda x: f"${float(x):,.0f}")
+    ranked["Share %"] = ranked["Share %"].map(lambda x: f"{float(x):.1f}%")
+    ranked["MoM delta"] = ranked["MoM delta"].map(lambda x: f"${float(x):+,.0f}")
+    st.markdown('<div class="looker-table-title">Ranked spend table</div>', unsafe_allow_html=True)
+    st.dataframe(ranked, width="stretch", hide_index=True, key=f"{key_suffix}_spend_rank_tbl")
+
+    # Simplified main table + advanced metrics in expander.
+    st.markdown('<div class="looker-table-title" style="margin-top:10px;">Spend efficiency by channel</div>', unsafe_allow_html=True)
+    show_cols = ["channel", "spend", "share_pct", "leads", "qualified", "cw", "CPL"]
+    simple = d[show_cols].copy().rename(
+        columns={
+            "channel": "Channel",
+            "spend": "Spend",
+            "share_pct": "Share %",
+            "leads": "Leads",
+            "qualified": "Qualified",
+            "cw": "Closed Won",
+            "CPL": "CPL",
+        }
+    )
+    simple["Spend"] = simple["Spend"].map(lambda x: f"${float(x):,.0f}")
+    simple["Share %"] = simple["Share %"].map(lambda x: f"{float(x):.1f}%")
+    simple["Leads"] = pd.to_numeric(simple["Leads"], errors="coerce").fillna(0).map(lambda x: f"{int(x):,}")
+    simple["Qualified"] = pd.to_numeric(simple["Qualified"], errors="coerce").fillna(0).map(lambda x: f"{int(x):,}")
+    simple["Closed Won"] = pd.to_numeric(simple["Closed Won"], errors="coerce").fillna(0).map(lambda x: f"{int(x):,}")
+    simple["CPL"] = pd.to_numeric(simple["CPL"], errors="coerce").map(lambda x: f"${float(x):,.0f}" if pd.notna(x) else "—")
+
+    major_n = min(8, len(simple))
+    st.dataframe(simple.head(major_n), width="stretch", hide_index=True, key=f"{key_suffix}_spend_simple_tbl")
+    if len(simple) > major_n:
+        with st.expander("Minor channels (expand)", expanded=False):
+            st.dataframe(simple.iloc[major_n:], width="stretch", hide_index=True, key=f"{key_suffix}_spend_minor_tbl")
+
+    with st.expander("Advanced metrics", expanded=False):
+        adv_cols = [c for c in ("channel", "spend", "share_pct", "mom_spend_delta", "flag", "qualified", "cw", "CPL") if c in d.columns]
+        adv = d[adv_cols].copy().rename(
+            columns={
+                "channel": "Channel",
+                "spend": "Spend",
+                "share_pct": "Share %",
+                "mom_spend_delta": "MoM delta",
+                "flag": "Flag",
+                "qualified": "Qualified",
+                "cw": "Closed Won",
+                "CPL": "CPL",
+            }
+        )
+        st.dataframe(adv, width="stretch", hide_index=True, key=f"{key_suffix}_spend_adv_tbl")
 
     st.markdown('<div class="dash-chart-stack">', unsafe_allow_html=True)
-    st.markdown('<div class="looker-table-title">Channel charts</div>', unsafe_allow_html=True)
-    _pmc_render_charts(by_ch_chart, key_suffix=key_suffix)
+    st.markdown('<div class="looker-table-title">Spend charts</div>', unsafe_allow_html=True)
+    _pmc_render_charts(d.rename(columns={"channel": "unified_channel"}), key_suffix=key_suffix)
+    st.markdown('<div class="looker-table-title" style="margin-top:10px;">Spend watchouts</div>', unsafe_allow_html=True)
+    _w: list[str] = []
+    _w.append(f"{top_channel} carries {top_share:.1f}% of spend.")
+    _drag = d.loc[d["flag"].eq("No visible output")]
+    if not _drag.empty:
+        _w.append(f"Output risk: {', '.join(_drag['channel'].astype(str).head(2).tolist())} show spend with no visible output.")
+    _mom_down = d.sort_values("mom_spend_delta").iloc[0]
+    _w.append(f"Biggest MoM spend pullback: {_mom_down['channel']} ({float(_mom_down['mom_spend_delta']):+,.0f}).")
+    for w in _w[:3]:
+        st.markdown(f"- {w}")
     st.markdown("</div>", unsafe_allow_html=True)
 
 
