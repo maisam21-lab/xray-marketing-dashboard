@@ -9107,6 +9107,8 @@ def _mom_monthly_series(df: pd.DataFrame, spend_df: Optional[pd.DataFrame] = Non
         axis=1,
     )
     monthly["month_lbl"] = monthly["month"].map(lambda x: _month_norm_key(x))
+    # Normalized month key for sorting / watchouts (same basis as charts).
+    monthly["month_key"] = monthly["month"].map(lambda m: str(_month_norm_key(m) or "").strip())
     return monthly
 
 
@@ -9645,8 +9647,8 @@ def render_page_market_mom(
             xaxis=_xaxis,
         )
         st.plotly_chart(fig_q, width="stretch", key=f"{key_suffix}_pl_quality")
-        if not monthly.empty:
-            _latest = monthly.sort_values("month_key").iloc[-1]
+        if not monthly.empty and "month_key" in monthly.columns:
+            _latest = monthly.sort_values("month_key", key=lambda s: s.map(_mpo_month_ts_for_sort)).iloc[-1]
             _lv = float(pd.to_numeric(_latest.get("leads"), errors="coerce") or 0.0)
             _qv = float(pd.to_numeric(_latest.get("qualified"), errors="coerce") or 0.0)
             _cv = float(pd.to_numeric(_latest.get("cw"), errors="coerce") or 0.0)
