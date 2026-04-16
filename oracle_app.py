@@ -10399,6 +10399,12 @@ def _xray_render_ai_panel() -> None:
             st.session_state["xray_ai_mode"] = "General"
         if "xray_ai_model_pick" not in st.session_state:
             st.session_state["xray_ai_model_pick"] = "o3"
+        # Clean up legacy greeting from older builds.
+        _msgs = st.session_state.get("xray_ai_messages", [])
+        if _msgs and isinstance(_msgs, list):
+            first_txt = str((_msgs[0] or {}).get("content") or "")
+            if "Ollie" in first_txt:
+                st.session_state["xray_ai_messages"] = []
 
         st.markdown('<div class="xray-ai-panel-title">Ask KitchenPark AI</div>', unsafe_allow_html=True)
         h1, h2, h3, h4 = st.columns([2.5, 1.2, 0.4, 0.4], gap="small")
@@ -10413,9 +10419,9 @@ def _xray_render_ai_panel() -> None:
 
         if not st.session_state["xray_ai_messages"]:
             intro = (
-                "Hi! I'm **KitchenPark AI**, your marketing analytics assistant.\n\n"
-                f"I'm currently in **{st.session_state.get('xray_ai_mode','General')}** mode.\n\n"
-                "Ask about drop-offs, channel quality, checkout friction, and conversion optimization."
+                "Hi! I'm **KitchenPark AI**.\n\n"
+                f"Current mode: **{st.session_state.get('xray_ai_mode','General')}**.\n\n"
+                "I analyze marketing performance, conversion drop-offs, and growth actions from your current dashboard context."
             )
             st.session_state["xray_ai_messages"].append({"role": "assistant", "content": intro})
 
@@ -10425,6 +10431,29 @@ def _xray_render_ai_panel() -> None:
                 role = "assistant" if m.get("role") == "assistant" else "user"
                 with st.chat_message(role):
                     st.markdown(str(m.get("content") or ""))
+
+        t1, t2 = st.columns([1.3, 4], gap="small")
+        with t1:
+            if st.button("Test OpenAI", key="xray_ai_test_btn"):
+                api_key_test = _k or _ai_openai_key_from_secrets_or_env()
+                if not api_key_test:
+                    st.session_state["xray_ai_conn_status"] = f"Missing API key ({_k_src})."
+                else:
+                    probe = _ai_openai_answer(
+                        "Reply with exactly OPENAI_OK",
+                        {"totals": {}, "channels": [], "months": []},
+                        model="gpt-4o",
+                        api_key=api_key_test,
+                        mode="General",
+                        history=[],
+                    )
+                    st.session_state["xray_ai_conn_status"] = (
+                        "Connected (OPENAI_OK)"
+                        if "OPENAI_OK" in str(probe)
+                        else f"Connected but unexpected reply: {str(probe)[:120]}"
+                    )
+        with t2:
+            st.caption(str(st.session_state.get("xray_ai_conn_status") or ""))
 
         in1, in2, in3 = st.columns([4.4, 1.7, 0.8], gap="small")
         with in1:
