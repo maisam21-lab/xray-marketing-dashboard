@@ -10396,11 +10396,11 @@ def _xray_render_ai_panel() -> None:
         if "xray_ai_input" not in st.session_state:
             st.session_state["xray_ai_input"] = ""
         if "xray_ai_mode" not in st.session_state:
-            st.session_state["xray_ai_mode"] = "General"
+            st.session_state["xray_ai_mode"] = "عام"
         if "xray_ai_model_pick" not in st.session_state:
             st.session_state["xray_ai_model_pick"] = "o3"
 
-        st.markdown('<div class="xray-ai-panel-title">Ask Ollie</div>', unsafe_allow_html=True)
+        st.markdown('<div class="xray-ai-panel-title">اسأل بصيرة</div>', unsafe_allow_html=True)
         h1, h2, h3, h4 = st.columns([2.5, 1.2, 0.4, 0.4], gap="small")
         with h2:
             st.selectbox("Model", ["o3", "GPT-4o", "GPT-5", "GPT-5.2"], key="xray_ai_model_pick", label_visibility="collapsed")
@@ -10413,9 +10413,9 @@ def _xray_render_ai_panel() -> None:
 
         if not st.session_state["xray_ai_messages"]:
             intro = (
-                "Hi! I'm Ollie and I can analyze your dashboard for conversion optimization.\n\n"
-                f"I am in **{st.session_state.get('xray_ai_mode','General')}** mode.\n\n"
-                "Ask about drop-offs, checkout friction, channel quality, and what to do next."
+                "اهلا! انا **بصيرة**، مساعد تحليلات التسويق.\n\n"
+                f"الوضع الحالي: **{st.session_state.get('xray_ai_mode','عام')}**.\n\n"
+                "اسألني عن التسرب، جودة القنوات، تحسين الدفع، وخطة زيادة التحويل."
             )
             st.session_state["xray_ai_messages"].append({"role": "assistant", "content": intro})
 
@@ -10426,17 +10426,11 @@ def _xray_render_ai_panel() -> None:
                 with st.chat_message(role):
                     st.markdown(str(m.get("content") or ""))
 
-        st.caption(f"AI key detected: {'yes' if _k else 'no'} ({_k_src})")
-        if "xray_ai_messages" not in st.session_state:
-            st.session_state["xray_ai_messages"] = []
-        if st.button("New chat", key="xray_ai_new_chat_btn"):
-            st.session_state["xray_ai_messages"] = []
-            st.rerun()
-        in1, in2, in3 = st.columns([4.5, 1.3, 0.8], gap="small")
+        in1, in2, in3 = st.columns([4.4, 1.7, 0.8], gap="small")
         with in1:
-            st.text_input("Ask", key="xray_ai_input", label_visibility="collapsed", placeholder="Ask anything about your dashboard...")
+            st.text_input("Ask", key="xray_ai_input", label_visibility="collapsed", placeholder="اكتب سؤالك التسويقي...")
         with in2:
-            analyzer_mode = st.selectbox("Mode", ["General", "CMO brief", "Paid media optimizer", "Funnel doctor"], key="xray_ai_mode", label_visibility="collapsed")
+            analyzer_mode = st.selectbox("Mode", ["عام", "مدفوع", "قمع", "CMO"], key="xray_ai_mode", label_visibility="collapsed")
         with in3:
             send_clicked = st.button("➤", key="xray_ai_send_btn", type="primary")
 
@@ -10462,7 +10456,9 @@ def _xray_render_ai_panel() -> None:
                     payload,
                     model=model,
                     api_key=api_key,
-                    mode=analyzer_mode,
+                    mode={"عام": "General", "مدفوع": "Paid media optimizer", "قمع": "Funnel doctor", "CMO": "CMO brief"}.get(
+                        analyzer_mode, "General"
+                    ),
                     history=st.session_state.get("xray_ai_messages", [])[:-1],
                 )
             footer = (
@@ -10477,19 +10473,24 @@ def _render_xray_floating_ask_ai(df_loaded: pd.DataFrame, start_date: date, end_
     """Fixed-position Ask AI control — available on every tab (same scope logic as blended channel metrics)."""
     if "xray_ai_open" not in st.session_state:
         st.session_state["xray_ai_open"] = False
+    if "xray_ai_payload_ready" not in st.session_state:
+        st.session_state["xray_ai_payload_ready"] = False
     if st.button(
-        "Ask AI",
+        "اسأل بصيرة",
         key="xray_ask_ai_fab",
         type="secondary",
         help="Insights for the current data scope (blended metrics when available)",
     ):
         st.session_state["xray_ai_open"] = True
+        st.session_state["xray_ai_payload_ready"] = False
     if st.session_state.get("xray_ai_open"):
-        with st.spinner("Preparing AI context..."):
-            payload, note = _build_global_ask_ai_payload(df_loaded, start_date, end_date)
-            payload["dashboard_snapshot"] = _ai_dashboard_snapshot(df_loaded, start_date, end_date)
-        st.session_state["_xray_ai_payload"] = payload
-        st.session_state["_xray_ai_scope_note"] = note
+        if not st.session_state.get("xray_ai_payload_ready"):
+            with st.spinner("Preparing AI context..."):
+                payload, note = _build_global_ask_ai_payload(df_loaded, start_date, end_date)
+                payload["dashboard_snapshot"] = _ai_dashboard_snapshot(df_loaded, start_date, end_date)
+            st.session_state["_xray_ai_payload"] = payload
+            st.session_state["_xray_ai_scope_note"] = note
+            st.session_state["xray_ai_payload_ready"] = True
         _xray_render_ai_panel()
 
 
@@ -12237,7 +12238,7 @@ def main() -> None:
         border-radius: 14px 14px 0 0;
         color: #ffffff;
         font-weight: 700;
-        font-size: 32px;
+        font-size: 28px;
         background: linear-gradient(90deg, #6366f1 0%, #7c3aed 55%, #8b5cf6 100%);
     }
     .xray-ai-icon-btn {
