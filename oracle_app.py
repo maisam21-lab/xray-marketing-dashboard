@@ -10204,6 +10204,78 @@ def _build_global_ask_ai_payload(df_loaded: pd.DataFrame, start_date: date, end_
         return pl, note
 
 
+def _ai_dashboard_snapshot(df_loaded: pd.DataFrame, start_date: date, end_date: date) -> dict[str, Any]:
+    """Richer dashboard-wide context so the assistant answers like an on-page analyst."""
+    df = _filter_spend_for_dashboard(df_loaded, start_date, end_date) if not df_loaded.empty else df_loaded
+    if df.empty:
+        return {"window": {"start": str(start_date), "end": str(end_date)}, "totals": {}, "markets": [], "monthly": []}
+    spend = pd.to_numeric(df["cost"], errors="coerce").fillna(0) if "cost" in df.columns else pd.Series([0] * len(df))
+    cw = pd.to_numeric(df["closed_won"], errors="coerce").fillna(0) if "closed_won" in df.columns else pd.Series([0] * len(df))
+    q = pd.to_numeric(df["qualified"], errors="coerce").fillna(0) if "qualified" in df.columns else pd.Series([0] * len(df))
+    leads = float(_lead_rows_count(df))
+    totals = {
+        "spend": float(spend.sum()),
+        "closed_won": float(cw.sum()),
+        "qualified": float(q.sum()),
+        "leads": leads,
+        "sql_pct": float((float(q.sum()) / leads * 100.0) if leads > 0 else 0.0),
+        "qwin_pct": float((float(cw.sum()) / float(q.sum()) * 100.0) if float(q.sum()) > 0 else 0.0),
+    }
+    ccol = "country" if "country" in df.columns else ("market" if "market" in df.columns else None)
+    markets: list[dict[str, Any]] = []
+    if ccol:
+        g = (
+            df.assign(
+                _sp=pd.to_numeric(df.get("cost", 0), errors="coerce").fillna(0.0),
+                _cw=pd.to_numeric(df.get("closed_won", 0), errors="coerce").fillna(0.0),
+                _q=pd.to_numeric(df.get("qualified", 0), errors="coerce").fillna(0.0),
+            )
+            .groupby(ccol, as_index=False)
+            .agg(spend=("_sp", "sum"), closed_won=("_cw", "sum"), qualified=("_q", "sum"))
+            .sort_values("spend", ascending=False)
+            .head(8)
+        )
+        for _, r in g.iterrows():
+            markets.append(
+                {
+                    "market": str(r.get(ccol) or ""),
+                    "spend": float(r.get("spend") or 0.0),
+                    "closed_won": float(r.get("closed_won") or 0.0),
+                    "qualified": float(r.get("qualified") or 0.0),
+                }
+            )
+    monthly_rows: list[dict[str, Any]] = []
+    if "month" in df.columns:
+        m = (
+            df.assign(
+                _mk=df["month"].map(_month_norm_key),
+                _sp=pd.to_numeric(df.get("cost", 0), errors="coerce").fillna(0.0),
+                _cw=pd.to_numeric(df.get("closed_won", 0), errors="coerce").fillna(0.0),
+                _q=pd.to_numeric(df.get("qualified", 0), errors="coerce").fillna(0.0),
+            )
+            .dropna(subset=["_mk"])
+            .groupby("_mk", as_index=False)
+            .agg(spend=("_sp", "sum"), closed_won=("_cw", "sum"), qualified=("_q", "sum"))
+            .sort_values("_mk", key=lambda s: s.map(_mpo_month_ts_for_sort))
+            .tail(12)
+        )
+        for _, r in m.iterrows():
+            monthly_rows.append(
+                {
+                    "month": str(r.get("_mk") or ""),
+                    "spend": float(r.get("spend") or 0.0),
+                    "closed_won": float(r.get("closed_won") or 0.0),
+                    "qualified": float(r.get("qualified") or 0.0),
+                }
+            )
+    return {
+        "window": {"start": str(start_date), "end": str(end_date)},
+        "totals": totals,
+        "markets": markets,
+        "monthly": monthly_rows,
+    }
+
+
 def _ai_rule_based_channel_insights(payload: dict[str, Any]) -> list[str]:
     """Deterministic backup insights when no LLM key is configured."""
     totals = payload.get("totals", {})
@@ -10252,7 +10324,8 @@ def _ai_openai_answer(
         "You are a senior performance marketing strategist and RevOps analyst. "
         "Use only the provided JSON metrics and never invent values. "
         f"Analyzer mode: {mode}. "
-        "Respond with practical, decision-ready guidance: diagnosis, likely causes, and prioritized actions. "
+        "Treat the payload as the live dashboard state for this user, and answer like a professional analyst reviewing the page. "
+        "Respond with practical, decision-ready guidance: diagnosis, likely causes, prioritized actions, and risks. "
         "Tie every recommendation to a numeric signal from payload."
     )
     user_prompt = (
@@ -10328,8 +10401,9 @@ def _xray_ask_ai_dialog() -> None:
     if st.button("New chat", key="xray_ai_new_chat_btn"):
         st.session_state["xray_ai_messages"] = []
         st.rerun()
-    for b in _ai_rule_based_channel_insights(payload)[:5]:
-        st.markdown(f"- {b}")
+    with st.expander("Quick context summary", expanded=False):
+        for b in _ai_rule_based_channel_insights(payload)[:5]:
+            st.markdown(f"- {b}")
 
     presets = [
         "Why did closed won change in this scope?",
@@ -10404,6 +10478,7 @@ def _render_xray_floating_ask_ai(df_loaded: pd.DataFrame, start_date: date, end_
     if st.session_state.get("xray_ai_open"):
         with st.spinner("Preparing AI context..."):
             payload, note = _build_global_ask_ai_payload(df_loaded, start_date, end_date)
+            payload["dashboard_snapshot"] = _ai_dashboard_snapshot(df_loaded, start_date, end_date)
         st.session_state["_xray_ai_payload"] = payload
         st.session_state["_xray_ai_scope_note"] = note
         _xray_ask_ai_dialog()
