@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-16-is-qualifying-pmc"
+DASHBOARD_BUILD = "2026-04-16-pmc-lead-tab-scope"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -205,7 +205,7 @@ def _default_leads_gid_from_secrets() -> int:
     return DEFAULT_LEADS_WORKSHEET_GID
 
 
-# Tab-name patterns for inbound lead sheets (tab ``Leads`` / ``Raw Leads``, etc.).
+# Tab-name patterns for inbound lead sheets (tab ``Leads`` / ``Raw Leads``, ``AB post lead``, etc.).
 _MPO_LEAD_TAB_PATTERNS: list[str] = [
     r"raw\s*leads?",
     r"lead\s*sheet",
@@ -213,6 +213,12 @@ _MPO_LEAD_TAB_PATTERNS: list[str] = [
     r"leads?\s+report",
     r"leads?\s+export",
     r"copy\s+of\s+.*lead",
+    r"post\s*lead",  # e.g. AB post lead
+    r"ab\s*post",
+    r"\binbound\b",
+    r"\bmql\b",
+    r"sql\s*lead",
+    r"form\s*fill",
 ]
 
 
@@ -9931,9 +9937,19 @@ def _pmc_scoped_leads_rows_for_channel_metrics(df_loaded: pd.DataFrame, df_scope
     if df_loaded.empty or "source_tab" not in df_loaded.columns:
         return pd.DataFrame()
     s = df_loaded["source_tab"].astype(str).str.lower()
+    st_exact = df_loaded["source_tab"].astype(str).str.strip()
     mask = pd.Series(False, index=df_loaded.index)
     for pat in _MPO_LEAD_TAB_PATTERNS:
         mask = mask | s.str.contains(pat.lower(), na=False, regex=True)
+    # Include whole worksheets that carry ``Is_Qualifying`` (or similar), even if tab title does not match patterns.
+    _iq = _leads_is_qualifying_column_name(df_loaded.columns)
+    if _iq is not None:
+        v = df_loaded[_iq]
+        ve = v.astype(str).str.strip().str.lower()
+        populated = v.notna() & ~ve.isin(["", "nan", "nat", "none"])
+        if bool(populated.any()):
+            tabs_with_flag = st_exact.loc[populated].unique().tolist()
+            mask = mask | st_exact.isin(tabs_with_flag)
     leads = df_loaded.loc[mask].copy()
     if leads.empty:
         return leads
@@ -10919,7 +10935,15 @@ def _pmc_render_charts(by_ch: pd.DataFrame, key_suffix: str) -> None:
     )
     fig_sq.update_xaxes(title="Channel", tickangle=-18, automargin=True, showgrid=True, gridcolor="rgba(148,163,184,0.25)")
     fig_sq.update_yaxes(title="Spend ($)", tickprefix="$", tickformat=",.0f", showgrid=True, gridcolor="rgba(148,163,184,0.2)", secondary_y=False)
-    fig_sq.update_yaxes(title="Qualified leads", tickformat=",.0f", showgrid=False, secondary_y=True)
+    _q_hi = float(pd.to_numeric(d["qualified"], errors="coerce").fillna(0.0).max())
+    fig_sq.update_yaxes(
+        title="Qualified leads",
+        tickformat=",.0f",
+        showgrid=False,
+        rangemode="tozero",
+        range=[0, max(1.0, _q_hi * 1.08)] if _q_hi > 0 else [0, 1],
+        secondary_y=True,
+    )
     st.plotly_chart(fig_sq, width="stretch", key=f"{key_suffix}_spend_vs_qualified")
 
 
