@@ -10395,10 +10395,16 @@ def _xray_render_ai_panel() -> None:
             st.session_state["xray_ai_messages"] = []
         if "xray_ai_input" not in st.session_state:
             st.session_state["xray_ai_input"] = ""
+        if "xray_ai_clear_input" not in st.session_state:
+            st.session_state["xray_ai_clear_input"] = False
         if "xray_ai_mode" not in st.session_state:
             st.session_state["xray_ai_mode"] = "General"
         if "xray_ai_model_pick" not in st.session_state:
             st.session_state["xray_ai_model_pick"] = "o3"
+        # Clear input only before the widget is rendered (Streamlit restriction).
+        if bool(st.session_state.get("xray_ai_clear_input")):
+            st.session_state["xray_ai_input"] = ""
+            st.session_state["xray_ai_clear_input"] = False
         # Clean up legacy greeting from older builds.
         _msgs = st.session_state.get("xray_ai_messages", [])
         if _msgs and isinstance(_msgs, list):
@@ -10471,7 +10477,7 @@ def _xray_render_ai_panel() -> None:
         q = str(st.session_state.get("xray_ai_input") or "").strip()
         if send_clicked and q:
             st.session_state["xray_ai_messages"].append({"role": "user", "content": q})
-            st.session_state["xray_ai_input"] = ""
+            st.session_state["xray_ai_clear_input"] = True
             api_key = _k or _ai_openai_key_from_secrets_or_env()
             selected_model = str(st.session_state.get("xray_ai_model_pick") or "o3")
             model_map = {"o3": "o3", "GPT-4o": "gpt-4o", "GPT-5": "gpt-5", "GPT-5.2": "gpt-5.2"}
