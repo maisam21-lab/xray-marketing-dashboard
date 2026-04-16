@@ -5707,6 +5707,7 @@ def _mom_executive_snapshot_scorecards_html(
     total_qual: int,
     sql_pct: float,
     qwin_pct: float,
+    spend_per_cw: float,
 ) -> str:
     """Market MoM headline tiles — **same card components** as Marketing performance (no period comparison)."""
     _delta_off = _kpi_funnel_delta_html(0.0, 0.0, disabled=True)
@@ -5784,6 +5785,16 @@ def _mom_executive_snapshot_scorecards_html(
         hue="pipe",
         biz_signal="na",
     )
+    card_cpcw = _kpi_funnel_pastel_card_html(
+        icon="⚖",
+        title="Spend per Closed Won",
+        value_s=f"${spend_per_cw:,.0f}" if spend_per_cw > 0 else "—",
+        delta_html=_delta_off,
+        sub_html=_kpi_funnel_sub_row("Spend (Σ)", spend_k) + _kpi_funnel_sub_row("CW (Σ)", f"{total_cw:,}"),
+        delay=_step(),
+        hue="cw",
+        biz_signal="na",
+    )
 
     title_esc = html.escape(f"Executive snapshot — {scope_lbl}")
     return (
@@ -5791,7 +5802,7 @@ def _mom_executive_snapshot_scorecards_html(
         f'<div class="kpi-funnel-section">'
         f'<div class="kpi-funnel-section-title kpi-funnel-section-title--cw">{title_esc}</div>'
         f'<div class="kpi-funnel-grid">'
-        f"{card_spend}{card_cw}{card_leads}{card_sql}{card_qwin}"
+        f"{card_spend}{card_cw}{card_leads}{card_sql}{card_qwin}{card_cpcw}"
         f"</div></div></div>"
     )
 
@@ -9218,6 +9229,8 @@ def _mom_market_month_delta_table(df: pd.DataFrame, spend_df: Optional[pd.DataFr
             "delta_cw": "Δ CW",
             "leads": "Leads",
             "delta_leads": "Δ Leads",
+            "qualified": "Qualified",
+            "delta_qualified": "Δ Qualified",
             "sql_pct": "SQL %",
             "delta_sql_pct": "Δ SQL pp",
             "q_win_pct": "Q win %",
@@ -9225,11 +9238,26 @@ def _mom_market_month_delta_table(df: pd.DataFrame, spend_df: Optional[pd.DataFr
         }
     )
     out = out[
-        ["Month", "Market", "Spend", "Δ Spend", "CW", "Δ CW", "Leads", "Δ Leads", "SQL %", "Δ SQL pp", "Q win %", "Δ Q win pp"]
+        [
+            "Month",
+            "Market",
+            "Spend",
+            "Δ Spend",
+            "Leads",
+            "Δ Leads",
+            "Qualified",
+            "Δ Qualified",
+            "CW",
+            "Δ CW",
+            "SQL %",
+            "Δ SQL pp",
+            "Q win %",
+            "Δ Q win pp",
+        ]
     ].copy()
     out["Spend"] = pd.to_numeric(out["Spend"], errors="coerce").fillna(0.0)
     out["Δ Spend"] = pd.to_numeric(out["Δ Spend"], errors="coerce").fillna(0.0)
-    for c in ("CW", "Δ CW", "Leads", "Δ Leads"):
+    for c in ("CW", "Δ CW", "Leads", "Δ Leads", "Qualified", "Δ Qualified"):
         out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0).astype(int)
     for c in ("SQL %", "Δ SQL pp", "Q win %", "Δ Q win pp"):
         out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0.0).round(2)
@@ -9312,6 +9340,7 @@ def render_page_market_mom(
     total_qual = int(pd.to_numeric(df["qualified"], errors="coerce").fillna(0).sum()) if "qualified" in df.columns else 0
     sql_all = (total_qual / total_leads * 100.0) if total_leads else 0.0
     qwin_all = (total_cw / total_qual * 100.0) if total_qual else 0.0
+    cpcw_all = (total_spend / total_cw) if total_cw else 0.0
 
     st.markdown(
         _mom_executive_snapshot_scorecards_html(
@@ -9322,6 +9351,27 @@ def render_page_market_mom(
             total_qual=total_qual,
             sql_pct=sql_all,
             qwin_pct=qwin_all,
+            spend_per_cw=cpcw_all,
+        ),
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        (
+            '<div style="padding:10px 12px;border:1px solid #e2e8f0;border-radius:10px;background:#f8fafc;'
+            'font-size:13px;color:#334155;margin:8px 0 10px 0;">'
+            f"MoM narrative: Spend is <b>${total_spend:,.0f}</b>, generating <b>{total_leads:,}</b> leads, "
+            f"<b>{total_qual:,}</b> qualified leads (<b>{sql_all:.1f}% SQL</b>), and <b>{total_cw:,}</b> closed won "
+            f"(<b>{qwin_all:.1f}% Q win</b>) — prioritize actions where spend growth is not translating downstream."
+            "</div>"
+        ),
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        (
+            '<div style="padding:9px 12px;border:1px dashed #cbd5e1;border-radius:10px;background:#ffffff;'
+            'font-size:13px;color:#334155;margin:4px 0 12px 0;">'
+            "<b>Funnel journey:</b> Spend → Leads → Qualified → Closed Won"
+            "</div>"
         ),
         unsafe_allow_html=True,
     )
@@ -9392,7 +9442,21 @@ def render_page_market_mom(
         _sql0 = pd.to_numeric(tbl_view["SQL %"], errors="coerce").fillna(0).eq(0)
         _qw0 = pd.to_numeric(tbl_view["Q win %"], errors="coerce").fillna(0).eq(0)
         tbl_view = tbl_view.loc[~(_cw0 & _sql0 & _qw0)].copy()
-        compact_cols = ["Month", "Market", "Spend", "Δ Spend", "CW", "SQL %", "Q win %"]
+        def _decision_flag(_r: pd.Series) -> str:
+            _dsp = float(pd.to_numeric(_r.get("Δ Spend"), errors="coerce") or 0.0)
+            _dcw = float(pd.to_numeric(_r.get("Δ CW"), errors="coerce") or 0.0)
+            _sqlv = float(pd.to_numeric(_r.get("SQL %"), errors="coerce") or 0.0)
+            _qw = float(pd.to_numeric(_r.get("Q win %"), errors="coerce") or 0.0)
+            if _dsp > 0 and _dcw <= 0:
+                return "Spend up / CW flat"
+            if _sqlv >= 28.0 and _qw >= 4.0:
+                return "Healthy conversion"
+            if _sqlv >= 28.0 and _qw < 4.0:
+                return "Downstream weak"
+            return "Monitor"
+
+        tbl_view["Decision Flag"] = tbl_view.apply(_decision_flag, axis=1)
+        compact_cols = ["Month", "Market", "Spend", "Leads", "Qualified", "CW", "SQL %", "Q win %", "Δ Spend", "Δ CW", "Decision Flag"]
         compact_tbl = tbl_view[compact_cols].copy()
 
         def _delta_cell(v: float, money: bool) -> str:
@@ -9413,8 +9477,11 @@ def render_page_market_mom(
             spend = float(pd.to_numeric(r["Spend"], errors="coerce") or 0.0)
             d_sp = float(pd.to_numeric(r["Δ Spend"], errors="coerce") or 0.0)
             cw = int(pd.to_numeric(r["CW"], errors="coerce") or 0)
+            leads_v = int(pd.to_numeric(r["Leads"], errors="coerce") or 0)
+            qual_v = int(pd.to_numeric(r["Qualified"], errors="coerce") or 0)
             sql = float(pd.to_numeric(r["SQL %"], errors="coerce") or 0.0)
             qwin = float(pd.to_numeric(r["Q win %"], errors="coerce") or 0.0)
+            d_cw = float(pd.to_numeric(r["Δ CW"], errors="coerce") or 0.0)
             _is_me = str(r["Market"]) == _MIDDLE_EAST_REGION_LABEL
             _row_style = (
                 ' style="background:#f0fdfa;font-weight:700;border-top:1px solid #99f6e4;"'
@@ -9426,10 +9493,14 @@ def render_page_market_mom(
                 f"<td>{html.escape(str(r['Month']))}</td>"
                 f"<td>{html.escape(str(r['Market']))}</td>"
                 f"<td>${spend:,.0f}</td>"
-                f"<td>{_delta_cell(d_sp, money=True)}</td>"
+                f"<td>{leads_v:,}</td>"
+                f"<td>{qual_v:,}</td>"
                 f"<td>{cw:,}</td>"
                 f"<td>{sql:.1f}%</td>"
                 f"<td>{qwin:.1f}%</td>"
+                f"<td>{_delta_cell(d_sp, money=True)}</td>"
+                f"<td>{_delta_cell(d_cw, money=False)}</td>"
+                f"<td>{html.escape(str(r['Decision Flag']))}</td>"
                 "</tr>"
             )
         table_html = (
@@ -9440,10 +9511,14 @@ def render_page_market_mom(
             '<th style="text-align:left;padding:8px;border-bottom:1px solid #e2e8f0;">Month</th>'
             '<th style="text-align:left;padding:8px;border-bottom:1px solid #e2e8f0;">Market</th>'
             '<th style="text-align:right;padding:8px;border-bottom:1px solid #e2e8f0;">Spend</th>'
-            '<th style="text-align:left;padding:8px;border-bottom:1px solid #e2e8f0;">Δ Spend</th>'
+            '<th style="text-align:right;padding:8px;border-bottom:1px solid #e2e8f0;">Leads</th>'
+            '<th style="text-align:right;padding:8px;border-bottom:1px solid #e2e8f0;">Qualified</th>'
             '<th style="text-align:right;padding:8px;border-bottom:1px solid #e2e8f0;">Closed won</th>'
             '<th style="text-align:right;padding:8px;border-bottom:1px solid #e2e8f0;">SQL %</th>'
             '<th style="text-align:right;padding:8px;border-bottom:1px solid #e2e8f0;">Q win %</th>'
+            '<th style="text-align:left;padding:8px;border-bottom:1px solid #e2e8f0;">Δ Spend</th>'
+            '<th style="text-align:left;padding:8px;border-bottom:1px solid #e2e8f0;">Δ CW</th>'
+            '<th style="text-align:left;padding:8px;border-bottom:1px solid #e2e8f0;">Decision Flag</th>'
             "</tr></thead>"
             f"<tbody>{''.join(rows_html)}</tbody>"
             "</table></div>"
@@ -9550,6 +9625,22 @@ def render_page_market_mom(
                 marker=dict(size=8),
             )
         )
+        fig_q.add_hline(
+            y=30.0,
+            line_dash="dot",
+            line_color="#0f766e",
+            opacity=0.65,
+            annotation_text="SQL target 30%",
+            annotation_position="top left",
+        )
+        fig_q.add_hline(
+            y=4.0,
+            line_dash="dot",
+            line_color="#6366f1",
+            opacity=0.65,
+            annotation_text="Q win ref 4%",
+            annotation_position="top right",
+        )
         fig_q.update_layout(
             title=dict(text="SQL % and Q win % over time", font=dict(size=14), pad=dict(t=4, b=14)),
             height=420,
@@ -9560,6 +9651,25 @@ def render_page_market_mom(
             xaxis=_xaxis,
         )
         st.plotly_chart(fig_q, width="stretch", key=f"{key_suffix}_pl_quality")
+        if not monthly.empty:
+            _latest = monthly.sort_values("month_key").iloc[-1]
+            _lv = float(pd.to_numeric(_latest.get("leads"), errors="coerce") or 0.0)
+            _qv = float(pd.to_numeric(_latest.get("qualified"), errors="coerce") or 0.0)
+            _cv = float(pd.to_numeric(_latest.get("cw"), errors="coerce") or 0.0)
+            leak_1 = (_lv - _qv) if _lv > 0 else 0.0
+            leak_2 = (_qv - _cv) if _qv > 0 else 0.0
+            if leak_1 >= leak_2:
+                _msg = (
+                    f"Biggest leakage is **Leads → Qualified** in {str(_latest.get('month_lbl') or 'current period')}: "
+                    f"{int(leak_1):,} leads did not qualify. Action: tighten lead quality and targeting."
+                )
+            else:
+                _msg = (
+                    f"Biggest leakage is **Qualified → Closed Won** in {str(_latest.get('month_lbl') or 'current period')}: "
+                    f"{int(leak_2):,} qualified leads did not close. Action: improve downstream sales conversion."
+                )
+            st.markdown('<div class="looker-table-title" style="margin-top:10px;">Funnel watchout</div>', unsafe_allow_html=True)
+            st.markdown(f"- {_msg}")
 
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -11019,11 +11129,7 @@ def render_main_dashboard(
     sheet_id, _ = _workbook_id_resolution()
     _fp = _secret_fingerprint(_service_account_from_streamlit_secrets())
     _load_banner = st.empty()
-    _load_banner.info(
-        "⏳ **Loading data** from Google Sheets. "
-        "Large workbooks may take **1–2 minutes**. "
-        "If loading stalls, confirm the sheet is shared with the **service account** in app **Secrets**, then refresh or restart."
-    )
+    _load_banner.info("**Loading…**")
     try:
         # Source of truth is the entire spreadsheet; aggregate data across tabs.
         df_loaded = load_all_worksheets_combined(sheet_id, _fp)
