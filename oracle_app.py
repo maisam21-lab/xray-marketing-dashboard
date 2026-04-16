@@ -11063,7 +11063,8 @@ def render_main_dashboard(
     with tab_channels:
         render_page_channels(df_loaded, start_date, end_date, inbound=False)
 
-    _render_xray_floating_ask_ai(df_loaded, start_date, end_date)
+    # AI widget temporarily disabled per request.
+    # _render_xray_floating_ask_ai(df_loaded, start_date, end_date)
 
 
 def main() -> None:
