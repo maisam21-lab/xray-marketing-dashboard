@@ -10315,15 +10315,16 @@ def _xray_ask_ai_dialog() -> None:
 
 def _render_xray_floating_ask_ai(df_loaded: pd.DataFrame, start_date: date, end_date: date) -> None:
     """Fixed-position Ask AI control — available on every tab (same scope logic as blended channel metrics)."""
-    payload, note = _build_global_ask_ai_payload(df_loaded, start_date, end_date)
-    st.session_state["_xray_ai_payload"] = payload
-    st.session_state["_xray_ai_scope_note"] = note
     if st.button(
         "Ask AI",
         key="xray_ask_ai_fab",
         type="secondary",
         help="Insights for the current data scope (blended metrics when available)",
     ):
+        with st.spinner("Preparing AI context..."):
+            payload, note = _build_global_ask_ai_payload(df_loaded, start_date, end_date)
+        st.session_state["_xray_ai_payload"] = payload
+        st.session_state["_xray_ai_scope_note"] = note
         _xray_ask_ai_dialog()
 
 
