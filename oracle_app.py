@@ -10219,12 +10219,60 @@ def _ai_rule_based_channel_insights(payload: dict[str, Any]) -> list[str]:
     return out
 
 
-def _ai_openai_answer(question: str, payload: dict[str, Any], *, model: str, api_key: str) -> str:
+def _ai_marketing_expert_offline_answer(question: str, payload: dict[str, Any], mode: str) -> str:
+    """Richer deterministic analyzer when no API key is available."""
+    totals = payload.get("totals", {}) or {}
+    channels = payload.get("channels", []) or []
+    spend = float(totals.get("spend") or 0.0)
+    leads = float(totals.get("leads") or 0.0)
+    qual = float(totals.get("qualified") or 0.0)
+    cw = float(totals.get("closed_won") or 0.0)
+    sql = (qual / leads * 100.0) if leads > 0 else 0.0
+    qwin = (cw / qual * 100.0) if qual > 0 else 0.0
+    cpl = (spend / leads) if leads > 0 else float("nan")
+    cpcw = (spend / cw) if cw > 0 else float("nan")
+    top = channels[0] if channels else {}
+    mode_hint = {
+        "CMO brief": "focus on executive-level business impact and budget risk",
+        "Paid media optimizer": "focus on channel reallocation, efficiency, and scaling/cut decisions",
+        "Funnel doctor": "focus on lead quality, SQL conversion, and downstream bottlenecks",
+    }.get(mode, "focus on practical marketing optimization decisions")
+    lines = [
+        f"**Offline analyzer ({mode})**",
+        f"- Mode lens: {mode_hint}.",
+        f"- Scope snapshot: `${spend:,.0f}` spend, `{leads:,.0f}` leads, `{qual:,.0f}` qualified, `{cw:,.0f}` closed won.",
+        f"- Funnel health: SQL% `{sql:.1f}%`, Q-win% `{qwin:.1f}%`, CPL `{('$'+format(cpl,',.2f')) if pd.notna(cpl) else '—'}`, CPCW `{('$'+format(cpcw,',.2f')) if pd.notna(cpcw) else '—'}`.",
+    ]
+    if top:
+        lines.append(
+            f"- Top spend channel: `{top.get('channel','n/a')}` with `${float(top.get('spend') or 0):,.0f}` spend "
+            f"and `{float(top.get('closed_won') or 0):,.0f}` closed won."
+        )
+    lines.extend(
+        [
+            "",
+            "**Recommended actions (next 2 weeks)**",
+            "- Reallocate 10-20% budget from lowest CW-per-spend channels to channels with better Q-win% and stable SQL%.",
+            "- Keep prospecting volume, but gate scaling on SQL% stability to avoid buying low-intent leads.",
+            "- Run one channel-level QA check on lead-source mapping (UTM/channel alignment) before major budget shifts.",
+            "",
+            "**Answer to your question**",
+            f"- Question received: _{question.strip()}_",
+            "- Primary driver should be checked in this order: lead volume shift -> SQL% shift -> Q-win% shift -> channel mix shift.",
+            "- Use this panel with an API key for a deeper narrative and channel-specific budget split recommendation.",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _ai_openai_answer(question: str, payload: dict[str, Any], *, model: str, api_key: str, mode: str) -> str:
     """Call OpenAI Chat Completions via HTTPS without extra package dependency."""
     system_prompt = (
-        "You are a marketing analytics copilot. Use only the provided JSON metrics. "
-        "Never invent numbers. Keep the answer concise and actionable with bullets. "
-        "When recommending actions, tie each action to a metric from the payload."
+        "You are a senior performance marketing strategist and RevOps analyst. "
+        "Use only the provided JSON metrics and never invent values. "
+        f"Analyzer mode: {mode}. "
+        "Respond with practical, decision-ready guidance: diagnosis, likely causes, and prioritized actions. "
+        "Tie every recommendation to a numeric signal from payload."
     )
     user_prompt = (
         "Question:\n"
@@ -10232,7 +10280,8 @@ def _ai_openai_answer(question: str, payload: dict[str, Any], *, model: str, api
         "Metrics payload (current dashboard filter scope):\n"
         f"{json.dumps(payload, ensure_ascii=True)}\n\n"
         "Return:\n"
-        "- 3-6 bullets\n"
+        "- 5-9 bullets\n"
+        "- include sections: Diagnosis, Likely causes, Actions\n"
         "- include exact numbers when referenced\n"
         "- include a short confidence line at the end."
     )
@@ -10302,7 +10351,10 @@ def _xray_ask_ai_dialog() -> None:
         "What should we scale and what should we cut next month?",
         "Where do leads look strong but downstream conversion is weak?",
     ]
-    c1, c2 = st.columns((1, 2))
+    modes = ["CMO brief", "Paid media optimizer", "Funnel doctor"]
+    c0, c1, c2 = st.columns((1, 1, 2))
+    with c0:
+        analyzer_mode = st.selectbox("Analyzer mode", modes, index=1, key="xray_ai_mode")
     with c1:
         preset = st.selectbox("Question template", presets, index=0, key="xray_ai_q_preset")
     with c2:
@@ -10322,17 +10374,16 @@ def _xray_ask_ai_dialog() -> None:
             api_key = _k or _ai_openai_key_from_secrets_or_env()
             model = _ai_openai_model_from_secrets_or_env()
             if not api_key:
-                st.info(
-                    "AI key not configured. Add `OPENAI_API_KEY` in Streamlit secrets to enable LLM answers. "
-                    "Deterministic bullets above still apply."
-                )
+                st.warning("API key not detected, using offline marketing analyzer mode.")
+                st.markdown("**Expert analysis (offline mode)**")
+                st.markdown(_ai_marketing_expert_offline_answer(q, payload, analyzer_mode))
             else:
                 with st.spinner("Generating insight..."):
-                    answer = _ai_openai_answer(q, payload, model=model, api_key=api_key)
+                    answer = _ai_openai_answer(q, payload, model=model, api_key=api_key, mode=analyzer_mode)
                 st.markdown("**AI answer**")
                 st.markdown(answer)
                 st.caption(
-                    f"Model: `{model}` · blend: `{payload.get('blend', 'n/a')}` · months: "
+                    f"Model: `{model}` · mode: `{analyzer_mode}` · blend: `{payload.get('blend', 'n/a')}` · months: "
                     f"{', '.join(payload.get('months') or ['n/a'])}"
                 )
 
