@@ -10413,6 +10413,7 @@ def _xray_render_ai_panel() -> None:
                 st.session_state["xray_ai_messages"] = []
 
         st.markdown('<div class="xray-ai-panel-title">Ask KitchenPark AI</div>', unsafe_allow_html=True)
+        st.caption("KitchenPark AI widget")
         h1, h2, h3, h4 = st.columns([2.5, 1.2, 0.4, 0.4], gap="small")
         with h2:
             st.selectbox("Model", ["o3", "GPT-4o", "GPT-5", "GPT-5.2"], key="xray_ai_model_pick", label_visibility="collapsed")
@@ -10461,23 +10462,28 @@ def _xray_render_ai_panel() -> None:
         with t2:
             st.caption(str(st.session_state.get("xray_ai_conn_status") or ""))
 
-        in1, in2, in3 = st.columns([4.4, 1.7, 0.8], gap="small")
-        with in1:
-            st.text_input("Ask", key="xray_ai_input", label_visibility="collapsed", placeholder="Ask anything about your dashboard...")
-        with in2:
-            analyzer_mode = st.selectbox(
-                "Mode",
-                ["General", "Paid media optimizer", "Funnel doctor", "CMO brief"],
-                key="xray_ai_mode",
-                label_visibility="collapsed",
-            )
-        with in3:
-            send_clicked = st.button("➤", key="xray_ai_send_btn", type="primary")
+        with st.form("xray_ai_send_form", clear_on_submit=True):
+            in1, in2, in3 = st.columns([4.4, 1.7, 0.8], gap="small")
+            with in1:
+                q = st.text_input(
+                    "Ask",
+                    key="xray_ai_input_form",
+                    label_visibility="collapsed",
+                    placeholder="Ask anything about your dashboard...",
+                )
+            with in2:
+                analyzer_mode = st.selectbox(
+                    "Mode",
+                    ["General", "Paid media optimizer", "Funnel doctor", "CMO brief"],
+                    key="xray_ai_mode",
+                    label_visibility="collapsed",
+                )
+            with in3:
+                send_clicked = st.form_submit_button("➤", type="primary", use_container_width=True)
 
-        q = str(st.session_state.get("xray_ai_input") or "").strip()
+        q = str(q or "").strip()
         if send_clicked and q:
             st.session_state["xray_ai_messages"].append({"role": "user", "content": q})
-            st.session_state["xray_ai_clear_input"] = True
             api_key = _k or _ai_openai_key_from_secrets_or_env()
             selected_model = str(st.session_state.get("xray_ai_model_pick") or "o3")
             model_map = {"o3": "o3", "GPT-4o": "gpt-4o", "GPT-5": "gpt-5", "GPT-5.2": "gpt-5.2"}
@@ -10499,6 +10505,8 @@ def _xray_render_ai_panel() -> None:
                     mode=analyzer_mode,
                     history=st.session_state.get("xray_ai_messages", [])[:-1],
                 )
+            if str(answer).lower().startswith("ai request failed"):
+                answer = f"Connection issue while calling OpenAI.\n\n{answer}"
             footer = (
                 f"\n\n_Model: `{model}` · mode: `{analyzer_mode}` · blend: `{payload.get('blend', 'n/a')}` "
                 f"· months: {', '.join(payload.get('months') or ['n/a'])}_"
