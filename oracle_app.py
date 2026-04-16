@@ -10238,7 +10238,15 @@ def _ai_rule_based_channel_insights(payload: dict[str, Any]) -> list[str]:
     return out
 
 
-def _ai_openai_answer(question: str, payload: dict[str, Any], *, model: str, api_key: str, mode: str) -> str:
+def _ai_openai_answer(
+    question: str,
+    payload: dict[str, Any],
+    *,
+    model: str,
+    api_key: str,
+    mode: str,
+    history: Optional[list[dict[str, str]]] = None,
+) -> str:
     """Call OpenAI Chat Completions via HTTPS without extra package dependency."""
     system_prompt = (
         "You are a senior performance marketing strategist and RevOps analyst. "
@@ -10248,24 +10256,25 @@ def _ai_openai_answer(question: str, payload: dict[str, Any], *, model: str, api
         "Tie every recommendation to a numeric signal from payload."
     )
     user_prompt = (
-        "Question:\n"
+        "Current user question:\n"
         f"{question.strip()}\n\n"
         "Metrics payload (current dashboard filter scope):\n"
         f"{json.dumps(payload, ensure_ascii=True)}\n\n"
         "Return:\n"
-        "- 5-9 bullets\n"
+        "- concise markdown answer (not JSON)\n"
         "- include sections: Diagnosis, Likely causes, Actions\n"
         "- include exact numbers when referenced\n"
         "- include a short confidence line at the end."
     )
-    body = {
-        "model": model,
-        "temperature": 0.2,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-    }
+    msgs: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
+    if history:
+        for m in history[-8:]:
+            role = str(m.get("role") or "").strip().lower()
+            content = str(m.get("content") or "").strip()
+            if role in ("user", "assistant") and content:
+                msgs.append({"role": role, "content": content})
+    msgs.append({"role": "user", "content": user_prompt})
+    body = {"model": model, "temperature": 0.2, "messages": msgs}
     req = urllib.request.Request(
         "https://api.openai.com/v1/chat/completions",
         data=json.dumps(body).encode("utf-8"),
@@ -10311,8 +10320,13 @@ def _xray_ask_ai_dialog() -> None:
     if note:
         st.caption(note)
     st.caption(f"AI key detected: {'yes' if _k else 'no'} ({_k_src})")
+    if "xray_ai_messages" not in st.session_state:
+        st.session_state["xray_ai_messages"] = []
     if st.button("Close", key="xray_ai_close_btn"):
         st.session_state["xray_ai_open"] = False
+        st.rerun()
+    if st.button("New chat", key="xray_ai_new_chat_btn"):
+        st.session_state["xray_ai_messages"] = []
         st.rerun()
     for b in _ai_rule_based_channel_insights(payload)[:5]:
         st.markdown(f"- {b}")
@@ -10324,42 +10338,56 @@ def _xray_ask_ai_dialog() -> None:
         "Where do leads look strong but downstream conversion is weak?",
     ]
     modes = ["CMO brief", "Paid media optimizer", "Funnel doctor"]
-    c0, c1, c2 = st.columns((1, 1, 2))
+    c0, c1 = st.columns((1, 1))
     with c0:
         analyzer_mode = st.selectbox("Analyzer mode", modes, index=1, key="xray_ai_mode")
     with c1:
         preset = st.selectbox("Question template", presets, index=0, key="xray_ai_q_preset")
-    with c2:
-        q_default = st.session_state.get("xray_ai_q_text") or preset
-        question = st.text_area(
-            "Your question",
-            value=q_default,
-            height=100,
-            key="xray_ai_q_text",
-        )
-    ask = st.button("Generate AI insight", key="xray_ai_ask_btn", type="primary")
-    if ask:
-        q = (question or "").strip()
-        if not q:
-            st.warning("Type a question first.")
-        else:
+    if st.button("Use template in chat", key="xray_ai_use_template_btn"):
+        st.session_state["xray_ai_prefill"] = preset
+
+    for m in st.session_state.get("xray_ai_messages", []):
+        with st.chat_message("assistant" if m.get("role") == "assistant" else "user"):
+            st.markdown(str(m.get("content") or ""))
+
+    q = st.chat_input("Ask anything about performance marketing...", key="xray_ai_chat_input")
+    if not q and st.session_state.get("xray_ai_prefill"):
+        q = str(st.session_state.get("xray_ai_prefill") or "").strip()
+        st.session_state["xray_ai_prefill"] = ""
+    if q:
+        q = str(q).strip()
+        if q:
+            st.session_state["xray_ai_messages"].append({"role": "user", "content": q})
+            with st.chat_message("user"):
+                st.markdown(q)
             api_key = _k or _ai_openai_key_from_secrets_or_env()
             model = _ai_openai_model_from_secrets_or_env()
             if not api_key:
-                st.error(
+                err = (
                     "OpenAI key not detected in this deployed app. "
                     "Expected keys: `OPENAI_API_KEY`, `OPENAI_KEY`, `OPENAI_APIKEY`, "
                     "or nested `[openai] api_key` in Streamlit secrets."
                 )
+                with st.chat_message("assistant"):
+                    st.error(err)
+                st.session_state["xray_ai_messages"].append({"role": "assistant", "content": err})
             else:
-                with st.spinner("Generating insight..."):
-                    answer = _ai_openai_answer(q, payload, model=model, api_key=api_key, mode=analyzer_mode)
-                st.markdown("**AI answer**")
-                st.markdown(answer)
-                st.caption(
-                    f"Model: `{model}` · mode: `{analyzer_mode}` · blend: `{payload.get('blend', 'n/a')}` · months: "
-                    f"{', '.join(payload.get('months') or ['n/a'])}"
-                )
+                with st.chat_message("assistant"):
+                    with st.spinner("Thinking..."):
+                        answer = _ai_openai_answer(
+                            q,
+                            payload,
+                            model=model,
+                            api_key=api_key,
+                            mode=analyzer_mode,
+                            history=st.session_state.get("xray_ai_messages", [])[:-1],
+                        )
+                    st.markdown(answer)
+                    st.caption(
+                        f"Model: `{model}` · mode: `{analyzer_mode}` · blend: `{payload.get('blend', 'n/a')}` · months: "
+                        f"{', '.join(payload.get('months') or ['n/a'])}"
+                    )
+                st.session_state["xray_ai_messages"].append({"role": "assistant", "content": answer})
 
 
 def _render_xray_floating_ask_ai(df_loaded: pd.DataFrame, start_date: date, end_date: date) -> None:
