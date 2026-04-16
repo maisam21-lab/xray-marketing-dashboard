@@ -5796,6 +5796,80 @@ def _mom_executive_snapshot_scorecards_html(
     )
 
 
+def _pmc_spend_executive_scorecards_html(
+    *,
+    total_spend: float,
+    active_channels: int,
+    top_channel: str,
+    top_share_pct: float,
+    mom_spend_delta: float,
+) -> str:
+    """Spend-by-channel hero cards using the same pastel scorecard style as main KPI tiles."""
+    d = 0.0
+
+    def _step() -> float:
+        nonlocal d
+        d += 0.035
+        return d
+
+    prev_spend = float(total_spend - mom_spend_delta)
+    spend_delta = _kpi_funnel_delta_html(float(total_spend), prev_spend, vs_label="prior month", disabled=False)
+    _delta_off = _kpi_funnel_delta_html(0.0, 0.0, disabled=True)
+
+    card_spend = _kpi_funnel_pastel_card_html(
+        icon="💲",
+        title="Total Spend",
+        value_s=f"${total_spend:,.0f}",
+        delta_html=spend_delta,
+        sub_html=_kpi_funnel_sub_row("MoM delta", f"${mom_spend_delta:+,.0f}") + _kpi_funnel_sub_row("Scope", "Spend by channel"),
+        delay=_step(),
+        hue="cw",
+    )
+    card_active = _kpi_funnel_pastel_card_html(
+        icon="◍",
+        title="Active Channels",
+        value_s=f"{active_channels:,}",
+        delta_html=_delta_off,
+        sub_html=_kpi_funnel_sub_row("Spend > 0", f"{active_channels:,}") + _kpi_funnel_sub_row("Sort", "Spend desc"),
+        delay=_step(),
+        hue="leads",
+    )
+    card_top = _kpi_funnel_pastel_card_html(
+        icon="★",
+        title="Top Channel",
+        value_s=str(top_channel or "—"),
+        delta_html=_delta_off,
+        sub_html=_kpi_funnel_sub_row("Share", f"{top_share_pct:.1f}%") + _kpi_funnel_sub_row("Concentration", "Highest spend"),
+        delay=_step(),
+        hue="pipe",
+    )
+    card_share = _kpi_funnel_pastel_card_html(
+        icon="◔",
+        title="Top Channel Share %",
+        value_s=f"{top_share_pct:.1f}%",
+        delta_html=_delta_off,
+        sub_html=_kpi_funnel_sub_row("Threshold", "45% warning") + _kpi_funnel_sub_row("Type", "Spend share"),
+        delay=_step(),
+        hue="leads",
+    )
+    card_mom = _kpi_funnel_pastel_card_html(
+        icon="↕",
+        title="MoM Spend Change",
+        value_s=f"${mom_spend_delta:+,.0f}",
+        delta_html=spend_delta,
+        sub_html=_kpi_funnel_sub_row("Current spend", f"${total_spend:,.0f}") + _kpi_funnel_sub_row("Prior spend", f"${prev_spend:,.0f}"),
+        delay=_step(),
+        hue="cw",
+    )
+    return (
+        '<div class="kpi-funnel-wrap kpi-funnel-wrap--pastel-scorecard mpo-kpi-shell">'
+        '<div class="kpi-funnel-section">'
+        '<div class="kpi-funnel-section-title kpi-funnel-section-title--cw">Spend snapshot — by channel</div>'
+        f'<div class="kpi-funnel-grid">{card_spend}{card_active}{card_top}{card_share}{card_mom}</div>'
+        "</div></div>"
+    )
+
+
 def _kpi_block(
     *,
     total_spend: float,
@@ -10731,12 +10805,16 @@ def _render_page_performance_marketing_channels(
     top_channel = str(top_row["channel"])
     top_share = float(top_row["share_pct"])
     mom_spend_change = float(pd.to_numeric(d.get("mom_spend_delta", 0), errors="coerce").fillna(0).sum())
-    c1, c2, c3, c4, c5 = st.columns(5, gap="small")
-    c1.metric("Total Spend", f"${total_spend:,.0f}")
-    c2.metric("Active Channels", f"{active_channels:,}")
-    c3.metric("Top Channel", top_channel)
-    c4.metric("Top Channel Share %", f"{top_share:.1f}%")
-    c5.metric("MoM Spend Change", f"${mom_spend_change:,.0f}", delta=f"{mom_spend_change:+,.0f}")
+    st.markdown(
+        _pmc_spend_executive_scorecards_html(
+            total_spend=total_spend,
+            active_channels=active_channels,
+            top_channel=top_channel,
+            top_share_pct=top_share,
+            mom_spend_delta=mom_spend_change,
+        ),
+        unsafe_allow_html=True,
+    )
 
     # Insight strip.
     _warn_conc = top_share >= 45.0
