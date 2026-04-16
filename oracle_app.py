@@ -10582,8 +10582,17 @@ def _pmc_spend_exec_frame(by_ch: pd.DataFrame) -> pd.DataFrame:
         return by_ch.copy()
     d = by_ch.copy()
     if "channel" not in d.columns and "unified_channel" in d.columns:
-        d["channel"] = d["unified_channel"].astype(str)
-    d["channel"] = d["channel"].astype(str).str.strip()
+        _uc = d.loc[:, "unified_channel"]
+        if isinstance(_uc, pd.DataFrame):
+            _uc = _uc.iloc[:, 0]
+        d["channel"] = _uc.astype(str)
+    if "channel" in d.columns:
+        _ch = d.loc[:, "channel"]
+        if isinstance(_ch, pd.DataFrame):
+            _ch = _ch.iloc[:, 0]
+        d["channel"] = _ch.astype(str).str.strip()
+    else:
+        d["channel"] = "Other"
     for c in ("spend", "leads", "qualified", "cw", "mom_spend_delta"):
         d[c] = pd.to_numeric(d.get(c, 0), errors="coerce").fillna(0.0)
     d["share_pct"] = (d["spend"] / float(d["spend"].sum()) * 100.0) if float(d["spend"].sum()) > 0 else 0.0
@@ -10806,7 +10815,7 @@ def _render_page_performance_marketing_channels(
 
     st.markdown('<div class="dash-chart-stack">', unsafe_allow_html=True)
     st.markdown('<div class="looker-table-title">Spend charts</div>', unsafe_allow_html=True)
-    _pmc_render_charts(d.rename(columns={"channel": "unified_channel"}), key_suffix=key_suffix)
+    _pmc_render_charts(d, key_suffix=key_suffix)
     st.markdown('<div class="looker-table-title" style="margin-top:10px;">Spend watchouts</div>', unsafe_allow_html=True)
     _w: list[str] = []
     _w.append(f"{top_channel} carries {top_share:.1f}% of spend.")
