@@ -10290,6 +10290,9 @@ def _xray_ask_ai_dialog() -> None:
     if note:
         st.caption(note)
     st.caption(f"AI key detected: {'yes' if _k else 'no'} ({_k_src})")
+    if st.button("Close", key="xray_ai_close_btn"):
+        st.session_state["xray_ai_open"] = False
+        st.rerun()
     for b in _ai_rule_based_channel_insights(payload)[:5]:
         st.markdown(f"- {b}")
 
@@ -10336,12 +10339,16 @@ def _xray_ask_ai_dialog() -> None:
 
 def _render_xray_floating_ask_ai(df_loaded: pd.DataFrame, start_date: date, end_date: date) -> None:
     """Fixed-position Ask AI control — available on every tab (same scope logic as blended channel metrics)."""
+    if "xray_ai_open" not in st.session_state:
+        st.session_state["xray_ai_open"] = False
     if st.button(
         "Ask AI",
         key="xray_ask_ai_fab",
         type="secondary",
         help="Insights for the current data scope (blended metrics when available)",
     ):
+        st.session_state["xray_ai_open"] = True
+    if st.session_state.get("xray_ai_open"):
         with st.spinner("Preparing AI context..."):
             payload, note = _build_global_ask_ai_payload(df_loaded, start_date, end_date)
         st.session_state["_xray_ai_payload"] = payload
