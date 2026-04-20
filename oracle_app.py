@@ -1551,18 +1551,40 @@ def _build_monthly_spend_reconciliation(
     tolerance_abs: float = 1.0,
 ) -> pd.DataFrame:
     """Monthly spend reconciliation table with match/mismatch status."""
+
+    def _sum_cost_like_columns_by_month(frame: pd.DataFrame, value_name: str) -> pd.DataFrame:
+        if frame.empty:
+            return pd.DataFrame(columns=["month", value_name])
+        x = frame.copy()
+        x = _canonicalize_spend_month_column(x)
+        if "month" not in x.columns:
+            x = _normalize_master_merge_frame(x)
+        if "month" not in x.columns:
+            return pd.DataFrame(columns=["month", value_name])
+        x["month"] = x["month"].map(_month_norm_key)
+        x = x.loc[x["month"].astype(str).str.strip().ne("")]
+        if x.empty:
+            return pd.DataFrame(columns=["month", value_name])
+
+        cost_cols = [c for c in x.columns if "cost" in str(c).strip().lower()]
+        if not cost_cols:
+            return pd.DataFrame(columns=["month", value_name])
+        mat = pd.DataFrame(index=x.index)
+        for c in cost_cols:
+            mat[c] = pd.to_numeric(x[c], errors="coerce").fillna(0.0)
+        x["_cost_like_total"] = mat.sum(axis=1)
+        out = x.groupby("month", as_index=False)["_cost_like_total"].sum()
+        out = out.rename(columns={"_cost_like_total": value_name})
+        return out
+
     a = _spend_sheet_pivot_by_month_country(xray_spend)
-    b = _spend_sheet_pivot_by_month_country(paid_media_spend)
     ag = (
         a.groupby("month", as_index=False)["cost"].sum().rename(columns={"cost": "xray_spend"})
         if not a.empty
         else pd.DataFrame(columns=["month", "xray_spend"])
     )
-    bg = (
-        b.groupby("month", as_index=False)["cost"].sum().rename(columns={"cost": "supermetrics_spend"})
-        if not b.empty
-        else pd.DataFrame(columns=["month", "supermetrics_spend"])
-    )
+    # Supermetrics side: sum every numeric column whose header contains "cost".
+    bg = _sum_cost_like_columns_by_month(paid_media_spend, "supermetrics_spend")
     out = ag.merge(bg, on="month", how="outer").fillna(0.0)
     if out.empty:
         return pd.DataFrame(
