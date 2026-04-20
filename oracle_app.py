@@ -2137,7 +2137,9 @@ _NUM_FIELDS = frozenset(
 def _to_number_series(s: pd.Series) -> pd.Series:
     """Robust numeric parser for Sheets/CSV text like '$1,234.50', '3.4%', '(120)'."""
     if pd.api.types.is_numeric_dtype(s):
-        return pd.to_numeric(s, errors="coerce").fillna(0)
+        out_num = pd.to_numeric(s, errors="coerce")
+        out_num = out_num.replace([float("inf"), float("-inf")], pd.NA)
+        return out_num.fillna(0)
     txt = s.astype(str).str.strip()
     neg_paren = txt.str.match(r"^\(.*\)$", na=False)
     cleaned = (
@@ -2146,7 +2148,8 @@ def _to_number_series(s: pd.Series) -> pd.Series:
         .str.replace(r"^\((.*)\)$", r"\1", regex=True)
         .str.replace(r"[^0-9.\-]", "", regex=True)
     )
-    out = pd.to_numeric(cleaned, errors="coerce").fillna(0)
+    out = pd.to_numeric(cleaned, errors="coerce")
+    out = out.replace([float("inf"), float("-inf")], pd.NA).fillna(0)
     us_abs = float(out.abs().sum())
     used_eu = False
     if us_abs < 1e-12 and txt.str.contains(",", na=False).any():
@@ -2156,7 +2159,7 @@ def _to_number_series(s: pd.Series) -> pd.Series:
             used_eu = True
     if not used_eu:
         out.loc[neg_paren] = -out.loc[neg_paren]
-    return out
+    return out.replace([float("inf"), float("-inf")], pd.NA).fillna(0)
 
 
 def _closed_won_to_numeric_series(s: pd.Series) -> pd.Series:
@@ -3894,7 +3897,7 @@ def _leads_pivot_rowcount_by_month_country(ld: pd.DataFrame) -> pd.DataFrame:
     x["month"] = x["_mk"]
     x = x.drop(columns=["_mk"], errors="ignore")
     cnt = x.groupby(["month", "country"], as_index=False, dropna=False).size().rename(columns={"size": "leads"})
-    cnt["leads"] = pd.to_numeric(cnt["leads"], errors="coerce").fillna(0).astype(int)
+    cnt["leads"] = pd.to_numeric(cnt["leads"], errors="coerce").replace([float("inf"), float("-inf")], 0).fillna(0).astype(int)
     return cnt
 
 
@@ -8993,7 +8996,12 @@ def render_page_marketing_performance(
                 if "qualified" not in leads_g.columns:
                     leads_g["qualified"] = 0.0
                 leads_g["qualified"] = pd.to_numeric(leads_g["qualified"], errors="coerce").fillna(0.0)
-                leads_g["leads"] = pd.to_numeric(leads_g["leads"], errors="coerce").fillna(0).astype(int)
+                leads_g["leads"] = (
+                    pd.to_numeric(leads_g["leads"], errors="coerce")
+                    .replace([float("inf"), float("-inf")], 0)
+                    .fillna(0)
+                    .astype(int)
+                )
     post_g = _agg_for_master(
         _normalize_master_merge_frame(post_df),
         ["closed_won", "pitching", "new", "working", "qualifying", "negotiation", "commitment", "closed_lost"],
@@ -9260,7 +9268,7 @@ def _mom_monthly_series(df: pd.DataFrame, spend_df: Optional[pd.DataFrame] = Non
         monthly["spend"] = pd.to_numeric(monthly["spend"], errors="coerce").fillna(0.0)
     else:
         monthly["spend"] = 0.0
-    monthly["cw"] = pd.to_numeric(monthly["cw"], errors="coerce").fillna(0).astype(int)
+    monthly["cw"] = pd.to_numeric(monthly["cw"], errors="coerce").replace([float("inf"), float("-inf")], 0).fillna(0).astype(int)
     monthly["qualified"] = pd.to_numeric(monthly["qualified"], errors="coerce").fillna(0.0)
     month_leads: list[int] = []
     for m in monthly["month"].tolist():
@@ -9437,7 +9445,7 @@ def _mom_market_month_delta_table(df: pd.DataFrame, spend_df: Optional[pd.DataFr
     out["Spend"] = pd.to_numeric(out["Spend"], errors="coerce").fillna(0.0)
     out["Δ Spend"] = pd.to_numeric(out["Δ Spend"], errors="coerce").fillna(0.0)
     for c in ("CW", "Δ CW", "Leads", "Δ Leads", "Qualified", "Δ Qualified"):
-        out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0).astype(int)
+        out[c] = pd.to_numeric(out[c], errors="coerce").replace([float("inf"), float("-inf")], 0).fillna(0).astype(int)
     for c in ("SQL %", "Δ SQL pp", "Q win %", "Δ Q win pp"):
         out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0.0).round(2)
     out["_me_sort"] = out["Market"].astype(str).eq(_MIDDLE_EAST_REGION_LABEL)
@@ -10136,12 +10144,22 @@ def _pmc_by_channel_summary(u: pd.DataFrame, leads_lut: Optional[pd.DataFrame] =
         _qv = pd.to_numeric(g["qualified_from_leads"], errors="coerce").fillna(0)
         _lr = pd.to_numeric(g["spend_rows"], errors="coerce").fillna(0)
         _qs = pd.to_numeric(g["qualified_spend"], errors="coerce").fillna(0)
-        g["leads"] = _lv.where(_lv > 0, _lr).astype(int)
-        g["qualified"] = _qv.where(_qv > 0, _qs).astype(int)
+        g["leads"] = _lv.where(_lv > 0, _lr).replace([float("inf"), float("-inf")], 0).fillna(0).astype(int)
+        g["qualified"] = _qv.where(_qv > 0, _qs).replace([float("inf"), float("-inf")], 0).fillna(0).astype(int)
         g = g.drop(columns=["leads_from_leads", "qualified_from_leads"], errors="ignore")
     else:
-        g["leads"] = pd.to_numeric(g["spend_rows"], errors="coerce").fillna(0).astype(int)
-        g["qualified"] = pd.to_numeric(g["qualified_spend"], errors="coerce").fillna(0).astype(int)
+        g["leads"] = (
+            pd.to_numeric(g["spend_rows"], errors="coerce")
+            .replace([float("inf"), float("-inf")], 0)
+            .fillna(0)
+            .astype(int)
+        )
+        g["qualified"] = (
+            pd.to_numeric(g["qualified_spend"], errors="coerce")
+            .replace([float("inf"), float("-inf")], 0)
+            .fillna(0)
+            .astype(int)
+        )
     g = g.drop(columns=["qualified_spend"], errors="ignore")
     g["CPL"] = g.apply(lambda r: (r["spend"] / r["leads"]) if r["leads"] else float("nan"), axis=1)
     g["SQL%"] = g.apply(
