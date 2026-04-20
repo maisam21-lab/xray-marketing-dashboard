@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-20-safe-int-casts-v2"
+DASHBOARD_BUILD = "2026-04-20-safe-int-casts-v3"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -2648,7 +2648,12 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
         dn = pd.to_numeric(s_dt, errors="coerce")
         int_ok = dn.notna() & (dn - dn.round()).abs() < 0.02
         if bool(int_ok.any()):
-            ni = dn.loc[int_ok].round().astype("int64")
+            ni = (
+                pd.to_numeric(dn.loc[int_ok].round(), errors="coerce")
+                .replace([float("inf"), float("-inf")], pd.NA)
+                .dropna()
+                .astype("int64")
+            )
             yk = ni.map(_yyyymm_calendar_to_key)
             for ix in yk.index[yk.ne("")]:
                 s_dt.loc[ix] = pd.Timestamp(str(yk.loc[ix]) + "-01")
@@ -11452,6 +11457,8 @@ def render_main_dashboard(
 
     if load_error:
         st.error(f"Failed to load spreadsheet: {load_error}")
+        with st.expander("Load error details", expanded=False):
+            st.exception(RuntimeError(load_error))
         return
     if df_loaded.empty:
         st.warning(_no_data_msg)
