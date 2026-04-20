@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-20-single-supermetrics-workbook-gids"
+DASHBOARD_BUILD = "2026-04-20-safe-int-casts-v2"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -1927,7 +1927,7 @@ def _sum_closed_won_unique_opportunities(df: pd.DataFrame) -> int:
     if df.empty or "closed_won" not in df.columns:
         return 0
     cw = pd.to_numeric(df["closed_won"], errors="coerce").fillna(0)
-    cw_bin = (cw > 0).astype(int)
+    cw_bin = _to_int_series_safe(cw > 0)
     keys = _opp_key_columns_for_post_lead(df)
     if keys:
         tmp = df.loc[:, keys].copy()
@@ -2160,6 +2160,13 @@ def _to_number_series(s: pd.Series) -> pd.Series:
     if not used_eu:
         out.loc[neg_paren] = -out.loc[neg_paren]
     return out.replace([float("inf"), float("-inf")], pd.NA).fillna(0)
+
+
+def _to_int_series_safe(s: pd.Series) -> pd.Series:
+    """Safe integer conversion for dashboard metrics (handles NaN/NA/inf)."""
+    out = pd.to_numeric(s, errors="coerce")
+    out = out.replace([float("inf"), float("-inf")], pd.NA).fillna(0)
+    return out.round().astype(int)
 
 
 def _closed_won_to_numeric_series(s: pd.Series) -> pd.Series:
@@ -2420,7 +2427,7 @@ def _preprocess_excel_sheet(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
             df["Leads"] = 1
         status = df.get("Lead Status", pd.Series(index=df.index, dtype=str)).astype(str).str.lower()
         if "Qualified" not in df.columns:
-            df["Qualified"] = status.str.contains("qualified", na=False).astype(int)
+            df["Qualified"] = _to_int_series_safe(status.str.contains("qualified", na=False))
         if "Date Formatted" in df.columns and "Date" not in df.columns:
             df["Date"] = pd.to_datetime(df["Date Formatted"], errors="coerce")
     if _is_post_lead_pipeline_tab(t):
@@ -2431,28 +2438,30 @@ def _preprocess_excel_sheet(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
         if "Qualified" not in df.columns:
             df["Qualified"] = 1
         if "Pitching" not in df.columns:
-            df["Pitching"] = stage.str.contains("pitch", na=False).astype(int)
+            df["Pitching"] = _to_int_series_safe(stage.str.contains("pitch", na=False))
         if "Qualifying" not in df.columns:
             # Distinct from Qualified SQL / Disqualified — match Qualifying + Qualification (Salesforce labels).
             _qual_core = stage.str.contains("qualifying", na=False) | stage.str.contains(
                 "qualification", na=False
             )
-            df["Qualifying"] = (
+            df["Qualifying"] = _to_int_series_safe(
                 _qual_core
                 & ~stage.str.contains("qualified", na=False)
                 & ~stage.str.contains("disqualif", na=False)
-            ).astype(int)
+            )
         _has_is_cw_col = any(_norm_header_key(c) == "is_cw" for c in df.columns)
         if "Closed Won" not in df.columns and not _has_is_cw_col:
-            df["Closed Won"] = raw_stage.map(_is_closed_won_stage_text).astype(int)
+            df["Closed Won"] = _to_int_series_safe(raw_stage.map(_is_closed_won_stage_text))
         if "Negotiation" not in df.columns:
-            df["Negotiation"] = stage.str.contains("negotiation", na=False).astype(int)
+            df["Negotiation"] = _to_int_series_safe(stage.str.contains("negotiation", na=False))
         if "Commitment" not in df.columns:
-            df["Commitment"] = stage.str.contains("commitment", na=False).astype(int)
+            df["Commitment"] = _to_int_series_safe(stage.str.contains("commitment", na=False))
         if "Closed Lost" not in df.columns:
-            df["Closed Lost"] = stage.str.contains("closed lost", na=False).astype(int)
+            df["Closed Lost"] = _to_int_series_safe(stage.str.contains("closed lost", na=False))
         if "Total Live" not in df.columns:
-            df["Total Live"] = stage.str.contains("new|working|qualifying|pitch|negotiation|commitment", na=False).astype(int)
+            df["Total Live"] = _to_int_series_safe(
+                stage.str.contains("new|working|qualifying|pitch|negotiation|commitment", na=False)
+            )
         _flc = next(
             (
                 c
@@ -2489,7 +2498,7 @@ def _preprocess_excel_sheet(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
         stage = df.get(stage_col or "Stage", pd.Series(index=df.index, dtype=str)).astype(str).str.lower().str.strip()
         _has_is_cw_raw = any(_norm_header_key(c) == "is_cw" for c in df.columns)
         if "Closed Won" not in df.columns and not _has_is_cw_raw:
-            df["Closed Won"] = stage.str.contains("closed won", na=False).astype(int)
+            df["Closed Won"] = _to_int_series_safe(stage.str.contains("closed won", na=False))
         if "Date" not in df.columns:
             if "Close Date" in df.columns:
                 df["Date"] = pd.to_datetime(df["Close Date"], errors="coerce", dayfirst=True)
@@ -2511,7 +2520,7 @@ def _preprocess_excel_sheet(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
         stage_col_any = next((c for c in df.columns if "stage" in _norm_header_key(c)), None)
     _has_is_cw_g = any(_norm_header_key(c) == "is_cw" for c in df.columns)
     if stage_col_any and "Closed Won" not in df.columns and not _has_is_cw_g:
-        df["Closed Won"] = df[stage_col_any].map(_is_closed_won_stage_text).astype(int)
+        df["Closed Won"] = _to_int_series_safe(df[stage_col_any].map(_is_closed_won_stage_text))
     return df
 
 
@@ -3897,7 +3906,7 @@ def _leads_pivot_rowcount_by_month_country(ld: pd.DataFrame) -> pd.DataFrame:
     x["month"] = x["_mk"]
     x = x.drop(columns=["_mk"], errors="ignore")
     cnt = x.groupby(["month", "country"], as_index=False, dropna=False).size().rename(columns={"size": "leads"})
-    cnt["leads"] = pd.to_numeric(cnt["leads"], errors="coerce").replace([float("inf"), float("-inf")], 0).fillna(0).astype(int)
+    cnt["leads"] = _to_int_series_safe(cnt["leads"])
     return cnt
 
 
@@ -3913,7 +3922,7 @@ def _leads_qualified_overlay_frame_by_month_market(ld: pd.DataFrame) -> pd.DataF
         return pd.DataFrame(columns=["month", "Market", "leads", "qualified"])
     x["month"] = x["_mk"]
     x = x.drop(columns=["_mk"], errors="ignore")
-    x["_qual"] = _leads_is_qualified_mask(x).astype(int)
+    x["_qual"] = _to_int_series_safe(_leads_is_qualified_mask(x))
     _gb = x.groupby(["month", "country"], dropna=False)
     g = _gb.size().reset_index(name="leads")
     g = g.merge(_gb["_qual"].sum().reset_index(name="qualified"), on=["month", "country"], how="left")
@@ -8054,7 +8063,7 @@ def _master_build_gm_with_metrics(
         gm = _overlay_spend_from_spend_grid_on_gm(gm, spend_grid)
         gm = _master_view_refresh_middle_east_spend_row(gm)
     gm["Spend"] = gm["spend"]
-    gm["CW (Inc Approved)"] = gm["cw"].astype(int)
+    gm["CW (Inc Approved)"] = _to_int_series_safe(gm["cw"])
     if "lf" in gm.columns:
         gm["1st Month LF"] = gm["lf"]
     if "tcv" in gm.columns:
@@ -8996,12 +9005,7 @@ def render_page_marketing_performance(
                 if "qualified" not in leads_g.columns:
                     leads_g["qualified"] = 0.0
                 leads_g["qualified"] = pd.to_numeric(leads_g["qualified"], errors="coerce").fillna(0.0)
-                leads_g["leads"] = (
-                    pd.to_numeric(leads_g["leads"], errors="coerce")
-                    .replace([float("inf"), float("-inf")], 0)
-                    .fillna(0)
-                    .astype(int)
-                )
+                leads_g["leads"] = _to_int_series_safe(leads_g["leads"])
     post_g = _agg_for_master(
         _normalize_master_merge_frame(post_df),
         ["closed_won", "pitching", "new", "working", "qualifying", "negotiation", "commitment", "closed_lost"],
@@ -9268,7 +9272,7 @@ def _mom_monthly_series(df: pd.DataFrame, spend_df: Optional[pd.DataFrame] = Non
         monthly["spend"] = pd.to_numeric(monthly["spend"], errors="coerce").fillna(0.0)
     else:
         monthly["spend"] = 0.0
-    monthly["cw"] = pd.to_numeric(monthly["cw"], errors="coerce").replace([float("inf"), float("-inf")], 0).fillna(0).astype(int)
+    monthly["cw"] = _to_int_series_safe(monthly["cw"])
     monthly["qualified"] = pd.to_numeric(monthly["qualified"], errors="coerce").fillna(0.0)
     month_leads: list[int] = []
     for m in monthly["month"].tolist():
@@ -9445,7 +9449,7 @@ def _mom_market_month_delta_table(df: pd.DataFrame, spend_df: Optional[pd.DataFr
     out["Spend"] = pd.to_numeric(out["Spend"], errors="coerce").fillna(0.0)
     out["Δ Spend"] = pd.to_numeric(out["Δ Spend"], errors="coerce").fillna(0.0)
     for c in ("CW", "Δ CW", "Leads", "Δ Leads", "Qualified", "Δ Qualified"):
-        out[c] = pd.to_numeric(out[c], errors="coerce").replace([float("inf"), float("-inf")], 0).fillna(0).astype(int)
+        out[c] = _to_int_series_safe(out[c])
     for c in ("SQL %", "Δ SQL pp", "Q win %", "Δ Q win pp"):
         out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0.0).round(2)
     out["_me_sort"] = out["Market"].astype(str).eq(_MIDDLE_EAST_REGION_LABEL)
@@ -10102,7 +10106,7 @@ def _pmc_scoped_leads_rows_for_channel_metrics(df_loaded: pd.DataFrame, df_scope
     ch = uc.where(~uc.str.lower().isin(["", "unknown", "nan", "none", "nat"]), usd)
     ch = ch.where(~ch.str.lower().isin(["", "unknown", "nan", "none", "nat"]), "Other")
     leads["_pmc_ch"] = ch.map(_pmc_align_channel_label_for_xray_pivot)
-    leads["_is_qualified"] = _leads_is_qualified_mask(leads).astype(int)
+    leads["_is_qualified"] = _to_int_series_safe(_leads_is_qualified_mask(leads))
     if "month" in leads.columns:
         leads["_month_key"] = leads["month"].map(_month_norm_key).astype(str).str.strip()
         leads = leads.loc[
@@ -10144,22 +10148,12 @@ def _pmc_by_channel_summary(u: pd.DataFrame, leads_lut: Optional[pd.DataFrame] =
         _qv = pd.to_numeric(g["qualified_from_leads"], errors="coerce").fillna(0)
         _lr = pd.to_numeric(g["spend_rows"], errors="coerce").fillna(0)
         _qs = pd.to_numeric(g["qualified_spend"], errors="coerce").fillna(0)
-        g["leads"] = _lv.where(_lv > 0, _lr).replace([float("inf"), float("-inf")], 0).fillna(0).astype(int)
-        g["qualified"] = _qv.where(_qv > 0, _qs).replace([float("inf"), float("-inf")], 0).fillna(0).astype(int)
+        g["leads"] = _to_int_series_safe(_lv.where(_lv > 0, _lr))
+        g["qualified"] = _to_int_series_safe(_qv.where(_qv > 0, _qs))
         g = g.drop(columns=["leads_from_leads", "qualified_from_leads"], errors="ignore")
     else:
-        g["leads"] = (
-            pd.to_numeric(g["spend_rows"], errors="coerce")
-            .replace([float("inf"), float("-inf")], 0)
-            .fillna(0)
-            .astype(int)
-        )
-        g["qualified"] = (
-            pd.to_numeric(g["qualified_spend"], errors="coerce")
-            .replace([float("inf"), float("-inf")], 0)
-            .fillna(0)
-            .astype(int)
-        )
+        g["leads"] = _to_int_series_safe(g["spend_rows"])
+        g["qualified"] = _to_int_series_safe(g["qualified_spend"])
     g = g.drop(columns=["qualified_spend"], errors="ignore")
     g["CPL"] = g.apply(lambda r: (r["spend"] / r["leads"]) if r["leads"] else float("nan"), axis=1)
     g["SQL%"] = g.apply(
