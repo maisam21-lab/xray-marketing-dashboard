@@ -4493,16 +4493,22 @@ def _apply_marketing_performance_filters(
     """Performance-tab filters: **market** × **month**."""
 
     mk_raw = [x for x in df_date["country"].dropna().unique().tolist() if x and x != "Unknown"]
-    if "cost" in df_date.columns and mk_raw:
-        _tot = (
+    if mk_raw:
+        _mk = (
             df_date.loc[df_date["country"].isin(mk_raw)]
-            .assign(_co=lambda d: pd.to_numeric(d["cost"], errors="coerce").fillna(0))
-            .groupby("country")["_co"]
-            .sum()
+            .assign(
+                _ck=lambda d: d["country"].map(_country_join_key),
+                _disp=lambda d: d["country"].map(_country_join_key).map(_market_display_from_join_key),
+            )
+            .loc[lambda d: d["_disp"].astype(str).str.strip().ne("Unknown")]
         )
-        market_opts = sorted(mk_raw, key=lambda c: (-float(_tot.get(c, 0)), str(c).lower()))
+        if "cost" in _mk.columns and not _mk.empty:
+            _tot = _mk.assign(_co=lambda d: pd.to_numeric(d["cost"], errors="coerce").fillna(0)).groupby("_disp")["_co"].sum()
+            market_opts = sorted(_mk["_disp"].dropna().unique().tolist(), key=lambda c: (-float(_tot.get(c, 0)), str(c).lower()))
+        else:
+            market_opts = sorted(_mk["_disp"].dropna().unique().tolist())
     else:
-        market_opts = sorted(mk_raw)
+        market_opts = []
     month_opts = _mpo_month_picker_options(df_date, reporting_start=reporting_start, reporting_end=reporting_end)
 
     _k_mpo_market = f"{key_suffix}_market"
@@ -4535,7 +4541,9 @@ def _apply_marketing_performance_filters(
     df = df_date.copy()
     _geo_picks = _mpo_market_scope_countries_only(selected_markets)
     if _geo_picks:
-        df = df[df["country"].isin(_geo_picks)]
+        _pick_keys = {str(_country_join_key(x)).strip().lower() for x in _geo_picks if str(x).strip()}
+        _country_keys = df["country"].map(_country_join_key).astype(str).str.strip().str.lower()
+        df = df[_country_keys.isin(_pick_keys)]
     if not _mpo_month_multiselect_is_all(selected_months):
         _mo_pick = _mpo_month_multiselect_explicit(selected_months)
         if _mo_pick and "month" in df.columns:
@@ -4558,7 +4566,9 @@ def _mpo_dataframe_from_session_filters(
     selected_months = st.session_state.get(f"{key_suffix}_month", [_MPO_ALL_MONTHS_SENTINEL])
     _geo_picks = _mpo_market_scope_countries_only(selected_markets)
     if _geo_picks:
-        df = df[df["country"].isin(_geo_picks)]
+        _pick_keys = {str(_country_join_key(x)).strip().lower() for x in _geo_picks if str(x).strip()}
+        _country_keys = df["country"].map(_country_join_key).astype(str).str.strip().str.lower()
+        df = df[_country_keys.isin(_pick_keys)]
     if not _mpo_month_multiselect_is_all(selected_months):
         _mo_pick = _mpo_month_multiselect_explicit(selected_months)
         if _mo_pick and "month" in df.columns:
