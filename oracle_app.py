@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-20-safe-int-casts-v3"
+DASHBOARD_BUILD = "2026-04-20-no-hard-spend-tab"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -11351,7 +11351,7 @@ def render_main_dashboard(
     try:
         # Source of truth is the entire spreadsheet; aggregate data across tabs.
         df_loaded = load_all_worksheets_combined(sheet_id, _fp)
-        # Hard requirement: ensure Spend sheet is present (sheet: Spend, column: Spend).
+        # Prefer a spend-like tab injection if spend rows are missing from the combined load.
         needs_spend_inject = True
         if not df_loaded.empty and "source_tab" in df_loaded.columns and "cost" in df_loaded.columns:
             sl = df_loaded["source_tab"].astype(str).str.strip().str.lower()
@@ -11362,7 +11362,13 @@ def render_main_dashboard(
             if not spend_rows.empty and float(pd.to_numeric(spend_rows["cost"], errors="coerce").fillna(0).sum()) > 0:
                 needs_spend_inject = False
         if needs_spend_inject:
-            spend_norm = load_named_worksheet_normalized(sheet_id, "Spend", _fp)
+            spend_norm = pd.DataFrame()
+            try:
+                # Legacy path: exact worksheet title "Spend" (older workbooks).
+                spend_norm = load_named_worksheet_normalized(sheet_id, "Spend", _fp)
+            except Exception:
+                # Newer Supermetrics workbooks may not have a tab literally named "Spend".
+                spend_norm = pd.DataFrame()
             if spend_norm.empty:
                 spend_norm = load_spend_worksheet_fallback(sheet_id, _fp)
             if not spend_norm.empty:
