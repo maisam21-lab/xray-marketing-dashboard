@@ -28,12 +28,12 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-20-spend-reconciliation-audit"
+DASHBOARD_BUILD = "2026-04-20-single-supermetrics-workbook-gids"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
 
-DEFAULT_SHEET_ID = "1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8"
+DEFAULT_SHEET_ID = "1tcjVk7UD-4LG3DG-73ELTNCfzD2XnwnEYqdS8NoH71I"
 ME_XRAY_SPEND_SHEET_URL = f"https://docs.google.com/spreadsheets/d/{DEFAULT_SHEET_ID}/edit"
 # **Spend by channel** month × channel grid is scoped to this workbook (``spreadsheet_id`` on stacked loads).
 PMC_MONTH_GRID_SHEET_ID = DEFAULT_SHEET_ID
@@ -47,21 +47,22 @@ PMC_MONTH_GRID_SHEET_ID = DEFAULT_SHEET_ID
 # ``PAID_MEDIA_SHEET_ID`` / ``SUPERMETRICS_SHEET_ID`` / ``XRAY_ADS_SHEET_ID``, or set ``PAID_MEDIA_SHEET_ID``
 # to ``none`` to disable the second load. ``DISABLE_PAID_MEDIA_SECOND_WORKBOOK=1`` also disables it.
 DEFAULT_PAID_MEDIA_SHEET_ID = "1tcjVk7UD-4LG3DG-73ELTNCfzD2XnwnEYqdS8NoH71I"
-# Supermetrics paid-media tabs (explicit gids provided by the owner).
-# 0=Google Ads, 1802364778=Meta, 1720904536=Snapchat, 279936880=LinkedIn.
+# Default paid-media/platform tab gid in the single Supermetrics workbook.
+# Platform performance tab:
+# https://docs.google.com/spreadsheets/d/1tcjVk7UD-4LG3DG-73ELTNCfzD2XnwnEYqdS8NoH71I/edit?gid=845305451
 DEFAULT_PAID_MEDIA_PLATFORM_GIDS: tuple[int, ...] = (
-    0,
-    1802364778,
-    1720904536,
-    279936880,
+    845305451,
 )
-DEFAULT_SOURCE_TRUTH_GID = 8109573
-# Canonical **source of truth** tab for ME X-Ray (Marketing performance). Same workbook as ``DEFAULT_SHEET_ID``.
-# https://docs.google.com/spreadsheets/d/1eIE4d21-l0hNFg-9vdgtpnObyOm30cc7SOsQvUwE7x8/edit?gid=8109573
+DEFAULT_SOURCE_TRUTH_GID = 845305451
+# Canonical source-of-truth tab in the Supermetrics workbook (platform performance):
+# https://docs.google.com/spreadsheets/d/1tcjVk7UD-4LG3DG-73ELTNCfzD2XnwnEYqdS8NoH71I/edit?gid=845305451
 ME_XRAY_SOURCE_OF_TRUTH_URL = (
     f"https://docs.google.com/spreadsheets/d/{DEFAULT_SHEET_ID}/edit?gid={DEFAULT_SOURCE_TRUTH_GID}"
 )
-DEFAULT_LEADS_WORKSHEET_GID = 743065354
+DEFAULT_LEADS_WORKSHEET_GID = 839225260
+DEFAULT_POST_QUAL_WORKSHEET_GID = 2124231650
+DEFAULT_RAW_CW_WORKSHEET_GID = 2126759408
+DEFAULT_SPEND_WORKSHEET_GID = 1666828602
 # Default empty on Streamlit Cloud; set `XRAY_EXCEL_PATH` in secrets or `XRAY_EXCEL_PATH_DEFAULT` locally.
 DEFAULT_LOCAL_EXCEL_PATH = (os.environ.get("XRAY_EXCEL_PATH_DEFAULT") or "").strip()
 DEFAULT_LOGO_PATH = (
@@ -252,9 +253,9 @@ def _optional_post_qual_gid_from_secrets() -> Optional[int]:
     try:
         s = st.secrets
         v = (s.get("XRAY_POST_QUAL_GID") or s.get("xray_post_qual_gid") or "").strip()
-        return int(v) if v else None
+        return int(v) if v else DEFAULT_POST_QUAL_WORKSHEET_GID
     except Exception:
-        return None
+        return DEFAULT_POST_QUAL_WORKSHEET_GID
 
 
 def _optional_raw_cw_gid_from_secrets() -> Optional[int]:
@@ -262,9 +263,9 @@ def _optional_raw_cw_gid_from_secrets() -> Optional[int]:
     try:
         s = st.secrets
         v = (s.get("XRAY_RAW_CW_GID") or s.get("xray_raw_cw_gid") or "").strip()
-        return int(v) if v else None
+        return int(v) if v else DEFAULT_RAW_CW_WORKSHEET_GID
     except Exception:
-        return None
+        return DEFAULT_RAW_CW_WORKSHEET_GID
 
 
 def _optional_spend_gid_from_secrets() -> Optional[int]:
@@ -272,9 +273,9 @@ def _optional_spend_gid_from_secrets() -> Optional[int]:
     try:
         s = st.secrets
         v = (s.get("XRAY_SPEND_GID") or s.get("xray_spend_gid") or "").strip()
-        return int(v) if v else None
+        return int(v) if v else DEFAULT_SPEND_WORKSHEET_GID
     except Exception:
-        return None
+        return DEFAULT_SPEND_WORKSHEET_GID
 
 
 def _optional_spend_column_header_from_secrets() -> str:
