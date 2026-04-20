@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-16-pmc-lead-tab-scope"
+DASHBOARD_BUILD = "2026-04-20-spend-reconciliation-audit"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -1541,6 +1541,71 @@ def _spend_sheet_pivot_by_month_country(spend_df: pd.DataFrame) -> pd.DataFrame:
             g[c] = 0 if c in {"clicks", "impressions"} else 0.0
     g["month"] = g["month"].map(_month_norm_key)
     return g[["month", "country"] + metrics]
+
+
+def _build_monthly_spend_reconciliation(
+    xray_spend: pd.DataFrame,
+    paid_media_spend: pd.DataFrame,
+    *,
+    tolerance_pct: float = 1.0,
+    tolerance_abs: float = 1.0,
+) -> pd.DataFrame:
+    """Monthly spend reconciliation table with match/mismatch status."""
+    a = _spend_sheet_pivot_by_month_country(xray_spend)
+    b = _spend_sheet_pivot_by_month_country(paid_media_spend)
+    ag = (
+        a.groupby("month", as_index=False)["cost"].sum().rename(columns={"cost": "xray_spend"})
+        if not a.empty
+        else pd.DataFrame(columns=["month", "xray_spend"])
+    )
+    bg = (
+        b.groupby("month", as_index=False)["cost"].sum().rename(columns={"cost": "supermetrics_spend"})
+        if not b.empty
+        else pd.DataFrame(columns=["month", "supermetrics_spend"])
+    )
+    out = ag.merge(bg, on="month", how="outer").fillna(0.0)
+    if out.empty:
+        return pd.DataFrame(
+            columns=[
+                "Month",
+                "Xray Spend",
+                "Supermetrics Spend",
+                "Diff",
+                "Diff %",
+                "Tolerance",
+                "Status",
+            ]
+        )
+    out["month"] = out["month"].map(_month_norm_key)
+    out = out.loc[out["month"].astype(str).str.strip().ne("")].copy()
+    out = out.sort_values("month")
+    out["diff"] = pd.to_numeric(out["xray_spend"], errors="coerce").fillna(0.0) - pd.to_numeric(
+        out["supermetrics_spend"], errors="coerce"
+    ).fillna(0.0)
+    base = pd.to_numeric(out["supermetrics_spend"], errors="coerce").fillna(0.0).abs()
+    pct_allow = base * (max(0.0, float(tolerance_pct)) / 100.0)
+    abs_allow = max(0.0, float(tolerance_abs))
+    out["tolerance"] = pct_allow.where(pct_allow > abs_allow, abs_allow)
+    out["diff_pct"] = out["diff"].abs().div(base.where(base > 1e-9, pd.NA)) * 100.0
+    out["status"] = out["diff"].abs() <= out["tolerance"]
+    out["Status"] = out["status"].map(lambda x: "Match" if bool(x) else "Mismatch")
+    out["Tolerance"] = out["tolerance"].map(lambda x: f"${float(x):,.0f}")
+    out["Month"] = out["month"]
+    out["Xray Spend"] = pd.to_numeric(out["xray_spend"], errors="coerce").fillna(0.0)
+    out["Supermetrics Spend"] = pd.to_numeric(out["supermetrics_spend"], errors="coerce").fillna(0.0)
+    out["Diff"] = pd.to_numeric(out["diff"], errors="coerce").fillna(0.0)
+    out["Diff %"] = pd.to_numeric(out["diff_pct"], errors="coerce").fillna(0.0)
+    return out[
+        [
+            "Month",
+            "Xray Spend",
+            "Supermetrics Spend",
+            "Diff",
+            "Diff %",
+            "Tolerance",
+            "Status",
+        ]
+    ]
 
 
 def _spend_sheet_pivot_by_month_channel(spend_df: pd.DataFrame) -> pd.DataFrame:
@@ -8661,6 +8726,14 @@ def render_page_marketing_performance(
         end_date,
     )
     spend_df = _spend_slice_for_dashboard_filters(spend_sheet_for_kpis, df)
+    paid_media_spend_df = pd.DataFrame()
+    paid_media_sheet_id = _optional_paid_media_sheet_id_from_secrets()
+    if paid_media_sheet_id:
+        pm_all = _rows_for_workbook_id(df_loaded, paid_media_sheet_id)
+        if not pm_all.empty:
+            pm_scope = _filter_spend_for_dashboard(pm_all, start_date, end_date)
+            if not pm_scope.empty:
+                paid_media_spend_df = pm_scope
 
     def _tab_subset(frame: pd.DataFrame, tab_keywords: list[str]) -> pd.DataFrame:
         if "source_tab" not in frame.columns:
@@ -9083,6 +9156,43 @@ def render_page_marketing_performance(
         pivot_dimension="market",
         table_mode="full",
     )
+    st.markdown("#### Spend reconciliation (Xray vs Supermetrics)")
+    if paid_media_spend_df.empty:
+        st.info(
+            "No Supermetrics spend data found for reconciliation in the selected period. "
+            "Set `PAID_MEDIA_SHEET_ID` (or `SUPERMETRICS_SHEET_ID`) in secrets to enable this check."
+        )
+    else:
+        recon = _build_monthly_spend_reconciliation(
+            xray_spend=spend_sheet_master,
+            paid_media_spend=paid_media_spend_df,
+            tolerance_pct=1.0,
+            tolerance_abs=1.0,
+        )
+        if recon.empty:
+            st.info("Spend reconciliation has no monthly rows in the selected period.")
+        else:
+            match_count = int((recon["Status"] == "Match").sum())
+            mismatch_count = int((recon["Status"] == "Mismatch").sum())
+            total_diff = float(pd.to_numeric(recon["Diff"], errors="coerce").fillna(0.0).sum())
+            c1, c2, c3 = st.columns(3)
+            c1.metric("Matched months", f"{match_count}")
+            c2.metric("Mismatched months", f"{mismatch_count}")
+            c3.metric("Net diff (Xray - Supermetrics)", f"${total_diff:,.0f}")
+            st.caption("Status uses tolerance = max(1% of Supermetrics spend, $1) per month.")
+            st.dataframe(
+                recon.style.format(
+                    {
+                        "Xray Spend": "${:,.0f}",
+                        "Supermetrics Spend": "${:,.0f}",
+                        "Diff": "${:,.0f}",
+                        "Diff %": "{:.2f}%",
+                    }
+                ),
+                use_container_width=True,
+                hide_index=True,
+                key=f"{key_suffix}_df_spend_recon",
+            )
     _render_t3b3_quarter_sections(gm_mpo, key_suffix=f"{key_suffix}_t3b3")
 
     _render_mpo_trend_charts(
