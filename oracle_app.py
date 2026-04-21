@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-20-platform-cost-sum-all-cost-headers"
+DASHBOARD_BUILD = "2026-04-20-cost-only-no-cpu-and-header-market-map"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -1009,6 +1009,8 @@ _COUNTRY_JOIN_ALIASES: dict[str, str] = {
     "the uae": "united arab emirates",
     "sa": "saudi arabia",
     "ksa": "saudi arabia",
+    "ksa sa": "saudi arabia",
+    "saudi": "saudi arabia",
     "kw": "kuwait",
     "bh": "bahrain",
     "kingdom of saudi arabia": "saudi arabia",
@@ -2146,7 +2148,11 @@ def _sum_cost_columns_raw(df: pd.DataFrame, nrows: int) -> pd.Series:
         if any(
             x in nk
             for x in (
+                "cpu",
                 "cost_per",
+                "cost_per_conversion",
+                "conversion_cost",
+                "cost_conversion",
                 "cpc",
                 "cpm",
                 "cpv",
@@ -2169,6 +2175,49 @@ def _sum_cost_columns_raw(df: pd.DataFrame, nrows: int) -> pd.Series:
             s = s.reindex(range(nrows), fill_value=0.0)
         out = out + pd.to_numeric(s, errors="coerce").fillna(0.0)
     return out
+
+
+def _market_key_from_cost_header(header: str) -> str:
+    """Infer market key from a cost column header token."""
+    nk = _norm_header_key(str(header))
+    if "saudi" in nk or "ksa" in nk or re.search(r"(^|_)sa($|_)", nk):
+        return "saudi arabia"
+    if "kuwait" in nk or re.search(r"(^|_)kw($|_)", nk):
+        return "kuwait"
+    if "bahrain" in nk or re.search(r"(^|_)bh($|_)", nk):
+        return "bahrain"
+    if "uae" in nk or "emirates" in nk:
+        return "united arab emirates"
+    return ""
+
+
+def _infer_country_from_cost_headers_raw(df: pd.DataFrame, nrows: int) -> pd.Series:
+    """Infer row market from cost headers when raw rows lack a usable country column."""
+    if df.empty or nrows <= 0:
+        return pd.Series(["Unknown"] * max(nrows, 0), index=range(max(nrows, 0)), dtype=object)
+    picks = pd.Series(["Unknown"] * nrows, index=range(nrows), dtype=object)
+    best_abs = pd.Series(0.0, index=range(nrows), dtype=float)
+    for c in df.columns:
+        nk = _norm_header_key(str(c))
+        if "cost" not in nk:
+            continue
+        if any(
+            x in nk
+            for x in ("cpu", "cost_per", "cost_per_conversion", "conversion_cost", "cost_conversion", "cpc", "cpm", "cpv", "cpa")
+        ):
+            continue
+        mk = _market_key_from_cost_header(str(c))
+        if not mk:
+            continue
+        s = _to_number_series(df[c].reset_index(drop=True))
+        if len(s) < nrows:
+            s = s.reindex(range(nrows), fill_value=0.0)
+        abs_s = pd.to_numeric(s, errors="coerce").fillna(0.0).abs()
+        use = abs_s > best_abs
+        if bool(use.any()):
+            picks.loc[use] = mk
+            best_abs.loc[use] = abs_s.loc[use]
+    return picks.map(_country_join_key)
 
 
 def _scan_frame_for_spend_sum(raw: pd.DataFrame) -> float:
@@ -3257,6 +3306,13 @@ def load_all_worksheets_combined(
             # Paid platform tabs: spend equals SUM(all raw headers containing "cost") per row.
             df = df.copy()
             df["cost"] = _sum_cost_columns_raw(raw, len(df)).values
+            if "country" not in df.columns:
+                df["country"] = "Unknown"
+            ck = df["country"].astype(str).map(_country_join_key).fillna("unknown").astype(str).str.strip().str.lower()
+            bad_country = ck.isin({"", "unknown", "nan", "none", "<na>"})
+            if bool(bad_country.any()):
+                inferred = _infer_country_from_cost_headers_raw(raw, len(df))
+                df.loc[bad_country, "country"] = inferred.loc[bad_country].values
             df = _canonicalize_spend_month_column(df)
         if df.empty:
             tab_stats.append((title, 0))
@@ -3314,6 +3370,13 @@ def load_marketing_data(
     if not out.empty and int(worksheet_gid) in DEFAULT_PAID_MEDIA_PLATFORM_GIDS:
         out = out.copy()
         out["cost"] = _sum_cost_columns_raw(raw, len(out)).values
+        if "country" not in out.columns:
+            out["country"] = "Unknown"
+        ck = out["country"].astype(str).map(_country_join_key).fillna("unknown").astype(str).str.strip().str.lower()
+        bad_country = ck.isin({"", "unknown", "nan", "none", "<na>"})
+        if bool(bad_country.any()):
+            inferred = _infer_country_from_cost_headers_raw(raw, len(out))
+            out.loc[bad_country, "country"] = inferred.loc[bad_country].values
         out = _canonicalize_spend_month_column(out)
     return out
 
@@ -3370,6 +3433,13 @@ def load_worksheet_by_gid_preprocessed(
     if not out.empty and int(worksheet_gid) in DEFAULT_PAID_MEDIA_PLATFORM_GIDS:
         out = out.copy()
         out["cost"] = _sum_cost_columns_raw(raw, len(out)).values
+        if "country" not in out.columns:
+            out["country"] = "Unknown"
+        ck = out["country"].astype(str).map(_country_join_key).fillna("unknown").astype(str).str.strip().str.lower()
+        bad_country = ck.isin({"", "unknown", "nan", "none", "<na>"})
+        if bool(bad_country.any()):
+            inferred = _infer_country_from_cost_headers_raw(raw, len(out))
+            out.loc[bad_country, "country"] = inferred.loc[bad_country].values
         out = _canonicalize_spend_month_column(out)
     if not out.empty and (
         _tab_title_looks_like_spend_worksheet(str(title)) or _tab_title_looks_like_ads_data_sheet(str(title))
