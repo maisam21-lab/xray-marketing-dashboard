@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-20-capture-all-spend-and-drop-future-months"
+DASHBOARD_BUILD = "2026-04-20-prefer-dedicated-spend-gid-if-higher"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -4810,6 +4810,25 @@ def _mpo_load_spend_sheet_for_kpis(
     sum_primary = _normalized_spend_cost_sum(spend_blended_primary)
     sum_all = _normalized_spend_cost_sum(spend_blended_all)
     spend_blended = spend_blended_all.copy() if sum_all > sum_primary else spend_blended_primary.copy()
+
+    # Dedicated spend worksheet guardrail: if this tab has more spend in the selected window, use it for spend dollars.
+    spend_gid = _optional_spend_gid_from_secrets()
+    spend_gid_scope = pd.DataFrame()
+    if spend_gid is not None:
+        spend_gid_scope = _rows_by_worksheet_id(df_date, int(spend_gid), sheet_id)
+        if spend_gid_scope.empty:
+            spend_gid_scope = _rows_by_worksheet_id(df_loaded, int(spend_gid), sheet_id)
+        if not spend_gid_scope.empty:
+            spend_gid_scope = _filter_spend_for_dashboard(spend_gid_scope, start_date, end_date)
+            if spend_gid_scope.empty:
+                spend_gid_scope = _rows_by_worksheet_id(df_loaded, int(spend_gid), sheet_id)
+        if not spend_gid_scope.empty:
+            spend_gid_scope = _canonicalize_spend_month_column(spend_gid_scope.copy())
+    if not spend_gid_scope.empty:
+        sum_gid = _normalized_spend_cost_sum(spend_gid_scope)
+        sum_blended = _normalized_spend_cost_sum(spend_blended)
+        if sum_gid > sum_blended + 1e-6:
+            spend_blended = spend_gid_scope.copy()
     if spend_blended.empty and not df_loaded.empty:
         _dl_primary = _rows_for_workbook_id(df_loaded, sheet_id)
         spend_blended_primary = _mpo_blend_paid_media_for_master_df(_dl_primary) if not _dl_primary.empty else pd.DataFrame()
