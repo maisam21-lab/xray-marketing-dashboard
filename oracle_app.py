@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-20-cost-only-no-cpu-and-header-market-map"
+DASHBOARD_BUILD = "2026-04-20-all-market-engagement-equal-split"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -2220,6 +2220,48 @@ def _infer_country_from_cost_headers_raw(df: pd.DataFrame, nrows: int) -> pd.Ser
     return picks.map(_country_join_key)
 
 
+def _apply_equal_split_all_market_engagement(df: pd.DataFrame) -> pd.DataFrame:
+    """Split unknown-country 'All Market (Engagement)' rows equally across UAE/SA/KW/BH."""
+    if df.empty or "cost" not in df.columns:
+        return df
+    out = df.copy()
+    if "country" not in out.columns:
+        out["country"] = "Unknown"
+    ck = out["country"].map(_country_join_key).astype(str).str.strip().str.lower()
+    unknown_mask = ck.isin({"", "unknown", "nan", "none", "<na>"})
+    if not bool(unknown_mask.any()):
+        return out
+
+    campaign_cols = [c for c in ("campaign_name", "campaign", "utm_campaign") if c in out.columns]
+    if not campaign_cols:
+        return out
+    camp = pd.Series("", index=out.index, dtype=object)
+    for c in campaign_cols:
+        s = out[c].astype(str).str.strip()
+        camp = camp.where(camp.astype(str).str.len() > 0, s)
+    camp_l = camp.astype(str).str.lower()
+    split_mask = unknown_mask & camp_l.str.contains("all market", na=False) & camp_l.str.contains("engagement", na=False)
+    if not bool(split_mask.any()):
+        return out
+
+    base = out.loc[split_mask].copy()
+    if base.empty:
+        return out
+    targets = ["united arab emirates", "saudi arabia", "kuwait", "bahrain"]
+    parts: list[pd.DataFrame] = []
+    for t in targets:
+        p = base.copy()
+        p["country"] = t
+        p["cost"] = pd.to_numeric(p["cost"], errors="coerce").fillna(0.0) * 0.25
+        if "clicks" in p.columns:
+            p["clicks"] = pd.to_numeric(p["clicks"], errors="coerce").fillna(0.0) * 0.25
+        if "impressions" in p.columns:
+            p["impressions"] = pd.to_numeric(p["impressions"], errors="coerce").fillna(0.0) * 0.25
+        parts.append(p)
+    rest = out.loc[~split_mask].copy()
+    return pd.concat([rest] + parts, ignore_index=True)
+
+
 def _scan_frame_for_spend_sum(raw: pd.DataFrame) -> float:
     """Best single-column spend total on a **raw** sheet (headers not yet normalized)."""
     if raw.empty or len(raw.columns) == 0:
@@ -3313,6 +3355,7 @@ def load_all_worksheets_combined(
             if bool(bad_country.any()):
                 inferred = _infer_country_from_cost_headers_raw(raw, len(df))
                 df.loc[bad_country, "country"] = inferred.loc[bad_country].values
+            df = _apply_equal_split_all_market_engagement(df)
             df = _canonicalize_spend_month_column(df)
         if df.empty:
             tab_stats.append((title, 0))
@@ -3377,6 +3420,7 @@ def load_marketing_data(
         if bool(bad_country.any()):
             inferred = _infer_country_from_cost_headers_raw(raw, len(out))
             out.loc[bad_country, "country"] = inferred.loc[bad_country].values
+        out = _apply_equal_split_all_market_engagement(out)
         out = _canonicalize_spend_month_column(out)
     return out
 
@@ -3440,6 +3484,7 @@ def load_worksheet_by_gid_preprocessed(
         if bool(bad_country.any()):
             inferred = _infer_country_from_cost_headers_raw(raw, len(out))
             out.loc[bad_country, "country"] = inferred.loc[bad_country].values
+        out = _apply_equal_split_all_market_engagement(out)
         out = _canonicalize_spend_month_column(out)
     if not out.empty and (
         _tab_title_looks_like_spend_worksheet(str(title)) or _tab_title_looks_like_ads_data_sheet(str(title))
