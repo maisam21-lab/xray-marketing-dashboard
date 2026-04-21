@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-20-supermetrics-ads-only-spend-source"
+DASHBOARD_BUILD = "2026-04-20-supermetrics-strict-nonspend-gid-sources"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -8883,79 +8883,42 @@ def render_page_marketing_performance(
             mask = mask | s.str.contains(k.lower(), na=False, regex=True)
         return frame[mask].copy()
 
-    def _pick_source(frame: pd.DataFrame, patterns: list[str], metric_cols: list[str]) -> pd.DataFrame:
-        """Prefer mapped tabs, but fall back to full frame if mapped slice is empty/zero."""
-        subset = _tab_subset(frame, patterns)
-        if subset.empty:
-            return frame
-        present_cols = [c for c in metric_cols if c in subset.columns]
-        if not present_cols:
-            return frame
-        subset_total = 0.0
-        frame_total = 0.0
-        for c in present_cols:
-            subset_total += float(pd.to_numeric(subset[c], errors="coerce").fillna(0).sum())
-            frame_total += float(pd.to_numeric(frame.get(c, 0), errors="coerce").fillna(0).sum())
-        if subset_total == 0.0 and frame_total > 0.0:
-            return frame
-        return subset
-
-    # Business mapping by tab:
-    # - Spend: worksheet gid=0 on the sheet above (see ``spend_sheet_master`` / ``spend_df``).
-    # - Leads / Qualified: Raw Leads
-    # - CW (inc approved) + pipeline stages: Raw Post Qualification
-    # - TCV / 1st Month LF: RAW CW
-    leads_df = _pick_source(df_loaded, list(_MPO_LEAD_TAB_PATTERNS), ["leads", "qualified"])
-    leads_gid = _default_leads_gid_from_secrets()
-    # Strict source of truth for Total Leads: read the canonical leads worksheet by gid.
-    try:
-        leads_by_gid = load_marketing_data(sheet_id, int(leads_gid), _fp_mpo)
-        if not leads_by_gid.empty:
-            leads_df = leads_by_gid
-    except Exception:
-        pass
-    by_gid = _rows_by_worksheet_id(df_loaded, int(leads_gid), sheet_id)
-    if not by_gid.empty:
-        leads_df = by_gid
-    # Tab title ``Leads`` (not only ``Raw Leads``): row count when gid/API slice is empty.
-    if leads_df.empty or _lead_rows_count(leads_df) == 0:
-        if "source_tab" in df_loaded.columns:
-            st_key = df_loaded["source_tab"].astype(str).str.strip().str.casefold()
-            exact = df_loaded.loc[st_key.isin({"lead", "leads"})].copy()
-            if not exact.empty:
-                leads_df = exact
-    if leads_df.empty or _lead_rows_count(leads_df) == 0:
-        for pat in (r"^\s*leads?\s*$", r"lead\s*sheet"):
-            hit = _tab_subset(df_loaded, [pat])
-            if not hit.empty:
-                leads_df = hit
-                break
-    # Never fall back to the full workbook here — _pick_source would mix RAW CW into post-lead totals.
-    post_df = _dedupe_post_lead_rows(_tab_subset(df, list(_POST_LEAD_SOURCE_TAB_PATTERNS)))
-    # Pipeline KPIs (Total Live = Q+P+N+C): full workbook tab(s), no market/month slice.
-    # Do NOT _dedupe_post_lead_rows here — cross-tab dedupe dropped ~10 rows vs Sheets SUM() when the same opp
-    # appeared on two post-qual tabs; Sheets totals still sum both tabs.
-    post_df_kpi = _tab_subset(df_loaded, list(_POST_LEAD_SOURCE_TAB_PATTERNS))
-    pq_gid = _optional_post_qual_gid_from_secrets()
-    if pq_gid is not None and "worksheet_gid" in df_loaded.columns:
-        wg = pd.to_numeric(df_loaded["worksheet_gid"], errors="coerce")
-        by_pq = df_loaded.loc[wg == int(pq_gid)].copy()
-        if "spreadsheet_id" in by_pq.columns:
-            by_pq = by_pq.loc[by_pq["spreadsheet_id"].astype(str) == str(sheet_id)]
-        if not by_pq.empty:
-            post_df_kpi = by_pq
-    elif pq_gid is not None:
+    def _strict_gid_source(gid: Optional[int]) -> pd.DataFrame:
+        """Load one worksheet as source of truth for non-spend metrics."""
+        if gid is None:
+            return pd.DataFrame()
+        by_gid_date = _rows_by_worksheet_id(df_date, int(gid), sheet_id)
+        if not by_gid_date.empty:
+            return by_gid_date
+        by_gid_all = _rows_by_worksheet_id(df_loaded, int(gid), sheet_id)
+        if not by_gid_all.empty:
+            return by_gid_all
         try:
-            _sid = _extract_sheet_id(_default_sheet_id_from_secrets())
-            _fp2 = _secret_fingerprint(_service_account_from_streamlit_secrets())
-            _direct = load_worksheet_by_gid_preprocessed(_sid, int(pq_gid), _fp2)
-            if not _direct.empty:
-                post_df_kpi = _direct
+            return load_worksheet_by_gid_preprocessed(sheet_id, int(gid), _fp_mpo)
         except Exception:
-            pass
+            return pd.DataFrame()
+
+    # Business mapping by tab (strict gid sources):
+    # - Leads / Qualified: Leads worksheet gid
+    # - Post-lead pipeline stages: Raw Post Qualification worksheet gid
+    # - TCV / 1st Month LF: RAW CW worksheet gid
+    leads_gid = _default_leads_gid_from_secrets()
+    leads_df = _strict_gid_source(leads_gid)
+    if leads_df.empty:
+        leads_df = _tab_subset(df_date, list(_MPO_LEAD_TAB_PATTERNS))
+
+    pq_gid = _optional_post_qual_gid_from_secrets()
+    post_df_kpi = _strict_gid_source(pq_gid)
     if post_df_kpi.empty:
-        post_df_kpi = post_df
-    cw_df = _resolve_cw_tcv_dataframe(df_loaded, df)
+        post_df_kpi = _tab_subset(df_date, list(_POST_LEAD_SOURCE_TAB_PATTERNS))
+
+    # Closed-won KPI should stay deduped to avoid cross-tab opportunity duplication.
+    post_df = _dedupe_post_lead_rows(post_df_kpi)
+
+    raw_cw_gid = _optional_raw_cw_gid_from_secrets()
+    cw_df = _strict_gid_source(raw_cw_gid)
+    if cw_df.empty:
+        cw_df = _resolve_cw_tcv_dataframe(df_loaded, df)
     cw_kpi = _cw_dataframe_for_kpis(cw_df, df)
 
     total_spend = float(spend_df["cost"].sum()) if "cost" in spend_df.columns else 0.0
