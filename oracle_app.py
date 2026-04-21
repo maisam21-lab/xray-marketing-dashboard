@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-20-prefer-dedicated-spend-gid-if-higher"
+DASHBOARD_BUILD = "2026-04-20-supermetrics-ads-only-spend-source"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -4798,7 +4798,7 @@ def _mpo_load_spend_sheet_for_kpis(
     start_date: date,
     end_date: date,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str, str]:
-    """Blend paid-media spend pools, optional gid fallbacks, merge Supermetrics clicks/impressions — same path as Marketing performance KPIs.
+    """Blend paid-media spend pools from Supermetrics Ads sheets only, then merge clicks/impressions.
 
     Returns ``(spend_sheet_for_kpis, spend_sheet_master, spend_pool_full, sheet_id, fingerprint)``.
     """
@@ -4810,25 +4810,6 @@ def _mpo_load_spend_sheet_for_kpis(
     sum_primary = _normalized_spend_cost_sum(spend_blended_primary)
     sum_all = _normalized_spend_cost_sum(spend_blended_all)
     spend_blended = spend_blended_all.copy() if sum_all > sum_primary else spend_blended_primary.copy()
-
-    # Dedicated spend worksheet guardrail: if this tab has more spend in the selected window, use it for spend dollars.
-    spend_gid = _optional_spend_gid_from_secrets()
-    spend_gid_scope = pd.DataFrame()
-    if spend_gid is not None:
-        spend_gid_scope = _rows_by_worksheet_id(df_date, int(spend_gid), sheet_id)
-        if spend_gid_scope.empty:
-            spend_gid_scope = _rows_by_worksheet_id(df_loaded, int(spend_gid), sheet_id)
-        if not spend_gid_scope.empty:
-            spend_gid_scope = _filter_spend_for_dashboard(spend_gid_scope, start_date, end_date)
-            if spend_gid_scope.empty:
-                spend_gid_scope = _rows_by_worksheet_id(df_loaded, int(spend_gid), sheet_id)
-        if not spend_gid_scope.empty:
-            spend_gid_scope = _canonicalize_spend_month_column(spend_gid_scope.copy())
-    if not spend_gid_scope.empty:
-        sum_gid = _normalized_spend_cost_sum(spend_gid_scope)
-        sum_blended = _normalized_spend_cost_sum(spend_blended)
-        if sum_gid > sum_blended + 1e-6:
-            spend_blended = spend_gid_scope.copy()
     if spend_blended.empty and not df_loaded.empty:
         _dl_primary = _rows_for_workbook_id(df_loaded, sheet_id)
         spend_blended_primary = _mpo_blend_paid_media_for_master_df(_dl_primary) if not _dl_primary.empty else pd.DataFrame()
@@ -4838,52 +4819,14 @@ def _mpo_load_spend_sheet_for_kpis(
         spend_blended = spend_blended_all.copy() if sum_all > sum_primary else spend_blended_primary.copy()
         if not spend_blended.empty:
             spend_blended = _filter_by_date_range(spend_blended, start_date, end_date)
-    if not spend_blended.empty:
+    if spend_blended.empty:
+        spend_pool_full = pd.DataFrame()
+        spend_sheet_master = pd.DataFrame()
+    else:
+        spend_pool_full = spend_blended.copy()
         spend_sheet_master = _filter_spend_for_dashboard(spend_blended, start_date, end_date)
         if spend_sheet_master.empty:
             spend_sheet_master = spend_blended.copy()
-        spend_pool_full = spend_blended.copy()
-    else:
-        spend_gid0_wks = load_spend_gid0_normalized(sheet_id, _fp_mpo)
-        spend_pool_full = spend_gid0_wks.copy() if not spend_gid0_wks.empty else pd.DataFrame()
-        spend_sheet_master = _filter_spend_for_dashboard(spend_gid0_wks, start_date, end_date)
-        if spend_sheet_master.empty and "worksheet_gid" in df_loaded.columns:
-            _g0 = df_loaded.loc[pd.to_numeric(df_loaded["worksheet_gid"], errors="coerce") == 0].copy()
-            if "spreadsheet_id" in _g0.columns:
-                _g0 = _g0.loc[_g0["spreadsheet_id"].astype(str) == str(sheet_id)]
-            if not _g0.empty:
-                spend_sheet_master = _filter_spend_for_dashboard(_g0, start_date, end_date)
-        if _normalized_spend_cost_sum(spend_sheet_master) == 0.0:
-            alt_spend = load_first_matching_worksheet_normalized(
-                sheet_id,
-                (r"^spend$", r"raw\s*spend", r"sum\s*spend"),
-                _fp_mpo,
-            )
-            if not alt_spend.empty and _normalized_spend_cost_sum(alt_spend) > _normalized_spend_cost_sum(spend_pool_full):
-                spend_pool_full = alt_spend.copy()
-            alt_f = _filter_spend_for_dashboard(alt_spend, start_date, end_date)
-            if _normalized_spend_cost_sum(alt_f) > 0.0:
-                spend_sheet_master = alt_f
-        if _normalized_spend_cost_sum(spend_sheet_master) == 0.0:
-            fb_spend = load_spend_worksheet_fallback(sheet_id, _fp_mpo)
-            if not fb_spend.empty and _normalized_spend_cost_sum(fb_spend) > _normalized_spend_cost_sum(spend_pool_full):
-                spend_pool_full = fb_spend.copy()
-            fb_f = _filter_spend_for_dashboard(fb_spend, start_date, end_date)
-            if _normalized_spend_cost_sum(fb_f) > 0.0:
-                spend_sheet_master = fb_f
-
-        if _normalized_spend_cost_sum(spend_pool_full) < 1e-9:
-            _rec_loaded = _best_spend_pool_from_df_loaded(df_loaded, primary_sheet_id=sheet_id)
-            if not _rec_loaded.empty:
-                spend_pool_full = _rec_loaded.copy()
-            else:
-                _scan_best = _scan_workbook_for_best_spend_frame(sheet_id, _fp_mpo)
-                if not _scan_best.empty:
-                    spend_pool_full = _scan_best.copy()
-            if _normalized_spend_cost_sum(spend_pool_full) > 1e-9 and _normalized_spend_cost_sum(spend_sheet_master) < 1e-9:
-                spend_sheet_master = _filter_spend_for_dashboard(spend_pool_full, start_date, end_date)
-                if _normalized_spend_cost_sum(spend_sheet_master) < 1e-9:
-                    spend_sheet_master = spend_pool_full.copy()
 
     spend_sheet_for_kpis = _mpo_merge_pool_clicks_impressions_onto_spend(
         spend_sheet_master,
