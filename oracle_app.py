@@ -4615,6 +4615,14 @@ def _apply_marketing_performance_filters(
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Performance-tab filters: **market** × **month**."""
 
+    _market_option_blocklist = {
+        "unknown",
+        "other",
+        "country",
+        "country breakdown",
+        "select all",
+    }
+
     mk_raw = [x for x in df_date["country"].dropna().unique().tolist() if x and x != "Unknown"]
     if mk_raw:
         _mk = (
@@ -4623,7 +4631,13 @@ def _apply_marketing_performance_filters(
                 _ck=lambda d: d["country"].map(_country_join_key),
                 _disp=lambda d: d["country"].map(_country_join_key).map(_market_display_from_join_key),
             )
-            .loc[lambda d: d["_disp"].astype(str).str.strip().ne("Unknown")]
+            .loc[
+                lambda d: ~d["_disp"]
+                .astype(str)
+                .str.strip()
+                .str.lower()
+                .isin(_market_option_blocklist)
+            ]
         )
         if "cost" in _mk.columns and not _mk.empty:
             _tot = _mk.assign(_co=lambda d: pd.to_numeric(d["cost"], errors="coerce").fillna(0)).groupby("_disp")["_co"].sum()
