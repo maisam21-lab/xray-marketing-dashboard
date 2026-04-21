@@ -4667,15 +4667,17 @@ def _mpo_month_picker_options(
     reporting_start: date,
     reporting_end: date,
 ) -> list[Any]:
-    """Every calendar month in the reporting window, plus any extra month values present in data (deduped, newest first)."""
-    cal_keys = sorted(_month_norm_keys_in_reporting_window(reporting_start, reporting_end))
-    by_k: dict[str, Any] = {k: pd.Period(k, freq="M") for k in cal_keys}
+    """Month values present in data only (deduped, newest first, limited to reporting window)."""
+    allow_keys = _month_norm_keys_in_reporting_window(reporting_start, reporting_end)
+    by_k: dict[str, Any] = {}
     if not df_date.empty and "month" in df_date.columns:
         for x in df_date["month"].dropna().unique().tolist():
             if x is None or str(x) in ("NaT", "nan", "None"):
                 continue
             nk = str(_month_norm_key(x)).strip()
             if not nk or nk.lower() in ("nan", "nat", "none"):
+                continue
+            if allow_keys and nk not in allow_keys:
                 continue
             if nk not in by_k:
                 by_k[nk] = x
