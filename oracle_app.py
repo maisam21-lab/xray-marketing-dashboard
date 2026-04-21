@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-20-remove-reconciliation-country-abbrev-map"
+DASHBOARD_BUILD = "2026-04-20-platform-cost-sum-all-cost-headers"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -47,11 +47,13 @@ PMC_MONTH_GRID_SHEET_ID = DEFAULT_SHEET_ID
 # ``PAID_MEDIA_SHEET_ID`` / ``SUPERMETRICS_SHEET_ID`` / ``XRAY_ADS_SHEET_ID``, or set ``PAID_MEDIA_SHEET_ID``
 # to ``none`` to disable the second load. ``DISABLE_PAID_MEDIA_SECOND_WORKBOOK=1`` also disables it.
 DEFAULT_PAID_MEDIA_SHEET_ID = "1tcjVk7UD-4LG3DG-73ELTNCfzD2XnwnEYqdS8NoH71I"
-# Default paid-media/platform tab gid in the single Supermetrics workbook.
-# Platform performance tab:
-# https://docs.google.com/spreadsheets/d/1tcjVk7UD-4LG3DG-73ELTNCfzD2XnwnEYqdS8NoH71I/edit?gid=845305451
+# Default paid-media platform Ads Data tabs in the Supermetrics workbook.
+# 0=Google Ads, 1802364778=Meta, 1720904536=Snapchat, 279936880=LinkedIn.
 DEFAULT_PAID_MEDIA_PLATFORM_GIDS: tuple[int, ...] = (
-    845305451,
+    0,
+    1802364778,
+    1720904536,
+    279936880,
 )
 DEFAULT_SOURCE_TRUTH_GID = 845305451
 # Canonical source-of-truth tab in the Supermetrics workbook (platform performance):
@@ -2132,6 +2134,43 @@ def _best_spend_column_raw(df: pd.DataFrame) -> Optional[str]:
     return best_c
 
 
+def _sum_cost_columns_raw(df: pd.DataFrame, nrows: int) -> pd.Series:
+    """Row-wise sum of all raw headers containing ``cost`` (excluding unit/rate-style cost fields)."""
+    if df.empty or nrows <= 0:
+        return pd.Series(0.0, index=range(max(nrows, 0)), dtype=float)
+    include: list[str] = []
+    for c in df.columns:
+        nk = _norm_header_key(str(c))
+        if "cost" not in nk:
+            continue
+        if any(
+            x in nk
+            for x in (
+                "cost_per",
+                "cpc",
+                "cpm",
+                "cpv",
+                "cpa",
+                "cost_tcv",
+                "cost_tcv_pct",
+                "percent",
+                "pct",
+                "rate",
+            )
+        ):
+            continue
+        include.append(c)
+    if not include:
+        return pd.Series(0.0, index=range(nrows), dtype=float)
+    out = pd.Series(0.0, index=range(nrows), dtype=float)
+    for c in include:
+        s = _to_number_series(df[c].reset_index(drop=True))
+        if len(s) < nrows:
+            s = s.reindex(range(nrows), fill_value=0.0)
+        out = out + pd.to_numeric(s, errors="coerce").fillna(0.0)
+    return out
+
+
 def _scan_frame_for_spend_sum(raw: pd.DataFrame) -> float:
     """Best single-column spend total on a **raw** sheet (headers not yet normalized)."""
     if raw.empty or len(raw.columns) == 0:
@@ -3214,6 +3253,11 @@ def load_all_worksheets_combined(
         raw = _coerce_two_row_sheet_headers(raw)
         raw = _preprocess_excel_sheet(raw, title)
         df = _normalize(raw)
+        if not df.empty and int(ws_gid) in DEFAULT_PAID_MEDIA_PLATFORM_GIDS:
+            # Paid platform tabs: spend equals SUM(all raw headers containing "cost") per row.
+            df = df.copy()
+            df["cost"] = _sum_cost_columns_raw(raw, len(df)).values
+            df = _canonicalize_spend_month_column(df)
         if df.empty:
             tab_stats.append((title, 0))
             continue
@@ -3266,7 +3310,12 @@ def load_marketing_data(
         )
     raw = _promote_wide_metric_header_row_if_needed(raw)
     raw = _coerce_two_row_sheet_headers(raw)
-    return _normalize(raw)
+    out = _normalize(raw)
+    if not out.empty and int(worksheet_gid) in DEFAULT_PAID_MEDIA_PLATFORM_GIDS:
+        out = out.copy()
+        out["cost"] = _sum_cost_columns_raw(raw, len(out)).values
+        out = _canonicalize_spend_month_column(out)
+    return out
 
 
 def _tab_title_for_worksheet_gid(sheet_id: str, worksheet_gid: int, _secret_fp: str) -> str:
@@ -3318,6 +3367,10 @@ def load_worksheet_by_gid_preprocessed(
     title = _tab_title_for_worksheet_gid(sheet_id, worksheet_gid, _secret_fp)
     raw = _preprocess_excel_sheet(raw, title)
     out = _normalize(raw)
+    if not out.empty and int(worksheet_gid) in DEFAULT_PAID_MEDIA_PLATFORM_GIDS:
+        out = out.copy()
+        out["cost"] = _sum_cost_columns_raw(raw, len(out)).values
+        out = _canonicalize_spend_month_column(out)
     if not out.empty and (
         _tab_title_looks_like_spend_worksheet(str(title)) or _tab_title_looks_like_ads_data_sheet(str(title))
     ):
