@@ -4667,7 +4667,7 @@ def _mpo_month_picker_options(
     reporting_start: date,
     reporting_end: date,
 ) -> list[Any]:
-    """Every calendar month in the reporting window, plus any extra month values present in data (deduped)."""
+    """Every calendar month in the reporting window, plus any extra month values present in data (deduped, newest first)."""
     cal_keys = sorted(_month_norm_keys_in_reporting_window(reporting_start, reporting_end))
     by_k: dict[str, Any] = {k: pd.Period(k, freq="M") for k in cal_keys}
     if not df_date.empty and "month" in df_date.columns:
@@ -4679,7 +4679,7 @@ def _mpo_month_picker_options(
                 continue
             if nk not in by_k:
                 by_k[nk] = x
-    return [by_k[k] for k in sorted(by_k.keys(), key=_mpo_month_ts_for_sort)]
+    return [by_k[k] for k in sorted(by_k.keys(), key=_mpo_month_ts_for_sort, reverse=True)]
 
 
 def _apply_marketing_performance_filters(
@@ -4722,7 +4722,11 @@ def _apply_marketing_performance_filters(
             market_opts = sorted(_mk["_disp"].dropna().unique().tolist())
     else:
         market_opts = []
-    month_opts = _mpo_month_picker_options(df_date, reporting_start=reporting_start, reporting_end=reporting_end)
+    # Month picker must follow Supermetrics Ads sheet availability (not CRM-only months).
+    _month_source = _mpo_rows_paid_media_from_combined(df_date)
+    if _month_source.empty:
+        _month_source = df_date
+    month_opts = _mpo_month_picker_options(_month_source, reporting_start=reporting_start, reporting_end=reporting_end)
 
     _k_mpo_market = f"{key_suffix}_market"
     _k_mpo_month = f"{key_suffix}_month"
