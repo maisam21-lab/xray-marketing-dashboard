@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-20-all-market-engagement-equal-split"
+DASHBOARD_BUILD = "2026-04-20-capture-all-spend-and-drop-future-months"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -1102,6 +1102,7 @@ def _master_df_coalesce_month_country(master_df: pd.DataFrame) -> pd.DataFrame:
 
 # Reject Unix-epoch / Excel-zero style dates (shows as **Jan 1970** in the grid).
 _MIN_DASHBOARD_PERIOD = pd.Period("2000-01", freq="M")
+_MAX_DASHBOARD_PERIOD = pd.Period(date.today(), freq="M")
 
 
 def _yyyymm_calendar_to_key(ni: int) -> str:
@@ -1194,11 +1195,23 @@ def _month_norm_key(m: Any) -> str:
                 if abs(n - ni) < 0.02 or abs(n - round(n)) < 1e-6:
                     yk = _yyyymm_calendar_to_key(ni)
                     if yk:
+                        try:
+                            p_yk = pd.Period(str(yk), freq="M")
+                            if p_yk < _MIN_DASHBOARD_PERIOD or p_yk > _MAX_DASHBOARD_PERIOD:
+                                return ""
+                        except Exception:
+                            return ""
                         return yk
                     # Calendar month 1-12 only (often paired with a separate Year column — see spend preprocess).
                     if 1 <= ni <= 12 and not (20000 < n < 100000):
                         mk = _month_only_calendar_month_to_key(ni)
                         if mk:
+                            try:
+                                p_mk = pd.Period(str(mk), freq="M")
+                                if p_mk < _MIN_DASHBOARD_PERIOD or p_mk > _MAX_DASHBOARD_PERIOD:
+                                    return ""
+                            except Exception:
+                                return ""
                             return mk
                 # Excel / Sheets day-count serial (not YYYYMM — those are > 100k).
                 if 20000 < n < 100000:
@@ -1207,7 +1220,7 @@ def _month_norm_key(m: Any) -> str:
                         ts = base + pd.to_timedelta(ni, unit="D")
                         if ts.year >= 2000:
                             p = ts.to_period("M")
-                            if p >= _MIN_DASHBOARD_PERIOD:
+                            if _MIN_DASHBOARD_PERIOD <= p <= _MAX_DASHBOARD_PERIOD:
                                 return str(p)
     except (TypeError, ValueError, OverflowError):
         pass
@@ -1218,16 +1231,28 @@ def _month_norm_key(m: Any) -> str:
     if ms6.isdigit() and len(ms6) == 6:
         yk6 = _yyyymm_calendar_to_key(int(ms6))
         if yk6:
+            try:
+                p6 = pd.Period(str(yk6), freq="M")
+                if p6 < _MIN_DASHBOARD_PERIOD or p6 > _MAX_DASHBOARD_PERIOD:
+                    return ""
+            except Exception:
+                return ""
             return yk6
     if ms6.isdigit() and 1 <= len(ms6) <= 2:
         mi = int(ms6)
         if 1 <= mi <= 12:
             mk = _month_only_calendar_month_to_key(mi)
             if mk:
+                try:
+                    pm = pd.Period(str(mk), freq="M")
+                    if pm < _MIN_DASHBOARD_PERIOD or pm > _MAX_DASHBOARD_PERIOD:
+                        return ""
+                except Exception:
+                    return ""
                 return mk
     try:
         p = pd.Period(str(m), freq="M")
-        if p < _MIN_DASHBOARD_PERIOD:
+        if p < _MIN_DASHBOARD_PERIOD or p > _MAX_DASHBOARD_PERIOD:
             return ""
         return str(p)
     except Exception:
@@ -1236,7 +1261,7 @@ def _month_norm_key(m: Any) -> str:
             if pd.isna(ts) or ts < pd.Timestamp("2000-01-01"):
                 return ""
             p = ts.to_period("M")
-            if p < _MIN_DASHBOARD_PERIOD:
+            if p < _MIN_DASHBOARD_PERIOD or p > _MAX_DASHBOARD_PERIOD:
                 return ""
             return str(p)
         except Exception:
@@ -2137,13 +2162,19 @@ def _best_spend_column_raw(df: pd.DataFrame) -> Optional[str]:
 
 
 def _sum_cost_columns_raw(df: pd.DataFrame, nrows: int) -> pd.Series:
-    """Row-wise sum of all raw headers containing ``cost`` (excluding unit/rate-style cost fields)."""
+    """Row-wise sum of all spend/cost amount headers (excluding unit/rate fields)."""
     if df.empty or nrows <= 0:
         return pd.Series(0.0, index=range(max(nrows, 0)), dtype=float)
     include: list[str] = []
     for c in df.columns:
         nk = _norm_header_key(str(c))
-        if "cost" not in nk:
+        is_spend_amount = (
+            "cost" in nk
+            or "spend" in nk
+            or "amount_spent" in nk
+            or nk in ("amount", "investment", "budget", "media_spend", "paid")
+        )
+        if not is_spend_amount:
             continue
         if any(
             x in nk
