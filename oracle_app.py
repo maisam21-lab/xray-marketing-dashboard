@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-20-cost-september-onward-only"
+DASHBOARD_BUILD = "2026-04-20-month-filters-september-onward"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -4799,6 +4799,9 @@ def _mpo_month_picker_options(
 ) -> list[Any]:
     """Month values present in data only (deduped, newest first, limited to reporting window)."""
     allow_keys = _month_norm_keys_in_reporting_window(reporting_start, reporting_end)
+    allow_keys = {
+        k for k in allow_keys if k and pd.Period(str(k), freq="M") >= _MIN_SPEND_PERIOD
+    }
     by_k: dict[str, Any] = {}
     if not df_date.empty and "month" in df_date.columns:
         for x in df_date["month"].dropna().unique().tolist():
