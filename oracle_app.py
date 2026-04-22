@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-20-month-filters-september-onward"
+DASHBOARD_BUILD = "2026-04-20-ads-cost-snapshot-note"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -9024,6 +9024,7 @@ def render_page_marketing_performance(
         return
 
     _dashboard_tab_page_header()
+    st.caption("Ads Cost Snapshot — last updated on April 6, 2026")
     df, _ = _apply_marketing_performance_filters(
         df_date,
         key_suffix=key_suffix,
