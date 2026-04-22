@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-20-cw-count-rows-after-filters"
+DASHBOARD_BUILD = "2026-04-20-cost-september-onward-only"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -1136,6 +1136,7 @@ def _master_df_coalesce_month_country(master_df: pd.DataFrame) -> pd.DataFrame:
 # Reject Unix-epoch / Excel-zero style dates (shows as **Jan 1970** in the grid).
 _MIN_DASHBOARD_PERIOD = pd.Period("2000-01", freq="M")
 _MAX_DASHBOARD_PERIOD = pd.Period(date.today(), freq="M")
+_MIN_SPEND_PERIOD = pd.Period("2025-09", freq="M")
 
 
 def _yyyymm_calendar_to_key(ni: int) -> str:
@@ -2995,6 +2996,9 @@ def _filter_spend_for_dashboard(df: pd.DataFrame, start: date, end: date) -> pd.
     if df.empty:
         return df
     allow_m = _month_norm_keys_in_reporting_window(start, end)
+    allow_m = {
+        k for k in allow_m if k and pd.Period(str(k), freq="M") >= _MIN_SPEND_PERIOD
+    }
 
     def _month_in_range(m: Any) -> bool:
         if m is None or (isinstance(m, float) and pd.isna(m)):
@@ -3011,6 +3015,9 @@ def _filter_spend_for_dashboard(df: pd.DataFrame, start: date, end: date) -> pd.
             return sub_m
 
     sub_d = _filter_by_date_range(df, start, end)
+    if not sub_d.empty and "date" in sub_d.columns:
+        d = pd.to_datetime(sub_d["date"], errors="coerce")
+        sub_d = sub_d.loc[d.isna() | (d >= pd.Timestamp("2025-09-01"))].copy()
     if _normalized_spend_cost_sum(sub_d) > 0.0:
         return sub_d
 
