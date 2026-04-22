@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-20-cw-derive-from-leads-stage-status"
+DASHBOARD_BUILD = "2026-04-20-cw-force-leads-gid-839225260"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -9135,8 +9135,11 @@ def render_page_marketing_performance(
                 total_leads = _lead_rows_count(leads_df)
                 total_qualified = _qualified_count_from_leads(leads_df)
     total_pitching = int(post_df_kpi["pitching"].sum()) if "pitching" in post_df_kpi.columns else 0
-    # Closed Won: prefer the same unique-opportunity logic from the requested Leads worksheet gid first.
-    cw_source_for_count = leads_df if ("closed_won" in leads_df.columns and not leads_df.empty) else post_df
+    # Closed Won: force primary source from Leads worksheet gid (839225260 path) using the same unique-opportunity logic.
+    cw_leads_df = _ensure_closed_won_from_text_flags(_strict_gid_source(leads_gid))
+    if cw_leads_df.empty:
+        cw_leads_df = leads_df
+    cw_source_for_count = cw_leads_df if ("closed_won" in cw_leads_df.columns and not cw_leads_df.empty) else post_df
     total_cw = _sum_closed_won_unique_opportunities(cw_source_for_count)
     if total_cw == 0 and "closed_won" in post_df.columns and not post_df.empty:
         total_cw = _sum_closed_won_unique_opportunities(post_df)
