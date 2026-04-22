@@ -3544,6 +3544,7 @@ def load_source_of_truth_tab(sheet_id: str, worksheet_gid: int, _secret_fp: str)
     raw = _preprocess_excel_sheet(raw, "source_of_truth")
     out = _normalize(raw)
     out["source_tab"] = f"gid:{worksheet_gid}"
+    out["worksheet_gid"] = int(worksheet_gid)
     return out
 
 
@@ -11374,8 +11375,14 @@ def render_main_dashboard(
     _load_banner = st.empty()
     _load_banner.info("**Loading…**")
     try:
-        # Source of truth is the entire spreadsheet; aggregate data across tabs.
-        df_loaded = load_all_worksheets_combined(sheet_id, _fp)
+        # Source of truth: preferred canonical worksheet gid, with full-workbook fallback.
+        truth_gid = _default_truth_gid_from_secrets()
+        try:
+            df_loaded = load_source_of_truth_tab(sheet_id, int(truth_gid), _fp)
+        except Exception:
+            df_loaded = pd.DataFrame()
+        if df_loaded.empty:
+            df_loaded = load_all_worksheets_combined(sheet_id, _fp)
         # Prefer a spend-like tab injection if spend rows are missing from the combined load.
         needs_spend_inject = True
         if not df_loaded.empty and "source_tab" in df_loaded.columns and "cost" in df_loaded.columns:
