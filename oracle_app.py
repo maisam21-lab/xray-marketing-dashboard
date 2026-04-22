@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-20-cw-force-leads-gid-839225260"
+DASHBOARD_BUILD = "2026-04-20-tcv-close-date-from-sep-2025"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -2640,6 +2640,11 @@ def _preprocess_excel_sheet(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
                 df["Date"] = pd.to_datetime(df["Close Date"], errors="coerce", dayfirst=True)
             elif "Created Date" in df.columns:
                 df["Date"] = pd.to_datetime(df["Created Date"], errors="coerce")
+        # Business rule: in TCV/RAW CW sheet, only keep deals with Close Date from Sep 2025 onward.
+        if "Close Date" in df.columns:
+            _cw_close = pd.to_datetime(df["Close Date"], errors="coerce", dayfirst=True)
+            _cw_close = _scrub_pre_2000_dates(_coerce_sheet_serial_dates(_cw_close))
+            df = df.loc[_cw_close.isna() | (_cw_close >= pd.Timestamp("2025-09-01"))].copy()
         # Training definition: TCV = Monthly LF x Contract Length (fallback if TCV (USD) absent/zero).
         if "TCV (USD)" in df.columns:
             tcv_num = pd.to_numeric(df["TCV (USD)"], errors="coerce").fillna(0)
