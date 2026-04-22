@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-20-month-country-platform-canonical-mapping"
+DASHBOARD_BUILD = "2026-04-20-single-truth-tab-all-marketing-metrics"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -8981,27 +8981,55 @@ def render_page_marketing_performance(
         except Exception:
             return pd.DataFrame()
 
-    # Business mapping by tab (strict gid sources):
+    # Prefer the canonical truth tab for ALL non-spend marketing metrics when present.
+    truth_gid = _default_truth_gid_from_secrets()
+    truth_df = _strict_gid_source(truth_gid)
+    truth_metric_cols = {
+        "leads",
+        "qualified",
+        "pitching",
+        "new",
+        "working",
+        "negotiation",
+        "commitment",
+        "qualifying",
+        "closed_lost",
+        "closed_won",
+        "tcv",
+        "first_month_lf",
+    }
+    use_truth_for_nonspend = (not truth_df.empty) and bool(truth_metric_cols.intersection(set(truth_df.columns)))
+
+    # Business mapping by tab (strict gid sources unless truth tab already carries the metric).
     # - Leads / Qualified: Leads worksheet gid
     # - Post-lead pipeline stages: Raw Post Qualification worksheet gid
     # - TCV / 1st Month LF: RAW CW worksheet gid
     leads_gid = _default_leads_gid_from_secrets()
-    leads_df = _strict_gid_source(leads_gid)
-    if leads_df.empty:
-        leads_df = _tab_subset(df_date, list(_MPO_LEAD_TAB_PATTERNS))
+    if use_truth_for_nonspend:
+        leads_df = truth_df.copy()
+    else:
+        leads_df = _strict_gid_source(leads_gid)
+        if leads_df.empty:
+            leads_df = _tab_subset(df_date, list(_MPO_LEAD_TAB_PATTERNS))
 
     pq_gid = _optional_post_qual_gid_from_secrets()
-    post_df_kpi = _strict_gid_source(pq_gid)
-    if post_df_kpi.empty:
-        post_df_kpi = _tab_subset(df_date, list(_POST_LEAD_SOURCE_TAB_PATTERNS))
+    if use_truth_for_nonspend:
+        post_df_kpi = truth_df.copy()
+    else:
+        post_df_kpi = _strict_gid_source(pq_gid)
+        if post_df_kpi.empty:
+            post_df_kpi = _tab_subset(df_date, list(_POST_LEAD_SOURCE_TAB_PATTERNS))
 
     # Closed-won KPI should stay deduped to avoid cross-tab opportunity duplication.
     post_df = _dedupe_post_lead_rows(post_df_kpi)
 
     raw_cw_gid = _optional_raw_cw_gid_from_secrets()
-    cw_df = _strict_gid_source(raw_cw_gid)
-    if cw_df.empty:
-        cw_df = _resolve_cw_tcv_dataframe(df_loaded, df)
+    if use_truth_for_nonspend:
+        cw_df = truth_df.copy()
+    else:
+        cw_df = _strict_gid_source(raw_cw_gid)
+        if cw_df.empty:
+            cw_df = _resolve_cw_tcv_dataframe(df_loaded, df)
     cw_kpi = _cw_dataframe_for_kpis(cw_df, df)
 
     total_spend = float(spend_df["cost"].sum()) if "cost" in spend_df.columns else 0.0
