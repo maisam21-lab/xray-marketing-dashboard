@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-20-supermetrics-new-source-truth-404483723"
+DASHBOARD_BUILD = "2026-04-20-month-country-platform-canonical-mapping"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -1034,6 +1034,22 @@ def _country_join_key(name: str) -> str:
     return k
 
 
+def _canonical_country_label(name: Any) -> str:
+    """Canonical display country for month × country × platform outputs."""
+    k = _country_join_key(str(name))
+    if k in ("", "unknown", "nan", "<na>", "none"):
+        return "Unknown"
+    if k == "united arab emirates":
+        return "UAE"
+    if k == "saudi arabia":
+        return "Saudi Arabia"
+    if k == "bahrain":
+        return "Bahrain"
+    if k == "kuwait":
+        return "Kuwait"
+    return _market_display_from_join_key(k)
+
+
 # Canonical join-key → CRM-style label in Master View (after merge on normalized ``country``).
 _MARKET_DISPLAY_FROM_KEY: dict[str, str] = {
     "united arab emirates": "UAE",
@@ -1057,6 +1073,23 @@ def _market_display_from_join_key(country_key: str) -> str:
     if not k or k in ("unknown", "nan", "<na>"):
         return "Unknown"
     return " ".join(w.capitalize() for w in k.split())
+
+
+def _canonical_platform_label(name: Any) -> str:
+    """Normalize platform labels so grouping is stable across tabs."""
+    s = str(name).strip()
+    if not s or s.lower() in {"unknown", "nan", "<na>", "none"}:
+        return "Unknown"
+    sl = s.lower()
+    if re.search(r"\bgoogle\b", sl):
+        return "Google Ads"
+    if re.search(r"\bmeta\b|facebook|instagram", sl):
+        return "Meta Ads"
+    if re.search(r"\bsnap(?:chat)?\b", sl):
+        return "Snapchat Ads"
+    if re.search(r"linked\s*in|linkedin", sl):
+        return "LinkedIn Ads"
+    return s
 
 
 def _normalize_master_merge_frame(df: pd.DataFrame) -> pd.DataFrame:
@@ -2862,6 +2895,8 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
         if c not in out.columns:
             out[c] = "Unknown"
         out[c] = out[c].astype(str).replace("nan", "Unknown")
+    out["country"] = out["country"].map(_canonical_country_label)
+    out["platform"] = out["platform"].map(_canonical_platform_label)
 
     for dim in (
         "opportunity_id",
