@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-20-truth-tab-1212330729"
+DASHBOARD_BUILD = "2026-04-20-truth-tab-priority-for-clicks-impressions"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -4896,12 +4896,44 @@ def _mpo_load_spend_sheet_for_kpis(
     start_date: date,
     end_date: date,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, str, str]:
-    """Blend paid-media spend pools from Supermetrics Ads sheets only, then merge clicks/impressions.
+    """Load spend/traffic for KPIs.
+
+    Prefer canonical truth-tab rows (XRAY_TRUTH_GID) when they already include spend + clicks/impressions.
+    Otherwise blend paid-media spend pools from Supermetrics Ads sheets and merge clicks/impressions.
 
     Returns ``(spend_sheet_for_kpis, spend_sheet_master, spend_pool_full, sheet_id, fingerprint)``.
     """
     sheet_id, _ = _workbook_id_resolution()
     _fp_mpo = _secret_fingerprint(_service_account_from_streamlit_secrets())
+    truth_gid = _default_truth_gid_from_secrets()
+
+    truth_rows = _rows_by_worksheet_id(df_date, int(truth_gid), sheet_id)
+    if truth_rows.empty:
+        truth_rows = _rows_by_worksheet_id(df_loaded, int(truth_gid), sheet_id)
+    if truth_rows.empty:
+        try:
+            truth_rows = load_source_of_truth_tab(sheet_id, int(truth_gid), _fp_mpo)
+        except Exception:
+            truth_rows = pd.DataFrame()
+
+    if not truth_rows.empty:
+        tr = _normalize_master_merge_frame(truth_rows.copy())
+        has_cost = "cost" in tr.columns and float(pd.to_numeric(tr["cost"], errors="coerce").fillna(0).abs().sum()) > 1e-9
+        has_traffic = (
+            "clicks" in tr.columns
+            and "impressions" in tr.columns
+            and (
+                float(pd.to_numeric(tr["clicks"], errors="coerce").fillna(0).abs().sum()) > 1e-9
+                or float(pd.to_numeric(tr["impressions"], errors="coerce").fillna(0).abs().sum()) > 1e-9
+            )
+        )
+        if has_cost and has_traffic:
+            spend_pool_full = tr.copy()
+            spend_sheet_master = _filter_spend_for_dashboard(tr, start_date, end_date)
+            if spend_sheet_master.empty:
+                spend_sheet_master = tr.copy()
+            return spend_sheet_master.copy(), spend_sheet_master, spend_pool_full, sheet_id, _fp_mpo
+
     df_spend_scope_primary = _rows_for_workbook_id(df_date, sheet_id)
     spend_blended_primary = _mpo_blend_paid_media_for_master_df(df_spend_scope_primary)
     spend_blended_all = _mpo_blend_paid_media_for_master_df(df_date)
