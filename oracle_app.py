@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-20-closed-won-priority-from-leads-gid"
+DASHBOARD_BUILD = "2026-04-20-cw-derive-from-leads-stage-status"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -1912,6 +1912,32 @@ def _sum_closed_won_unique_opportunities(df: pd.DataFrame) -> int:
         tmp["_cw"] = cw_bin
         return int(tmp.groupby(keys, dropna=False)["_cw"].max().sum())
     return int(cw_bin.sum())
+
+
+def _ensure_closed_won_from_text_flags(df: pd.DataFrame) -> pd.DataFrame:
+    """Derive ``closed_won`` from stage/status text when numeric CW is missing/zero."""
+    if df.empty:
+        return df
+    out = df.copy()
+    has_cw = "closed_won" in out.columns
+    cw_sum = float(pd.to_numeric(out.get("closed_won", 0), errors="coerce").fillna(0).sum()) if has_cw else 0.0
+    if has_cw and cw_sum > 0.0:
+        return out
+
+    src_col: Optional[str] = None
+    st_col = _resolve_post_lead_stage_column(out)
+    if st_col is not None:
+        src_col = st_col
+    else:
+        for c in out.columns:
+            nk = _norm_header_key(c)
+            if nk in {"lead_status", "status", "deal_status", "opportunity_status"}:
+                src_col = c
+                break
+    if src_col is None:
+        return out
+    out["closed_won"] = _to_int_series_safe(out[src_col].map(_is_closed_won_stage_text))
+    return out
 
 
 def _sum_closed_won_sheet_style(df: pd.DataFrame) -> int:
@@ -9052,6 +9078,7 @@ def render_page_marketing_performance(
         leads_df = _strict_gid_source(leads_gid)
         if leads_df.empty:
             leads_df = _tab_subset(df_date, list(_MPO_LEAD_TAB_PATTERNS))
+    leads_df = _ensure_closed_won_from_text_flags(leads_df)
 
     pq_gid = _optional_post_qual_gid_from_secrets()
     if use_truth_for_nonspend:
@@ -9060,6 +9087,7 @@ def render_page_marketing_performance(
         post_df_kpi = _strict_gid_source(pq_gid)
         if post_df_kpi.empty:
             post_df_kpi = _tab_subset(df_date, list(_POST_LEAD_SOURCE_TAB_PATTERNS))
+    post_df_kpi = _ensure_closed_won_from_text_flags(post_df_kpi)
 
     # Closed-won KPI should stay deduped to avoid cross-tab opportunity duplication.
     post_df = _dedupe_post_lead_rows(post_df_kpi)
