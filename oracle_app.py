@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-20-ads-cost-snapshot-note"
+DASHBOARD_BUILD = "2026-04-22-cw-from-leads-close-date-sep2025"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -1939,6 +1939,31 @@ def _ensure_closed_won_from_text_flags(df: pd.DataFrame) -> pd.DataFrame:
         return out
     out["closed_won"] = _to_int_series_safe(out[src_col].map(_is_closed_won_stage_text))
     return out
+
+
+def _closed_won_kpi_count_from_leads_gid(
+    df_loaded: pd.DataFrame,
+    sheet_id: str,
+    leads_gid: int,
+    _fp_mpo: str,
+    *,
+    close_date_min: pd.Timestamp = pd.Timestamp("2025-09-01"),
+) -> int:
+    """CW (inc. approved) from Leads tab: stage text + Close Date >= Sep 2025, unique-opportunity safe."""
+    base = _rows_by_worksheet_id(df_loaded, int(leads_gid), sheet_id)
+    if base.empty:
+        try:
+            base = load_worksheet_by_gid_preprocessed(sheet_id, int(leads_gid), _fp_mpo)
+        except Exception:
+            base = pd.DataFrame()
+    if base.empty:
+        return 0
+    work = _ensure_closed_won_from_text_flags(base.copy())
+    if "date" in work.columns:
+        d = pd.to_datetime(work["date"], errors="coerce")
+        work = work.loc[d.isna() | (d >= close_date_min)].copy()
+    work = work.loc[pd.to_numeric(work.get("closed_won", 0), errors="coerce").fillna(0) > 0].copy()
+    return _sum_closed_won_unique_opportunities(work)
 
 
 def _sum_closed_won_sheet_style(df: pd.DataFrame) -> int:
@@ -9151,16 +9176,12 @@ def render_page_marketing_performance(
                 total_leads = _lead_rows_count(leads_df)
                 total_qualified = _qualified_count_from_leads(leads_df)
     total_pitching = int(post_df_kpi["pitching"].sum()) if "pitching" in post_df_kpi.columns else 0
-    # Closed Won: use simple row count from the primary CW source after filters (per latest business request).
-    cw_leads_df = _ensure_closed_won_from_text_flags(_strict_gid_source(leads_gid))
-    if cw_leads_df.empty:
-        cw_leads_df = leads_df
-    cw_source_for_count = cw_leads_df if not cw_leads_df.empty else post_df
-    total_cw = int(len(cw_source_for_count.index)) if not cw_source_for_count.empty else 0
+    # CW (inc. approved): Leads tab gid — stage Closed Won / Approved, Close Date >= Sep 2025, unique opportunities.
+    total_cw = _closed_won_kpi_count_from_leads_gid(df_loaded, sheet_id, int(leads_gid), _fp_mpo)
     if total_cw == 0:
         pl_only = _dedupe_post_lead_rows(_tab_subset(df, list(_POST_LEAD_SOURCE_TAB_PATTERNS)))
-        if not pl_only.empty:
-            total_cw = int(len(pl_only.index))
+        if not pl_only.empty and "closed_won" in pl_only.columns:
+            total_cw = _sum_closed_won_unique_opportunities(pl_only)
     total_new = int(post_df["new"].sum()) if "new" in post_df.columns else 0
     total_working = int(post_df["working"].sum()) if "working" in post_df.columns else 0
     total_negotiation = int(post_df_kpi["negotiation"].sum()) if "negotiation" in post_df_kpi.columns else 0
@@ -9181,8 +9202,8 @@ def render_page_marketing_performance(
         total_spend = gid0_spend_sum
     if total_cw == 0 and "closed_won" in df.columns:
         pl_only = _dedupe_post_lead_rows(_tab_subset(df, list(_POST_LEAD_SOURCE_TAB_PATTERNS)))
-        if not pl_only.empty:
-            total_cw = int(len(pl_only.index))
+        if not pl_only.empty and "closed_won" in pl_only.columns:
+            total_cw = _sum_closed_won_unique_opportunities(pl_only)
 
     # Cloud safety net: if mapped sources still resolve to zeros, fall back to full filtered frame.
     if (
