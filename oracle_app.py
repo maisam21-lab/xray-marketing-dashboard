@@ -3577,7 +3577,54 @@ def load_source_of_truth_tab(sheet_id: str, worksheet_gid: int, _secret_fp: str)
         worksheet_gid=int(worksheet_gid),
     )
     raw = _preprocess_excel_sheet(raw, "source_of_truth")
-    out = _normalize(raw)
+
+    def _truth_tab_month_country_platform_cost(df_raw: pd.DataFrame) -> pd.DataFrame:
+        """Parse truth tab shaped as Month/Country + platform spend columns."""
+        if df_raw.empty:
+            return pd.DataFrame()
+        cols = list(df_raw.columns)
+        nk_map = {c: _norm_header_key(str(c)) for c in cols}
+
+        month_col = next((c for c in cols if nk_map[c] in {"month", "report_month", "period"}), None)
+        country_col = next((c for c in cols if nk_map[c] in {"country", "market"}), None)
+        if month_col is None or country_col is None:
+            return pd.DataFrame()
+
+        platform_cols: list[tuple[str, str]] = []
+        for c in cols:
+            k = nk_map[c]
+            if "google" in k and "ads" in k:
+                platform_cols.append((c, "Google Ads"))
+            elif "meta" in k and "ads" in k:
+                platform_cols.append((c, "Meta Ads"))
+            elif "snapchat" in k and "ads" in k:
+                platform_cols.append((c, "Snapchat Ads"))
+            elif "linkedin" in k and "ads" in k:
+                platform_cols.append((c, "LinkedIn Ads"))
+        if not platform_cols:
+            return pd.DataFrame()
+
+        base = pd.DataFrame(index=df_raw.index)
+        base["month"] = df_raw[month_col].map(_month_norm_key)
+        base["country"] = df_raw[country_col].map(_canonical_country_label)
+        base = base.loc[base["month"].astype(str).str.len() > 0].copy()
+        if base.empty:
+            return pd.DataFrame()
+
+        parts: list[pd.DataFrame] = []
+        for col, plat in platform_cols:
+            p = base.copy()
+            p["platform"] = plat
+            p["cost"] = _to_number_series(df_raw.loc[p.index, col]).fillna(0.0)
+            parts.append(p)
+        if not parts:
+            return pd.DataFrame()
+        out_truth = pd.concat(parts, ignore_index=True)
+        out_truth["date"] = pd.to_datetime(out_truth["month"] + "-01", errors="coerce")
+        return out_truth
+
+    parsed_truth = _truth_tab_month_country_platform_cost(raw)
+    out = parsed_truth if not parsed_truth.empty else _normalize(raw)
     out["source_tab"] = f"gid:{worksheet_gid}"
     out["worksheet_gid"] = int(worksheet_gid)
     return out
