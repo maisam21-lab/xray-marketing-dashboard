@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-20-single-truth-tab-all-marketing-metrics"
+DASHBOARD_BUILD = "2026-04-20-truth-tab-1212330729"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -55,9 +55,9 @@ DEFAULT_PAID_MEDIA_PLATFORM_GIDS: tuple[int, ...] = (
     1720904536,
     279936880,
 )
-DEFAULT_SOURCE_TRUTH_GID = 404483723
+DEFAULT_SOURCE_TRUTH_GID = 1212330729
 # Canonical source-of-truth tab in the Supermetrics workbook:
-# https://docs.google.com/spreadsheets/d/1tcjVk7UD-4LG3DG-73ELTNCfzD2XnwnEYqdS8NoH71I/edit?gid=404483723
+# https://docs.google.com/spreadsheets/d/1tcjVk7UD-4LG3DG-73ELTNCfzD2XnwnEYqdS8NoH71I/edit?gid=1212330729
 ME_XRAY_SOURCE_OF_TRUTH_URL = (
     f"https://docs.google.com/spreadsheets/d/{DEFAULT_SHEET_ID}/edit?gid={DEFAULT_SOURCE_TRUTH_GID}"
 )
