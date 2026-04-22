@@ -2692,6 +2692,15 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
         )
 
     out = pd.DataFrame(index=df.index)
+
+    def _col_as_series(frame: pd.DataFrame, col_name: str) -> pd.Series:
+        """Return one column as Series even when duplicate headers exist."""
+        got = frame[col_name]
+        if isinstance(got, pd.DataFrame):
+            if got.shape[1] == 0:
+                return pd.Series(index=frame.index, dtype=object)
+            return got.iloc[:, 0]
+        return got
     # These often appear as two headers for the same measure (e.g. Actual TCV + TCV USD); summing doubles row TCV/LF.
     _DEDUPE_NUMERIC_MAX_FIELDS = frozenset({"tcv", "first_month_lf"})
     for field, srcs in field_to_sources.items():
@@ -2699,19 +2708,19 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
             is_cw_cols = [c for c in srcs if _norm_header_key(str(c)) == "is_cw"]
             if is_cw_cols:
                 if len(is_cw_cols) == 1:
-                    out[field] = df[is_cw_cols[0]]
+                    out[field] = _col_as_series(df, is_cw_cols[0])
                 else:
-                    acc = _closed_won_to_numeric_series(df[is_cw_cols[0]])
+                    acc = _closed_won_to_numeric_series(_col_as_series(df, is_cw_cols[0]))
                     for c in is_cw_cols[1:]:
-                        acc = acc.combine(_closed_won_to_numeric_series(df[c]), max)
+                        acc = acc.combine(_closed_won_to_numeric_series(_col_as_series(df, c)), max)
                     out[field] = acc
                 continue
         if len(srcs) == 1:
-            out[field] = df[srcs[0]]
+            out[field] = _col_as_series(df, srcs[0])
         elif field in _NUM_FIELDS:
-            acc = _to_number_series(df[srcs[0]])
+            acc = _to_number_series(_col_as_series(df, srcs[0]))
             for c in srcs[1:]:
-                nxt = _to_number_series(df[c])
+                nxt = _to_number_series(_col_as_series(df, c))
                 if field == "closed_won":
                     acc = acc.combine(nxt, max)
                 elif field in _DEDUPE_NUMERIC_MAX_FIELDS:
@@ -2720,7 +2729,7 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
                     acc = acc + nxt
             out[field] = acc
         else:
-            out[field] = df[srcs[0]]
+            out[field] = _col_as_series(df, srcs[0])
 
     # Hard fallback for spend: if explicit mapping missed it, infer from any spend/cost/amount-like header.
     if "cost" not in out.columns:
