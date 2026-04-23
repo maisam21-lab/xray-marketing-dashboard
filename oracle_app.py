@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-22-cw-zero-fix-month-date-floor"
+DASHBOARD_BUILD = "2026-04-22-cw-source-sheet-no-extra-date-filter"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -2034,8 +2034,6 @@ def _closed_won_kpi_count_from_leads_gid(
 def _closed_won_kpi_count_from_source_truth_gid(
     sheet_id: str,
     worksheet_gid: int,
-    *,
-    close_date_min: pd.Timestamp = pd.Timestamp("2025-09-01"),
 ) -> int:
     """CW source-of-truth count from one worksheet (each matching row = 1 CW)."""
     secret_creds = _service_account_from_streamlit_secrets()
@@ -2078,18 +2076,6 @@ def _closed_won_kpi_count_from_source_truth_gid(
         return 0
 
     cw_mask = stage_s.map(_is_closed_won_stage_text).fillna(False)
-
-    date_s: Optional[pd.Series] = None
-    for c in raw.columns:
-        nk = _norm_header_key(str(c))
-        if nk in {"close_date", "date", "created_date", "date_formatted"}:
-            date_s = raw[c]
-            if nk == "close_date":
-                break
-    if date_s is not None:
-        d = pd.to_datetime(date_s, errors="coerce", dayfirst=True)
-        d = _scrub_pre_2000_dates(_coerce_sheet_serial_dates(d))
-        cw_mask = cw_mask & (d.isna() | (d >= close_date_min))
 
     # Requested rule: publish CW as raw matching row count (no dedupe by opportunity).
     return int(_to_int_series_safe(cw_mask).sum())
