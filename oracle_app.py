@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-22-global-reporting-from-sep-2025"
+DASHBOARD_BUILD = "2026-04-22-global-sep-floor-hard-enforced"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -1360,6 +1360,21 @@ def _month_norm_keys_in_reporting_window(start: date, end: date) -> set[str]:
         return out
     except Exception:
         return set()
+
+
+def _enforce_global_reporting_floor(df: pd.DataFrame) -> pd.DataFrame:
+    """Hard floor for published dashboard rows: keep Sep 2025 onward only."""
+    if df.empty:
+        return df
+    out = df.copy()
+    keep = pd.Series(True, index=out.index)
+    if "month" in out.columns:
+        mk = out["month"].map(_month_norm_key)
+        keep = keep & mk.ne("")
+    if "date" in out.columns:
+        d = pd.to_datetime(out["date"], errors="coerce")
+        keep = keep & (d.isna() | (d >= pd.Timestamp("2025-09-01")))
+    return out.loc[keep].copy()
 
 
 def _mpo_slice_by_dashboard_ref(frame: pd.DataFrame, df_ref: pd.DataFrame) -> pd.DataFrame:
@@ -11749,6 +11764,7 @@ def render_main_dashboard(
             df_loaded = _restrict_paid_media_workbook_to_date_range(
                 df_loaded, _ads_wb, start_date, end_date
             )
+        df_loaded = _enforce_global_reporting_floor(df_loaded)
 
     _no_data_msg = (
         "No data rows were returned. Check tabs and column headers against the ME X-Ray template."
