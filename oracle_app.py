@@ -2225,6 +2225,85 @@ def _closed_won_kpi_count_from_source_truth_gid(
     return int(pd.to_numeric(norm["closed_won"], errors="coerce").fillna(0).gt(0).sum())
 
 
+def _closed_won_tcv_sum_from_source_truth_gid(
+    sheet_id: str,
+    worksheet_gid: int,
+) -> tuple[int, float]:
+    """(row_count, tcv_sum) from source-truth worksheet for Closed Won + Approved rows."""
+    secret_creds = _service_account_from_streamlit_secrets()
+    if not secret_creds:
+        return 0, 0.0
+    try:
+        raw = _read_sheet_auth(
+            sheet_id,
+            secret_creds,
+            worksheet_name=None,
+            worksheet_gid=int(worksheet_gid),
+        )
+    except Exception:
+        raw = pd.DataFrame()
+    if raw.empty:
+        try:
+            raw = _read_sheet_auth_loose(
+                sheet_id,
+                secret_creds,
+                worksheet_gid=int(worksheet_gid),
+            )
+        except Exception:
+            raw = pd.DataFrame()
+    if raw.empty:
+        return 0, 0.0
+
+    raw_orig = raw.copy()
+    raw = _promote_wide_metric_header_row_if_needed(raw)
+    raw = _coerce_two_row_sheet_headers(raw)
+
+    # Stage mask: union across plausible stage/status columns, plus strict col-P fallback.
+    stage_mask = pd.Series(False, index=raw.index)
+    cand_cols: list[str] = []
+    for c in raw.columns:
+        nk = _norm_header_key(str(c))
+        if nk in {"stage", "stagename", "stage_name", "opportunity_stage", "deal_stage", "lead_status", "status"}:
+            cand_cols.append(c)
+    cand_cols = list(dict.fromkeys(cand_cols))
+    for c in cand_cols:
+        s = raw[c]
+        if pd.api.types.is_object_dtype(s) or pd.api.types.is_string_dtype(s):
+            stage_mask = stage_mask | s.map(_is_closed_won_stage_text).fillna(False)
+    if raw.shape[1] >= 16:
+        stage_mask = stage_mask | raw.iloc[:, 15].astype(str).map(_is_closed_won_stage_text).fillna(False)
+    if raw_orig.shape[1] >= 16:
+        stage_mask = stage_mask | raw_orig.iloc[:, 15].astype(str).map(_is_closed_won_stage_text).fillna(False)
+    if not bool(stage_mask.any()):
+        for c in raw.columns:
+            s = raw[c]
+            if not (pd.api.types.is_object_dtype(s) or pd.api.types.is_string_dtype(s)):
+                continue
+            stage_mask = stage_mask | s.map(_is_closed_won_stage_text).fillna(False)
+
+    # TCV source: prefer "TCV (converted)" (column T in source), then TCV USD.
+    tcv_col: Optional[str] = None
+    for c in raw.columns:
+        nk = _norm_header_key(str(c))
+        if nk == "tcv_converted":
+            tcv_col = c
+            break
+    if tcv_col is None:
+        for c in raw.columns:
+            nk = _norm_header_key(str(c))
+            if nk in {"tcv", "tcv_usd"}:
+                tcv_col = c
+                break
+    if tcv_col is None and raw.shape[1] >= 20:
+        tcv_s = pd.to_numeric(raw.iloc[:, 19], errors="coerce").fillna(0.0)
+    else:
+        tcv_s = pd.to_numeric(raw[tcv_col], errors="coerce").fillna(0.0) if tcv_col is not None else pd.Series(0.0, index=raw.index)
+
+    rows = int(_to_int_series_safe(stage_mask).sum())
+    total = float(tcv_s.loc[stage_mask].sum()) if rows > 0 else 0.0
+    return rows, total
+
+
 def _sum_closed_won_sheet_style(df: pd.DataFrame) -> int:
     """``SUM(CW)`` as in Sheets / Looker — sums the metric column across rows (includes duplicate rows)."""
     if df.empty or "closed_won" not in df.columns:
@@ -9445,6 +9524,13 @@ def render_page_marketing_performance(
     # Otherwise, keep the same dashboard Month x Country window.
     _cw_scope_df = pd.DataFrame() if (_is_all_markets and _is_all_months) else df
     cw_kpi = _cw_dataframe_for_kpis(cw_df, _cw_scope_df)
+    _tcv_rows_override: Optional[int] = None
+    _tcv_sum_override: Optional[float] = None
+    if _is_all_markets and _is_all_months and cw_truth_gid is not None:
+        _r_ov, _s_ov = _closed_won_tcv_sum_from_source_truth_gid(sheet_id, int(cw_truth_gid))
+        if _r_ov > 0:
+            _tcv_rows_override = int(_r_ov)
+            _tcv_sum_override = float(_s_ov)
 
     total_spend = float(spend_df["cost"].sum()) if "cost" in spend_df.columns else 0.0
     if total_spend <= 0.0 and _normalized_spend_cost_sum(spend_sheet_master) > 0.0:
@@ -9502,9 +9588,11 @@ def render_page_marketing_performance(
     total_total_live = total_qualifying + total_pitching + total_negotiation + total_commitment
     total_closed_lost = int(post_df_kpi["closed_lost"].sum()) if "closed_lost" in post_df_kpi.columns else 0
     total_tcv = float(cw_kpi["tcv"].sum()) if "tcv" in cw_kpi.columns else 0.0
+    if _tcv_sum_override is not None:
+        total_tcv = float(_tcv_sum_override)
     total_first_month_lf = float(cw_kpi["first_month_lf"].sum()) if "first_month_lf" in cw_kpi.columns else 0.0
     total_new_working = _new_working_count_from_leads(leads_df)
-    _tcv_debug_rows = int(len(cw_kpi.index)) if isinstance(cw_kpi, pd.DataFrame) else 0
+    _tcv_debug_rows = int(_tcv_rows_override) if _tcv_rows_override is not None else (int(len(cw_kpi.index)) if isinstance(cw_kpi, pd.DataFrame) else 0)
 
     # Per-metric safety fallbacks.
     if total_spend == 0.0 and "cost" in df.columns:
@@ -9753,7 +9841,9 @@ def render_page_marketing_performance(
     if cw_total_source_truth > 0:
         total_cw = int(cw_total_source_truth)
     # Keep Actual TCV card aligned with the same CW KPI slice used for the TCV check banner.
-    if isinstance(cw_kpi, pd.DataFrame) and "tcv" in cw_kpi.columns:
+    if _tcv_sum_override is not None:
+        total_tcv = float(_tcv_sum_override)
+    elif isinstance(cw_kpi, pd.DataFrame) and "tcv" in cw_kpi.columns:
         total_tcv = float(pd.to_numeric(cw_kpi["tcv"], errors="coerce").fillna(0).sum())
     _sm_traffic = _mpo_traffic_totals_from_sm_pool(
         df_loaded,
