@@ -2048,6 +2048,46 @@ def _ensure_closed_won_from_text_flags(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def _cw_stage_detection_debug(df: pd.DataFrame) -> dict[str, Any]:
+    """Debug helper: show which column is interpreted as CW stage signal."""
+    out: dict[str, Any] = {"chosen": None, "hits": 0, "top_candidates": []}
+    if df.empty:
+        return out
+    cand_cols: list[str] = []
+    st_col = _resolve_post_lead_stage_column(df)
+    if st_col is not None and st_col in df.columns:
+        cand_cols.append(st_col)
+    for c in df.columns:
+        nk = _norm_header_key(c)
+        if nk in {"stage", "stagename", "stage_name", "opportunity_stage", "deal_stage"}:
+            cand_cols.append(c)
+    for c in df.columns:
+        nk = _norm_header_key(c)
+        if nk in {"lead_status", "status", "deal_status", "opportunity_status"}:
+            cand_cols.append(c)
+    for c in df.columns:
+        nk = _norm_header_key(c)
+        if "status" in nk and not any(x in nk for x in ("date", "time", "timestamp", "history", "change")):
+            cand_cols.append(c)
+    cand_cols = list(dict.fromkeys(cand_cols))
+    score_rows: list[tuple[str, int]] = []
+    for c in cand_cols:
+        s = df[c]
+        if not (pd.api.types.is_object_dtype(s) or pd.api.types.is_string_dtype(s)):
+            continue
+        hits = int(_to_int_series_safe(s.map(_is_closed_won_stage_text)).sum())
+        score_rows.append((str(c), hits))
+    if df.shape[1] >= 16:
+        p_hits = int(_to_int_series_safe(df.iloc[:, 15].map(_is_closed_won_stage_text)).sum())
+        score_rows.append(("COL_P_INDEX_15", p_hits))
+    score_rows = sorted(score_rows, key=lambda x: x[1], reverse=True)
+    if score_rows:
+        out["chosen"] = score_rows[0][0]
+        out["hits"] = int(score_rows[0][1])
+        out["top_candidates"] = score_rows[:3]
+    return out
+
+
 def _closed_won_kpi_count_from_leads_gid(
     df_loaded: pd.DataFrame,
     sheet_id: str,
@@ -9486,10 +9526,15 @@ def render_page_marketing_performance(
 
     _pqw = post_df_kpi if not post_df_kpi.empty else post_df
     cw_for_qwin, qual_for_qwin = _q_win_rate_inputs(_pqw, leads_df)
+    _cw_dbg = _cw_stage_detection_debug(cw_df)
+    _cw_dbg_top = ", ".join([f"{k}:{v}" for k, v in (_cw_dbg.get("top_candidates") or [])]) or "none"
     st.info(
         "TCV check — gid:1871946442 | "
         f"rows_matched:{_tcv_debug_rows:,} | "
-        f"tcv_sum:${total_tcv:,.2f}"
+        f"tcv_sum:${total_tcv:,.2f} | "
+        f"stage_col:{_cw_dbg.get('chosen') or 'none'} | "
+        f"stage_hits:{int(_cw_dbg.get('hits') or 0)} | "
+        f"top:{_cw_dbg_top}"
     )
 
     def _agg_for_master(frame: pd.DataFrame, metrics: list[str]) -> pd.DataFrame:
