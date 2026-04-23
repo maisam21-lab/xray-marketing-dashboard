@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-24-cpcwlf-lf-monthly-license-fee-map"
+DASHBOARD_BUILD = "2026-04-24-cpcwlf-ratio-precision"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -4577,6 +4577,25 @@ def _format_compact_k(v: float) -> str:
     return f"${n:,.2f}"
 
 
+def _format_ratio_cpcw_lf(v: float) -> str:
+    """Unitless ratio like CpCW:LF — extra precision when values are < 1 (2dp would often read as 0.00)."""
+    if pd.isna(v) or v != v:
+        return "—"
+    n = float(v)
+    if abs(n) < 1e-12:
+        return "0"
+    ax = abs(n)
+    if ax >= 1000:
+        return f"{n:,.2f}"
+    if ax >= 1:
+        return f"{n:,.4f}".rstrip("0").rstrip(".")
+    if ax >= 0.01:
+        return f"{n:.4f}".rstrip("0").rstrip(".")
+    if ax >= 0.0001:
+        return f"{n:.6f}".rstrip("0").rstrip(".")
+    return f"{n:.4g}"
+
+
 def _lead_rows_count(frame: pd.DataFrame) -> int:
     """Lead count = data-row count of the resolved leads slice (sheet rows, header excluded)."""
     return int(len(frame)) if isinstance(frame, pd.DataFrame) else 0
@@ -6872,7 +6891,7 @@ def _kpi_block(
 
     cpcw_s = _format_compact_k(cpcw) if total_cw and cpcw == cpcw else "—"
     tcv_s = _format_tcv_short(float(total_tcv)) if total_tcv else "—"
-    cpcwlf_s = f"{cpcw_lf:.2f}" if (total_cw and total_first_month_lf) else "—"
+    cpcwlf_s = _format_ratio_cpcw_lf(float(cpcw_lf)) if (total_cw and total_first_month_lf) else "—"
     cw_sub = _kpi_funnel_sub_row("CPCW", cpcw_s) + _kpi_funnel_sub_row("Spend (same window)", _format_spend_k(total_spend) if total_spend else "$0")
     cpcw_sub = _kpi_funnel_sub_row("Closed won (same window)", f"{total_cw:,}") + _kpi_funnel_sub_row("Spend", _format_spend_k(total_spend) if total_spend else "$0")
     tcv_sub = _kpi_funnel_sub_row("CpCW:LF", cpcwlf_s) + _kpi_funnel_sub_row("Cost / TCV %", f"{spend_tcv_pct:.2f}%" if total_tcv else "—")
@@ -7860,7 +7879,7 @@ def _mpo_calculation_trail(metric_name: str, row: pd.Series) -> list[dict[str, s
             {
                 "Step": "5",
                 "Component": "CpCW:LF = CpCW ÷ 1st Month LF",
-                "Value": f"{ratio:,.2f}" if cw and lf and ratio == ratio else "—",
+                "Value": _format_ratio_cpcw_lf(float(ratio)) if cw and lf and ratio == ratio else "—",
                 "Combines as": "Final ratio",
             },
         ]
@@ -9124,7 +9143,7 @@ def _render_t3b3_quarter_sections(
                     return lambda x: _format_tcv_short(float(x)) if pd.notna(x) else "—"
                 return lambda x: _format_spend_k(float(x)) if pd.notna(x) else "—"
             if metric_name == "CPCW:LF":
-                return lambda x: f"{float(x):,.2f}" if pd.notna(x) else "—"
+                return lambda x: _format_ratio_cpcw_lf(float(x)) if pd.notna(x) else "—"
             if metric_name == "Cost/TCV%":
                 return lambda x: f"{float(x):.2f}%" if pd.notna(x) else "—"
             if metric_name in {"CW (Inc Approved)", "Total Leads", "Qualified"}:
@@ -9278,7 +9297,7 @@ def _render_master_view_pivot_from_gm(
                 return lambda x: _format_spend_k(float(x)) if pd.notna(x) else "—"
             return lambda x: _format_tcv_short(float(x)) if pd.notna(x) else "—"
         if metric_name == "CPCW:LF":
-            return lambda x: f"{x:,.2f}" if pd.notna(x) else "—"
+            return lambda x: _format_ratio_cpcw_lf(float(x)) if pd.notna(x) else "—"
         if metric_name in {"SQL %", "Cost/TCV%"}:
             return lambda x: f"{x:.2f}%" if pd.notna(x) else "—"
         if metric_name in {"CW (Inc Approved)", "Total Leads"}:
