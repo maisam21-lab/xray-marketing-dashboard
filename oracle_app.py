@@ -2003,6 +2003,10 @@ def _ensure_closed_won_from_text_flags(df: pd.DataFrame) -> pd.DataFrame:
                 src_col = c
                 break
     if src_col is None:
+        # CW source-truth layout often has Stage in column P (16th column) without a stable header.
+        if out.shape[1] >= 16:
+            stage_series = out.iloc[:, 15]
+            out["closed_won"] = _to_int_series_safe(stage_series.map(_is_closed_won_stage_text))
         return out
     out["closed_won"] = _to_int_series_safe(out[src_col].map(_is_closed_won_stage_text))
     return out
