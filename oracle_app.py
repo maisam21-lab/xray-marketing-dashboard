@@ -1879,6 +1879,8 @@ def _cw_dataframe_for_kpis(cw_df: pd.DataFrame, df_dashboard: pd.DataFrame) -> p
         _stage_mask = _stage_series.map(_is_closed_won_stage_text).fillna(False)
         if bool(_stage_mask.any()):
             out = out.loc[_stage_mask].copy()
+            # Preserve stage-filtered Approved rows in downstream CW-based filters.
+            out["closed_won"] = 1
     # Apply stage-derived CW flags (Closed Won + Approved) before filtering TCV rows.
     out = _ensure_closed_won_from_text_flags(out)
     if "closed_won" in out.columns:
