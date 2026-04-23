@@ -1862,6 +1862,23 @@ def _cw_dataframe_for_kpis(cw_df: pd.DataFrame, df_dashboard: pd.DataFrame) -> p
     out = cw_df.copy() if not cw_df.empty else cw_df
     if out.empty:
         return out
+    # Enforce stage-based filter for TCV rows (Closed Won + Approved), including col P fallback.
+    _stage_series: Optional[pd.Series] = None
+    _st_col = _resolve_post_lead_stage_column(out)
+    if _st_col is not None and _st_col in out.columns:
+        _stage_series = out[_st_col]
+    else:
+        for _c in out.columns:
+            _nk = _norm_header_key(str(_c))
+            if _nk in {"stage", "stagename", "stage_name", "opportunity_stage", "deal_stage", "lead_status", "status"}:
+                _stage_series = out[_c]
+                break
+        if _stage_series is None and out.shape[1] >= 16:
+            _stage_series = out.iloc[:, 15]
+    if _stage_series is not None:
+        _stage_mask = _stage_series.map(_is_closed_won_stage_text).fillna(False)
+        if bool(_stage_mask.any()):
+            out = out.loc[_stage_mask].copy()
     # Apply stage-derived CW flags (Closed Won + Approved) before filtering TCV rows.
     out = _ensure_closed_won_from_text_flags(out)
     if "closed_won" in out.columns:
