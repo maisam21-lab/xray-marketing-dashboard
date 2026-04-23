@@ -9332,8 +9332,8 @@ def render_page_marketing_performance(
         cw_df = _resolve_cw_tcv_dataframe(df_loaded, df)
     if cw_df.empty and use_truth_for_nonspend:
         cw_df = truth_df.copy()
-    # For Actual TCV from the CW source sheet, keep stage-filtered RAW totals without extra dashboard pair trimming.
-    cw_kpi = _cw_dataframe_for_kpis(cw_df, pd.DataFrame())
+    # For Actual TCV, use CW source-truth rows but keep the same dashboard Month x Country window.
+    cw_kpi = _cw_dataframe_for_kpis(cw_df, df)
 
     total_spend = float(spend_df["cost"].sum()) if "cost" in spend_df.columns else 0.0
     if total_spend <= 0.0 and _normalized_spend_cost_sum(spend_sheet_master) > 0.0:
@@ -9636,11 +9636,6 @@ def render_page_marketing_performance(
     # Enforce CW card source-of-truth value after headline aggregation overwrites.
     if cw_total_source_truth > 0:
         total_cw = int(cw_total_source_truth)
-    # Keep Actual TCV aligned to the raw CW source-truth scope (Closed Won + Approved rows),
-    # even when headline month keys are narrower than the source table.
-    if isinstance(cw_kpi, pd.DataFrame) and not cw_kpi.empty and "tcv" in cw_kpi.columns:
-        total_tcv = float(pd.to_numeric(cw_kpi["tcv"], errors="coerce").fillna(0).sum())
-
     _sm_traffic = _mpo_traffic_totals_from_sm_pool(
         df_loaded,
         df,
