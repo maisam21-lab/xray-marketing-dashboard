@@ -8444,13 +8444,16 @@ def _master_build_gm_with_metrics(
             df["cost"] = s_alt
     df = _master_view_impute_month_for_spend_rows(df)
 
-    agg: dict[str, tuple[str, str]] = {
-        "spend": ("cost", "sum"),
-        "cw": ("closed_won", "sum"),
-        "clicks": ("clicks", "sum"),
-        "leads": ("leads", "sum"),
-        "qualified": ("qualified", "sum"),
-    }
+    agg: dict[str, tuple[str, str]] = {}
+    for _out, _src in (
+        ("spend", "cost"),
+        ("cw", "closed_won"),
+        ("clicks", "clicks"),
+        ("leads", "leads"),
+        ("qualified", "qualified"),
+    ):
+        if _src in df.columns:
+            agg[_out] = (_src, "sum")
     if "tcv" in df.columns:
         agg["tcv"] = ("tcv", "sum")
     if "first_month_lf" in df.columns:
@@ -8472,6 +8475,9 @@ def _master_build_gm_with_metrics(
     g = df.groupby(["month", "country"], as_index=False, dropna=False).agg(**agg).sort_values(
         ["month", "country"], ascending=[False, True]
     )
+    for _required in ("spend", "cw", "clicks", "leads", "qualified"):
+        if _required not in g.columns:
+            g[_required] = 0.0
     g["Market"] = g["country"].map(_market_display_from_join_key)
     sum_map: dict[str, str] = {}
     for c in (
