@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-23-tcv-window-scope-fix"
+DASHBOARD_BUILD = "2026-04-24-format-spend-k-tcv-m"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -4492,8 +4492,31 @@ def _format_currency(v: float) -> str:
 
 
 def _format_spend_k(v: float) -> str:
-    """Display spend with fixed two-decimal precision."""
-    return f"${v:,.2f}"
+    """Display cost/spend in thousands: ``$1.22K`` (2 decimals; values under 1K stay full)."""
+    if pd.isna(v):
+        return "—"
+    n = float(v)
+    if n == 0.0 or abs(n) < 1e-9:
+        return "$0"
+    if abs(n) < 1_000.0:
+        return f"${n:,.2f}"
+    k = n / 1_000.0
+    return f"${k:,.2f}K"
+
+
+def _format_tcv_short(v: float) -> str:
+    """Display TCV compactly: ``$3.24M`` or ``$500.00K`` (2 decimals; under 1K full)."""
+    if pd.isna(v):
+        return "—"
+    n = float(v)
+    if n == 0.0 or abs(n) < 1e-9:
+        return "$0"
+    if abs(n) < 1_000.0:
+        return f"${n:,.2f}"
+    if abs(n) >= 1_000_000.0:
+        return f"${n / 1_000_000.0:,.2f}M"
+    k = n / 1_000.0
+    return f"${k:,.2f}K"
 
 
 def _format_compact_k(v: float) -> str:
@@ -6802,7 +6825,7 @@ def _kpi_block(
     )
 
     cpcw_s = _format_compact_k(cpcw) if total_cw and cpcw == cpcw else "—"
-    tcv_s = _format_currency(total_tcv) if total_tcv else "—"
+    tcv_s = _format_tcv_short(float(total_tcv)) if total_tcv else "—"
     cpcwlf_s = f"{cpcw_lf:.2f}" if total_first_month_lf else "—"
     cw_sub = _kpi_funnel_sub_row("CPCW", cpcw_s) + _kpi_funnel_sub_row("Spend (same window)", _format_spend_k(total_spend) if total_spend else "$0")
     cpcw_sub = _kpi_funnel_sub_row("Closed won (same window)", f"{total_cw:,}") + _kpi_funnel_sub_row("Spend", _format_spend_k(total_spend) if total_spend else "$0")
@@ -7710,8 +7733,11 @@ def _mpo_calculation_trail(metric_name: str, row: pd.Series) -> list[dict[str, s
     tcv = float(pd.to_numeric(row.get("tcv", 0), errors="coerce") or 0)
     lf = float(pd.to_numeric(row.get("lf", 0), errors="coerce") or 0)
 
-    def _fmt_money(x: float) -> str:
-        return _format_currency(x) if x and x == x else "—"
+    def _fmt_small_money(x: float) -> str:
+        return _format_spend_k(x) if x and x == x else "—"
+
+    def _fmt_tcv(x: float) -> str:
+        return _format_tcv_short(x) if x and x == x else "—"
 
     out: list[dict[str, str]] = []
     if metric_name == "Spend":
@@ -7746,7 +7772,7 @@ def _mpo_calculation_trail(metric_name: str, row: pd.Series) -> list[dict[str, s
             {
                 "Step": "1",
                 "Component": "Σ first_month_lf (RAW CW, this slice)",
-                "Value": _fmt_money(lf),
+                "Value": _fmt_small_money(lf),
                 "Combines as": "Final cell value (additive)",
             },
         ]
@@ -7755,7 +7781,7 @@ def _mpo_calculation_trail(metric_name: str, row: pd.Series) -> list[dict[str, s
             {
                 "Step": "1",
                 "Component": "Σ tcv (RAW CW, this slice)",
-                "Value": _fmt_money(tcv),
+                "Value": _fmt_tcv(tcv),
                 "Combines as": "Final cell value (additive)",
             },
         ]
@@ -7775,7 +7801,7 @@ def _mpo_calculation_trail(metric_name: str, row: pd.Series) -> list[dict[str, s
         ratio = (spend / lf) if lf else float("nan")
         out = [
             {"Step": "1", "Component": "Spend (numerator)", "Value": _format_spend_k(spend), "Combines as": "—"},
-            {"Step": "2", "Component": "1st Month LF (denominator)", "Value": _fmt_money(lf), "Combines as": "—"},
+            {"Step": "2", "Component": "1st Month LF (denominator)", "Value": _fmt_small_money(lf), "Combines as": "—"},
             {
                 "Step": "3",
                 "Component": "CPCW:LF = Spend ÷ LF",
@@ -7787,7 +7813,7 @@ def _mpo_calculation_trail(metric_name: str, row: pd.Series) -> list[dict[str, s
         pct = (spend / tcv * 100.0) if tcv else float("nan")
         out = [
             {"Step": "1", "Component": "Spend", "Value": _format_spend_k(spend), "Combines as": "—"},
-            {"Step": "2", "Component": "Actual TCV", "Value": _fmt_money(tcv), "Combines as": "—"},
+            {"Step": "2", "Component": "Actual TCV", "Value": _fmt_tcv(tcv), "Combines as": "—"},
             {
                 "Step": "3",
                 "Component": "Cost/TCV % = (Spend ÷ TCV) × 100",
@@ -8144,8 +8170,8 @@ def _mpo_source_pivot_rows(
         tcv = float(pd.to_numeric(cwf.get("tcv", 0), errors="coerce").fillna(0).sum())
         lf = float(pd.to_numeric(cwf.get("first_month_lf", 0), errors="coerce").fillna(0).sum())
         rows += [
-            {"source": "RAW CW", "metric": "Actual TCV", "value": _format_currency(tcv) if tcv else "—"},
-            {"source": "RAW CW", "metric": "1st Month LF", "value": _format_currency(lf) if lf else "—"},
+            {"source": "RAW CW", "metric": "Actual TCV", "value": _format_tcv_short(tcv) if tcv else "—"},
+            {"source": "RAW CW", "metric": "1st Month LF", "value": _format_spend_k(lf) if lf else "—"},
         ]
 
     return rows
@@ -9027,13 +9053,17 @@ def _render_t3b3_quarter_sections(
     def _fmt_t3b3(pvt: pd.DataFrame) -> Any:
         def _fmt_for_metric(metric_name: str) -> Any:
             if metric_name == "Spend":
-                return lambda x: f"${float(x):,.2f}" if pd.notna(x) and not isinstance(x, str) else (
-                    x if isinstance(x, str) else "—"
+                return (
+                    lambda x: _format_spend_k(float(x)) if pd.notna(x) and not isinstance(x, str) else (
+                        x if isinstance(x, str) else "—"
+                    )
                 )
             if metric_name == "CPCW":
                 return lambda x: _format_compact_k(float(x)) if pd.notna(x) else "—"
             if metric_name in {"Actual TCV", "1st Month LF"}:
-                return lambda x: f"${float(x):,.2f}" if pd.notna(x) else "—"
+                if metric_name == "Actual TCV":
+                    return lambda x: _format_tcv_short(float(x)) if pd.notna(x) else "—"
+                return lambda x: _format_spend_k(float(x)) if pd.notna(x) else "—"
             if metric_name == "CPCW:LF":
                 return lambda x: f"{float(x):,.2f}" if pd.notna(x) else "—"
             if metric_name == "Cost/TCV%":
@@ -9182,8 +9212,12 @@ def _render_master_view_pivot_from_gm(
             return lambda x: x if isinstance(x, str) else (_format_spend_k(float(x)) if pd.notna(x) else "—")
         if metric_name == "CPCW":
             return lambda x: _format_compact_k(float(x)) if pd.notna(x) else "—"
-        if metric_name in {"CPL", "Actual TCV", "1st Month LF"}:
-            return lambda x: f"${x:,.2f}" if pd.notna(x) else "—"
+        if metric_name in {"CPL", "1st Month LF", "Actual TCV"}:
+            if metric_name == "CPL":
+                return lambda x: f"${x:,.2f}" if pd.notna(x) else "—"
+            if metric_name == "1st Month LF":
+                return lambda x: _format_spend_k(float(x)) if pd.notna(x) else "—"
+            return lambda x: _format_tcv_short(float(x)) if pd.notna(x) else "—"
         if metric_name == "CPCW:LF":
             return lambda x: f"{x:,.2f}" if pd.notna(x) else "—"
         if metric_name in {"SQL %", "Cost/TCV%"}:
@@ -9667,7 +9701,7 @@ def render_page_marketing_performance(
     st.info(
         "TCV check — gid:1871946442 | "
         f"rows_matched:{_tcv_debug_rows:,} | "
-        f"tcv_sum:${total_tcv:,.2f} | "
+        f"tcv_sum:{_format_tcv_short(float(total_tcv))} | "
         f"stage_col:{_cw_dbg.get('chosen') or 'none'} | "
         f"stage_hits:{int(_cw_dbg.get('hits') or 0)} | "
         f"top:{_cw_dbg_top}"
