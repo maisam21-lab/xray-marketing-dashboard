@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-22-global-sep-floor-hard-enforced"
+DASHBOARD_BUILD = "2026-04-22-cw-source-truth-gid-1871946442"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -65,6 +65,7 @@ DEFAULT_LEADS_WORKSHEET_GID = 839225260
 DEFAULT_POST_QUAL_WORKSHEET_GID = 2124231650
 DEFAULT_RAW_CW_WORKSHEET_GID = 2126759408
 DEFAULT_SPEND_WORKSHEET_GID = 1666828602
+DEFAULT_CW_SOURCE_TRUTH_GID = 1871946442
 # Default empty on Streamlit Cloud; set `XRAY_EXCEL_PATH` in secrets or `XRAY_EXCEL_PATH_DEFAULT` locally.
 DEFAULT_LOCAL_EXCEL_PATH = (os.environ.get("XRAY_EXCEL_PATH_DEFAULT") or "").strip()
 DEFAULT_LOGO_PATH = (
@@ -278,6 +279,16 @@ def _optional_spend_gid_from_secrets() -> Optional[int]:
         return int(v) if v else DEFAULT_SPEND_WORKSHEET_GID
     except Exception:
         return DEFAULT_SPEND_WORKSHEET_GID
+
+
+def _optional_cw_source_truth_gid_from_secrets() -> Optional[int]:
+    """Optional Streamlit secret XRAY_CW_GID: worksheet id for CW source-of-truth."""
+    try:
+        s = st.secrets
+        v = (s.get("XRAY_CW_GID") or s.get("xray_cw_gid") or "").strip()
+        return int(v) if v else DEFAULT_CW_SOURCE_TRUTH_GID
+    except Exception:
+        return DEFAULT_CW_SOURCE_TRUTH_GID
 
 
 def _optional_spend_column_header_from_secrets() -> str:
@@ -2011,6 +2022,69 @@ def _closed_won_kpi_count_from_leads_gid(
         work = work.loc[d.isna() | (d >= close_date_min)].copy()
     work = work.loc[pd.to_numeric(work.get("closed_won", 0), errors="coerce").fillna(0) > 0].copy()
     return _sum_closed_won_unique_opportunities(work)
+
+
+def _closed_won_kpi_count_from_source_truth_gid(
+    sheet_id: str,
+    worksheet_gid: int,
+    *,
+    close_date_min: pd.Timestamp = pd.Timestamp("2025-09-01"),
+) -> int:
+    """CW source-of-truth count from one worksheet (stage col incl. col P), filtered to Closed Won/Approved."""
+    secret_creds = _service_account_from_streamlit_secrets()
+    if not secret_creds:
+        return 0
+    try:
+        raw = _read_sheet_auth(
+            sheet_id,
+            secret_creds,
+            worksheet_name=None,
+            worksheet_gid=int(worksheet_gid),
+        )
+    except Exception:
+        raw = pd.DataFrame()
+    if raw.empty:
+        try:
+            raw = _read_sheet_auth_loose(
+                sheet_id,
+                secret_creds,
+                worksheet_gid=int(worksheet_gid),
+            )
+        except Exception:
+            raw = pd.DataFrame()
+    if raw.empty:
+        return 0
+
+    raw = _promote_wide_metric_header_row_if_needed(raw)
+    raw = _coerce_two_row_sheet_headers(raw)
+
+    stage_s: Optional[pd.Series] = None
+    for c in raw.columns:
+        nk = _norm_header_key(str(c))
+        if nk in {"stage", "stagename", "stage_name", "opportunity_stage", "deal_stage", "lead_status", "status"}:
+            stage_s = raw[c].astype(str)
+            break
+    # User confirmed stage is in column P (16th column) on this source-truth tab.
+    if stage_s is None and raw.shape[1] >= 16:
+        stage_s = raw.iloc[:, 15].astype(str)
+    if stage_s is None:
+        return 0
+
+    cw_mask = stage_s.map(_is_closed_won_stage_text).fillna(False)
+
+    date_s: Optional[pd.Series] = None
+    for c in raw.columns:
+        nk = _norm_header_key(str(c))
+        if nk in {"close_date", "date", "created_date", "date_formatted"}:
+            date_s = raw[c]
+            if nk == "close_date":
+                break
+    if date_s is not None:
+        d = pd.to_datetime(date_s, errors="coerce", dayfirst=True)
+        d = _scrub_pre_2000_dates(_coerce_sheet_serial_dates(d))
+        cw_mask = cw_mask & (d.isna() | (d >= close_date_min))
+
+    return int(_to_int_series_safe(cw_mask).sum())
 
 
 def _sum_closed_won_sheet_style(df: pd.DataFrame) -> int:
@@ -9232,7 +9306,14 @@ def render_page_marketing_performance(
                 total_qualified = _qualified_count_from_leads(leads_df)
     total_pitching = int(post_df_kpi["pitching"].sum()) if "pitching" in post_df_kpi.columns else 0
     # CW (inc. approved): Leads tab gid — stage Closed Won / Approved, Close Date >= Sep 2025, unique opportunities.
-    total_cw = _closed_won_kpi_count_from_leads_gid(df_loaded, sheet_id, int(leads_gid), _fp_mpo)
+    cw_truth_gid = _optional_cw_source_truth_gid_from_secrets()
+    total_cw = (
+        _closed_won_kpi_count_from_source_truth_gid(sheet_id, int(cw_truth_gid))
+        if cw_truth_gid is not None
+        else 0
+    )
+    if total_cw == 0:
+        total_cw = _closed_won_kpi_count_from_leads_gid(df_loaded, sheet_id, int(leads_gid), _fp_mpo)
     if total_cw == 0:
         pl_only = _dedupe_post_lead_rows(_tab_subset(df, list(_POST_LEAD_SOURCE_TAB_PATTERNS)))
         if not pl_only.empty and "closed_won" in pl_only.columns:
