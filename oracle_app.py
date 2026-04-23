@@ -1862,6 +1862,8 @@ def _cw_dataframe_for_kpis(cw_df: pd.DataFrame, df_dashboard: pd.DataFrame) -> p
     out = cw_df.copy() if not cw_df.empty else cw_df
     if out.empty:
         return out
+    # Apply stage-derived CW flags (Closed Won + Approved) before filtering TCV rows.
+    out = _ensure_closed_won_from_text_flags(out)
     if "closed_won" in out.columns:
         s = pd.to_numeric(out["closed_won"], errors="coerce").fillna(0)
         if float(s.sum()) > 0:
