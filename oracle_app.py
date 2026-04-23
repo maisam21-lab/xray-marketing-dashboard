@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-22-cw-row-count-from-source"
+DASHBOARD_BUILD = "2026-04-22-cw-zero-fix-month-date-floor"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -1379,10 +1379,17 @@ def _enforce_global_reporting_floor(df: pd.DataFrame) -> pd.DataFrame:
         return df
     out = df.copy()
     keep = pd.Series(True, index=out.index)
-    if "month" in out.columns:
+    has_month = "month" in out.columns
+    has_date = "date" in out.columns
+    if has_month and has_date:
+        mk = out["month"].map(_month_norm_key)
+        d = pd.to_datetime(out["date"], errors="coerce")
+        # Keep row when either month key is valid (>= floor via _month_norm_key) or date meets cutoff.
+        keep = keep & (mk.ne("") | (d.notna() & (d >= pd.Timestamp("2025-09-01"))))
+    elif has_month:
         mk = out["month"].map(_month_norm_key)
         keep = keep & mk.ne("")
-    if "date" in out.columns:
+    elif has_date:
         d = pd.to_datetime(out["date"], errors="coerce")
         keep = keep & (d.isna() | (d >= pd.Timestamp("2025-09-01")))
     return out.loc[keep].copy()
