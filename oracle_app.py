@@ -9295,13 +9295,18 @@ def render_page_marketing_performance(
     # Closed-won KPI should stay deduped to avoid cross-tab opportunity duplication.
     post_df = _dedupe_post_lead_rows(post_df_kpi)
 
+    cw_truth_gid = _optional_cw_source_truth_gid_from_secrets()
     raw_cw_gid = _optional_raw_cw_gid_from_secrets()
-    if use_truth_for_nonspend:
-        cw_df = truth_df.copy()
-    else:
+    # TCV source of truth: prefer CW source-truth sheet (gid 1871946442, column T: TCV converted),
+    # then fall back to RAW CW gid.
+    tcv_source_gid = cw_truth_gid if cw_truth_gid is not None else raw_cw_gid
+    cw_df = _strict_gid_source(tcv_source_gid)
+    if cw_df.empty and raw_cw_gid is not None and (tcv_source_gid is None or int(raw_cw_gid) != int(tcv_source_gid)):
         cw_df = _strict_gid_source(raw_cw_gid)
-        if cw_df.empty:
-            cw_df = _resolve_cw_tcv_dataframe(df_loaded, df)
+    if cw_df.empty:
+        cw_df = _resolve_cw_tcv_dataframe(df_loaded, df)
+    if cw_df.empty and use_truth_for_nonspend:
+        cw_df = truth_df.copy()
     cw_kpi = _cw_dataframe_for_kpis(cw_df, df)
 
     total_spend = float(spend_df["cost"].sum()) if "cost" in spend_df.columns else 0.0
@@ -9339,7 +9344,6 @@ def render_page_marketing_performance(
                 total_qualified = _qualified_count_from_leads(leads_df)
     total_pitching = int(post_df_kpi["pitching"].sum()) if "pitching" in post_df_kpi.columns else 0
     # CW (inc. approved): Leads tab gid — stage Closed Won / Approved, Close Date >= Sep 2025, unique opportunities.
-    cw_truth_gid = _optional_cw_source_truth_gid_from_secrets()
     cw_total_source_truth = (
         _closed_won_kpi_count_from_source_truth_gid(sheet_id, int(cw_truth_gid))
         if cw_truth_gid is not None
