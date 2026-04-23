@@ -9392,6 +9392,7 @@ def render_page_marketing_performance(
     total_tcv = float(cw_kpi["tcv"].sum()) if "tcv" in cw_kpi.columns else 0.0
     total_first_month_lf = float(cw_kpi["first_month_lf"].sum()) if "first_month_lf" in cw_kpi.columns else 0.0
     total_new_working = _new_working_count_from_leads(leads_df)
+    _tcv_debug_rows = int(len(cw_kpi.index)) if isinstance(cw_kpi, pd.DataFrame) else 0
 
     # Per-metric safety fallbacks.
     if total_spend == 0.0 and "cost" in df.columns:
@@ -9461,6 +9462,11 @@ def render_page_marketing_performance(
 
     _pqw = post_df_kpi if not post_df_kpi.empty else post_df
     cw_for_qwin, qual_for_qwin = _q_win_rate_inputs(_pqw, leads_df)
+    st.info(
+        "TCV check — gid:1871946442 | "
+        f"rows_matched:{_tcv_debug_rows:,} | "
+        f"tcv_sum:${total_tcv:,.2f}"
+    )
 
     def _agg_for_master(frame: pd.DataFrame, metrics: list[str]) -> pd.DataFrame:
         if frame.empty or "month" not in frame.columns or "country" not in frame.columns:
