@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-24-cpcw-lf-ratio-cpcw-over-lf"
+DASHBOARD_BUILD = "2026-04-24-cpcwlf-lf-monthly-license-fee-map"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -2449,6 +2449,11 @@ _NORM_TO_FIELD: dict[str, str] = {
     "actual_tcv_usd": "tcv",
     "1st_month_lf": "first_month_lf",
     "monthly_lf_usd": "first_month_lf",
+    # Salesforce exports often label first-month LF as "Monthly License Fee" (sometimes with (converted)/(USD)).
+    "monthly_license_fee": "first_month_lf",
+    "monthly_license_fee_converted": "first_month_lf",
+    "monthly_license_fee_usd": "first_month_lf",
+    "license_fee": "first_month_lf",
     "cpcw": "cpcw",
     "cpcw_lf": "cpcw_lf",
     "cost_tcv": "cost_tcv_pct",
@@ -3025,7 +3030,25 @@ def _preprocess_excel_sheet(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
             tcv_num = pd.to_numeric(df["TCV (USD)"], errors="coerce").fillna(0)
         else:
             tcv_num = pd.Series(0, index=df.index, dtype=float)
-        lf_num = pd.to_numeric(df.get("Monthly LF (USD)", 0), errors="coerce").fillna(0)
+        _lf_col = next(
+            (
+                c
+                for c in df.columns
+                if _norm_header_key(str(c))
+                in {
+                    "monthly_lf_usd",
+                    "monthly_license_fee",
+                    "monthly_license_fee_converted",
+                    "monthly_license_fee_usd",
+                    "license_fee",
+                }
+            ),
+            None,
+        )
+        if _lf_col is not None:
+            lf_num = pd.to_numeric(df[_lf_col], errors="coerce").fillna(0)
+        else:
+            lf_num = pd.to_numeric(df.get("Monthly LF (USD)", 0), errors="coerce").fillna(0)
         term_num = pd.to_numeric(df.get("License Initial Term (Months)", 0), errors="coerce").fillna(0)
         df["TCV (USD)"] = tcv_num.where(tcv_num > 0, lf_num * term_num)
 
@@ -3176,6 +3199,29 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
         bc = _best_spend_column_raw(df)
         if bc is not None and float(_to_number_series(df[bc]).abs().sum()) > 1e-9:
             out["cost"] = _to_number_series(df[bc])
+
+    # Hard fallback for first-month LF on CW tabs: Salesforce headers vary ("Monthly License Fee (converted)" etc.).
+    if "first_month_lf" not in out.columns or float(_to_number_series(out["first_month_lf"]).sum()) < 1e-9:
+        lf_like_cols: list[str] = []
+        for c in df.columns:
+            nk = _norm_header_key(str(c))
+            if nk in {
+                "monthly_lf_usd",
+                "monthly_license_fee",
+                "monthly_license_fee_converted",
+                "monthly_license_fee_usd",
+                "license_fee",
+            }:
+                lf_like_cols.append(c)
+            elif ("license" in nk and "fee" in nk) and all(x not in nk for x in ("tcv", "cost", "spend", "tax")):
+                lf_like_cols.append(c)
+        if lf_like_cols:
+            inferred_lf = _to_number_series(df[lf_like_cols[0]])
+            for c in lf_like_cols[1:]:
+                cand = _to_number_series(df[c])
+                if float(cand.abs().sum()) > float(inferred_lf.abs().sum()):
+                    inferred_lf = cand
+            out["first_month_lf"] = inferred_lf
 
     if "date" in out.columns:
         s_dt = out["date"].copy()
