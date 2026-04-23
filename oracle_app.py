@@ -1896,19 +1896,25 @@ def _cw_dataframe_for_kpis(cw_df: pd.DataFrame, df_dashboard: pd.DataFrame) -> p
                     out = filt
             else:
                 out = filt
-    if (
-        not df_dashboard.empty
-        and not out.empty
-        and "month" in out.columns
-        and "country" in out.columns
-        and "month" in df_dashboard.columns
-        and "country" in df_dashboard.columns
-    ):
-        pairs = df_dashboard[["month", "country"]].drop_duplicates()
-        if not pairs.empty:
-            merged = out.merge(pairs, on=["month", "country"], how="inner")
-            if not merged.empty:
-                out = merged
+    if not df_dashboard.empty and not out.empty:
+        if "month" in out.columns and "month" in df_dashboard.columns:
+            _mset = {
+                str(x).strip()
+                for x in df_dashboard["month"].map(_month_norm_key).dropna().astype(str).tolist()
+                if str(x).strip()
+            }
+            if _mset:
+                _om = out["month"].map(_month_norm_key).fillna("").astype(str).str.strip()
+                out = out.loc[_om.isin(_mset)].copy()
+        if "country" in out.columns and "country" in df_dashboard.columns and not out.empty:
+            _cset = {
+                str(x).strip().casefold()
+                for x in df_dashboard["country"].dropna().astype(str).tolist()
+                if str(x).strip()
+            }
+            if _cset:
+                _oc = out["country"].fillna("").astype(str).str.strip().str.casefold()
+                out = out.loc[_oc.isin(_cset)].copy()
     return out
 
 
@@ -9636,6 +9642,9 @@ def render_page_marketing_performance(
     # Enforce CW card source-of-truth value after headline aggregation overwrites.
     if cw_total_source_truth > 0:
         total_cw = int(cw_total_source_truth)
+    # Keep Actual TCV card aligned with the same CW KPI slice used for the TCV check banner.
+    if isinstance(cw_kpi, pd.DataFrame) and "tcv" in cw_kpi.columns:
+        total_tcv = float(pd.to_numeric(cw_kpi["tcv"], errors="coerce").fillna(0).sum())
     _sm_traffic = _mpo_traffic_totals_from_sm_pool(
         df_loaded,
         df,
