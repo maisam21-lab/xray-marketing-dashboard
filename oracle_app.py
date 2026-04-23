@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-22-cw-card-zero-fallback-hardened"
+DASHBOARD_BUILD = "2026-04-22-cw-card-source-truth-enforced"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -9317,11 +9317,12 @@ def render_page_marketing_performance(
     total_pitching = int(post_df_kpi["pitching"].sum()) if "pitching" in post_df_kpi.columns else 0
     # CW (inc. approved): Leads tab gid — stage Closed Won / Approved, Close Date >= Sep 2025, unique opportunities.
     cw_truth_gid = _optional_cw_source_truth_gid_from_secrets()
-    total_cw = (
+    cw_total_source_truth = (
         _closed_won_kpi_count_from_source_truth_gid(sheet_id, int(cw_truth_gid))
         if cw_truth_gid is not None
         else 0
     )
+    total_cw = cw_total_source_truth
     if total_cw == 0:
         total_cw = _closed_won_kpi_count_from_leads_gid(df_loaded, sheet_id, int(leads_gid), _fp_mpo)
     if total_cw == 0:
@@ -9572,6 +9573,10 @@ def render_page_marketing_performance(
         total_closed_lost = int(_hm["total_closed_lost"])
         cw_for_qwin = _hm.get("cw_for_qwin")
         qual_for_qwin = _hm.get("qual_for_qwin")
+
+    # Enforce CW card source-of-truth value after headline aggregation overwrites.
+    if cw_total_source_truth > 0:
+        total_cw = int(cw_total_source_truth)
 
     _sm_traffic = _mpo_traffic_totals_from_sm_pool(
         df_loaded,
