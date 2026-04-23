@@ -1862,26 +1862,7 @@ def _cw_dataframe_for_kpis(cw_df: pd.DataFrame, df_dashboard: pd.DataFrame) -> p
     out = cw_df.copy() if not cw_df.empty else cw_df
     if out.empty:
         return out
-    # Enforce stage-based filter for TCV rows (Closed Won + Approved), including col P fallback.
-    _stage_series: Optional[pd.Series] = None
-    _st_col = _resolve_post_lead_stage_column(out)
-    if _st_col is not None and _st_col in out.columns:
-        _stage_series = out[_st_col]
-    else:
-        for _c in out.columns:
-            _nk = _norm_header_key(str(_c))
-            if _nk in {"stage", "stagename", "stage_name", "opportunity_stage", "deal_stage", "lead_status", "status"}:
-                _stage_series = out[_c]
-                break
-        if _stage_series is None and out.shape[1] >= 16:
-            _stage_series = out.iloc[:, 15]
-    if _stage_series is not None:
-        _stage_mask = _stage_series.map(_is_closed_won_stage_text).fillna(False)
-        if bool(_stage_mask.any()):
-            out = out.loc[_stage_mask].copy()
-            # Preserve stage-filtered Approved rows in downstream CW-based filters.
-            out["closed_won"] = 1
-    # Apply stage-derived CW flags (Closed Won + Approved) before filtering TCV rows.
+    # Apply stage-derived CW flags (Closed Won + Approved) with robust fallbacks.
     out = _ensure_closed_won_from_text_flags(out)
     if "closed_won" in out.columns:
         s = pd.to_numeric(out["closed_won"], errors="coerce").fillna(0)
@@ -9359,8 +9340,14 @@ def render_page_marketing_performance(
         cw_df = _resolve_cw_tcv_dataframe(df_loaded, df)
     if cw_df.empty and use_truth_for_nonspend:
         cw_df = truth_df.copy()
-    # For Actual TCV, use CW source-truth rows but keep the same dashboard Month x Country window.
-    cw_kpi = _cw_dataframe_for_kpis(cw_df, df)
+    _mk_sel = st.session_state.get(f"{key_suffix}_market", [_MPO_ALL_GEO_SENTINEL])
+    _mo_sel = st.session_state.get(f"{key_suffix}_month", [_MPO_ALL_MONTHS_SENTINEL])
+    _is_all_markets = _mpo_market_scope_is_all(_mk_sel)
+    _is_all_months = _mpo_month_multiselect_is_all(_mo_sel)
+    # For "All markets + All months", TCV should reflect full CW source-truth stage scope.
+    # Otherwise, keep the same dashboard Month x Country window.
+    _cw_scope_df = pd.DataFrame() if (_is_all_markets and _is_all_months) else df
+    cw_kpi = _cw_dataframe_for_kpis(cw_df, _cw_scope_df)
 
     total_spend = float(spend_df["cost"].sum()) if "cost" in spend_df.columns else 0.0
     if total_spend <= 0.0 and _normalized_spend_cost_sum(spend_sheet_master) > 0.0:
