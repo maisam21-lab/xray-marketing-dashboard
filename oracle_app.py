@@ -2810,8 +2810,11 @@ def _preprocess_excel_sheet(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
             _cw_close = pd.to_datetime(df["Close Date"], errors="coerce", dayfirst=True)
             _cw_close = _scrub_pre_2000_dates(_coerce_sheet_serial_dates(_cw_close))
             df = df.loc[_cw_close.isna() | (_cw_close >= pd.Timestamp("2025-09-01"))].copy()
-        # Training definition: TCV = Monthly LF x Contract Length (fallback if TCV (USD) absent/zero).
-        if "TCV (USD)" in df.columns:
+        # Source of truth: prefer column T "TCV (converted)" when present; fallback to TCV (USD), then LF*term.
+        tcv_converted_col = next((c for c in df.columns if _norm_header_key(str(c)) == "tcv_converted"), None)
+        if tcv_converted_col is not None:
+            tcv_num = pd.to_numeric(df[tcv_converted_col], errors="coerce").fillna(0)
+        elif "TCV (USD)" in df.columns:
             tcv_num = pd.to_numeric(df["TCV (USD)"], errors="coerce").fillna(0)
         else:
             tcv_num = pd.Series(0, index=df.index, dtype=float)
@@ -2883,6 +2886,15 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
             _ch_src,
             key=lambda c: (
                 0 if _norm_header_key(str(c)) == "unified_channel" else 1,
+                str(c).lower(),
+            ),
+        )
+    if "tcv" in field_to_sources:
+        _tcv_src = field_to_sources["tcv"]
+        field_to_sources["tcv"] = sorted(
+            _tcv_src,
+            key=lambda c: (
+                0 if _norm_header_key(str(c)) == "tcv_converted" else 1,
                 str(c).lower(),
             ),
         )
@@ -4269,23 +4281,24 @@ def load_excel_all_sheets(_content_hash: str, xlsx_bytes: bytes) -> pd.DataFrame
 
 
 def _format_currency(v: float) -> str:
-    if v >= 1_000_000:
-        return f"${v / 1_000_000:.2f}M"
-    if v >= 1_000:
-        return f"${v:,.0f}"
     return f"${v:,.2f}"
 
 
 def _format_spend_k(v: float) -> str:
-    """Spend in thousands with K (and M for very large totals)."""
-    if v == 0:
-        return "$0"
-    if abs(v) >= 1_000_000:
-        return f"${v / 1_000_000:.2f}M"
-    k = v / 1_000
-    if abs(k) >= 1:
-        return f"${k:.1f}K"
-    return f"${k:.2f}K"
+    """Display spend with fixed two-decimal precision."""
+    return f"${v:,.2f}"
+
+
+def _format_compact_k(v: float) -> str:
+    """Compact currency for KPI tiles (e.g. 1.8K)."""
+    if pd.isna(v):
+        return "—"
+    n = float(v)
+    if abs(n) >= 1_000_000:
+        return f"${n / 1_000_000:.1f}M"
+    if abs(n) >= 1_000:
+        return f"${n / 1_000:.1f}K"
+    return f"${n:,.2f}"
 
 
 def _lead_rows_count(frame: pd.DataFrame) -> int:
@@ -6297,7 +6310,7 @@ def _mom_executive_snapshot_scorecards_html(
     cpsql = (total_spend / total_qual) if total_qual else 0.0
     cpl_s = f"${cpl:,.2f}" if total_leads and total_spend else "—"
     cpsql_s = f"${cpsql:,.2f}" if total_qual and total_spend else "—"
-    cpcw_s = f"${(total_spend / total_cw):,.2f}" if total_cw else "—"
+    cpcw_s = _format_compact_k(total_spend / total_cw) if total_cw else "—"
     spend_k = _format_spend_k(total_spend) if total_spend else "$0"
 
     sub_spend = _kpi_funnel_sub_row("CPL (Σ slice)", cpl_s) + _kpi_funnel_sub_row("CPSQL (Σ slice)", cpsql_s)
@@ -6581,7 +6594,7 @@ def _kpi_block(
         biz_signal=_kpi_biz_signal(pv.get("mom_ctr_c"), pv.get("mom_ctr_p"), domain="engagement", disabled=_no_delta),
     )
 
-    cpcw_s = f"${cpcw:,.2f}" if total_cw and cpcw == cpcw else "—"
+    cpcw_s = _format_compact_k(cpcw) if total_cw and cpcw == cpcw else "—"
     tcv_s = _format_currency(total_tcv) if total_tcv else "—"
     cpcwlf_s = f"{cpcw_lf:.2f}" if total_first_month_lf else "—"
     cw_sub = _kpi_funnel_sub_row("CPCW", cpcw_s) + _kpi_funnel_sub_row("Spend (same window)", _format_spend_k(total_spend) if total_spend else "$0")
@@ -7547,7 +7560,7 @@ def _mpo_calculation_trail(metric_name: str, row: pd.Series) -> list[dict[str, s
             {
                 "Step": "3",
                 "Component": "CPCW = Spend ÷ CW",
-                "Value": f"${cpcw:,.2f}" if cw and cpcw == cpcw else "—",
+                "Value": _format_compact_k(cpcw) if cw and cpcw == cpcw else "—",
                 "Combines as": "Final ratio",
             },
         ]
@@ -8566,11 +8579,11 @@ def _t3b3_add_derived_from_sums(row: dict[str, Any]) -> None:
     row["CPCW:LF"] = (sp / lf) if lf > 0 else float("nan")
     row["Cost/TCV%"] = (sp / tcv * 100) if tcv > 0 else float("nan")
     row["Spend"] = sp
-    row["CW (Inc Approved)"] = int(round(cw))
+    row["CW (Inc Approved)"] = round(cw, 2)
     row["1st Month LF"] = lf
     row["Actual TCV"] = tcv
-    row["Total Leads"] = int(round(leads))
-    row["Qualified"] = int(round(qual))
+    row["Total Leads"] = round(leads, 2)
+    row["Qualified"] = round(qual, 2)
     row["SQL%"] = (qual / leads * 100) if leads > 0 else float("nan")
 
 
@@ -8810,14 +8823,16 @@ def _render_t3b3_quarter_sections(
                 return lambda x: f"${float(x):,.2f}" if pd.notna(x) and not isinstance(x, str) else (
                     x if isinstance(x, str) else "—"
                 )
-            if metric_name in {"CPCW", "Actual TCV", "1st Month LF"}:
+            if metric_name == "CPCW":
+                return lambda x: _format_compact_k(float(x)) if pd.notna(x) else "—"
+            if metric_name in {"Actual TCV", "1st Month LF"}:
                 return lambda x: f"${float(x):,.2f}" if pd.notna(x) else "—"
             if metric_name == "CPCW:LF":
                 return lambda x: f"{float(x):,.2f}" if pd.notna(x) else "—"
             if metric_name == "Cost/TCV%":
                 return lambda x: f"{float(x):.2f}%" if pd.notna(x) else "—"
             if metric_name in {"CW (Inc Approved)", "Total Leads", "Qualified"}:
-                return lambda x: f"{int(round(float(x))):,}" if pd.notna(x) else "—"
+                return lambda x: f"{float(x):,.2f}" if pd.notna(x) else "—"
             if metric_name == "SQL%":
                 return lambda x: f"{float(x):.2f}%" if pd.notna(x) else "—"
             return lambda x: f"{x}" if pd.notna(x) else "—"
@@ -8958,14 +8973,16 @@ def _render_master_view_pivot_from_gm(
     def _fmt_for_metric(metric_name: str) -> Any:
         if metric_name == "Spend":
             return lambda x: x if isinstance(x, str) else (_format_spend_k(float(x)) if pd.notna(x) else "—")
-        if metric_name in {"CPCW", "CPL", "Actual TCV", "1st Month LF"}:
+        if metric_name == "CPCW":
+            return lambda x: _format_compact_k(float(x)) if pd.notna(x) else "—"
+        if metric_name in {"CPL", "Actual TCV", "1st Month LF"}:
             return lambda x: f"${x:,.2f}" if pd.notna(x) else "—"
         if metric_name == "CPCW:LF":
             return lambda x: f"{x:,.2f}" if pd.notna(x) else "—"
         if metric_name in {"SQL %", "Cost/TCV%"}:
             return lambda x: f"{x:.2f}%" if pd.notna(x) else "—"
         if metric_name in {"CW (Inc Approved)", "Total Leads"}:
-            return lambda x: f"{x:,.0f}" if pd.notna(x) else "—"
+            return lambda x: f"{x:,.2f}" if pd.notna(x) else "—"
         return lambda x: f"{x:,.2f}" if pd.notna(x) else "—"
 
     fmt_map: dict[str, Any] = {
@@ -9596,12 +9613,6 @@ def render_page_marketing_performance(
     if _sm_traffic is not None:
         total_impr, total_clicks, ctr = _sm_traffic
         cpc = (total_spend / float(total_clicks)) if total_clicks else 0.0
-
-    _hm_cw_dbg = int(_hm["total_cw"]) if (_hm and "total_cw" in _hm) else 0
-    st.info(
-        f"DEBUG BUILD {DASHBOARD_BUILD} | CW source_gid:{int(cw_truth_gid) if cw_truth_gid is not None else 'none'} "
-        f"| source_count:{int(cw_total_source_truth)} | headline_count:{_hm_cw_dbg} | final_count:{int(total_cw)}"
-    )
 
     _kpi_block(
         total_spend=total_spend,
@@ -10586,7 +10597,7 @@ def _pmc_delta_chip(v: float, *, money: bool = False) -> str:
         arr, bg, fg = "▼", "#fef2f2", "#991b1b"
     else:
         arr, bg, fg = "→", "#f8fafc", "#475569"
-    fmt = f"${abs(n):,.0f}" if money else f"{abs(n):,.0f}"
+    fmt = f"${abs(n):,.2f}" if money else f"{abs(n):,.2f}"
     return (
         f'<span style="display:inline-block;padding:2px 8px;border-radius:999px;'
         f'background:{bg};color:{fg};font-weight:700;">{arr} {fmt}</span>'
@@ -10597,14 +10608,14 @@ def _pmc_insights_fmt_money(v: Any) -> str:
     x = pd.to_numeric(v, errors="coerce")
     if pd.isna(x):
         return "—"
-    return f"${float(x):,.0f}"
+    return f"${float(x):,.2f}"
 
 
 def _pmc_insights_fmt_int(v: Any) -> str:
     x = pd.to_numeric(v, errors="coerce")
     if pd.isna(x):
         return "—"
-    return f"{int(round(float(x))):,}"
+    return f"{float(x):,.2f}"
 
 
 def _pmc_insights_fmt_pct(v: Any) -> str:
