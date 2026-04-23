@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-24-cpcwlf-looker-spend-over-lf"
+DASHBOARD_BUILD = "2026-04-24-cpcwlf-source-truth-lf-override"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -2225,14 +2225,18 @@ def _closed_won_kpi_count_from_source_truth_gid(
     return int(pd.to_numeric(norm["closed_won"], errors="coerce").fillna(0).gt(0).sum())
 
 
-def _closed_won_tcv_sum_from_source_truth_gid(
+def _closed_won_tcv_lf_sums_from_source_truth_gid(
     sheet_id: str,
     worksheet_gid: int,
-) -> tuple[int, float]:
-    """(row_count, tcv_sum) from source-truth worksheet for Closed Won + Approved rows."""
+) -> tuple[int, float, float]:
+    """(row_count, tcv_sum, first_month_lf_sum) from source-truth worksheet for Closed Won + Approved rows.
+
+    TCV and LF use the **same** ``stage_mask`` row set so headline **CpCW:LF = Spend ÷ Σ LF** matches the
+    **Actual TCV** card when both are sourced from this tab (avoids Σ LF from a wider ``cw_kpi`` merge).
+    """
     secret_creds = _service_account_from_streamlit_secrets()
     if not secret_creds:
-        return 0, 0.0
+        return 0, 0.0, 0.0
     try:
         raw = _read_sheet_auth(
             sheet_id,
@@ -2252,7 +2256,7 @@ def _closed_won_tcv_sum_from_source_truth_gid(
         except Exception:
             raw = pd.DataFrame()
     if raw.empty:
-        return 0, 0.0
+        return 0, 0.0, 0.0
 
     raw_orig = raw.copy()
     raw = _promote_wide_metric_header_row_if_needed(raw)
@@ -2299,9 +2303,39 @@ def _closed_won_tcv_sum_from_source_truth_gid(
     else:
         tcv_s = pd.to_numeric(raw[tcv_col], errors="coerce").fillna(0.0) if tcv_col is not None else pd.Series(0.0, index=raw.index)
 
+    lf_col: Optional[str] = None
+    _lf_keys = {
+        "first_month_lf",
+        "1st_month_lf",
+        "monthly_lf_usd",
+        "monthly_license_fee",
+        "monthly_license_fee_converted",
+        "monthly_license_fee_usd",
+        "license_fee",
+    }
+    for c in raw.columns:
+        nk = _norm_header_key(str(c))
+        if nk in _lf_keys:
+            lf_col = c
+            break
+
     rows = int(_to_int_series_safe(stage_mask).sum())
-    total = float(tcv_s.loc[stage_mask].sum()) if rows > 0 else 0.0
-    return rows, total
+    total_tcv = float(tcv_s.loc[stage_mask].sum()) if rows > 0 else 0.0
+    if lf_col is not None:
+        lf_s = pd.to_numeric(raw[lf_col], errors="coerce").fillna(0.0)
+        total_lf = float(lf_s.loc[stage_mask].sum()) if rows > 0 else 0.0
+    else:
+        total_lf = 0.0
+    return rows, total_tcv, total_lf
+
+
+def _closed_won_tcv_sum_from_source_truth_gid(
+    sheet_id: str,
+    worksheet_gid: int,
+) -> tuple[int, float]:
+    """Backward-compatible wrapper: (row_count, tcv_sum) only."""
+    r, t, _ = _closed_won_tcv_lf_sums_from_source_truth_gid(sheet_id, worksheet_gid)
+    return r, t
 
 
 def _sum_closed_won_sheet_style(df: pd.DataFrame) -> int:
@@ -9645,11 +9679,14 @@ def render_page_marketing_performance(
     cw_kpi = _cw_dataframe_for_kpis(cw_df, _cw_scope_df)
     _tcv_rows_override: Optional[int] = None
     _tcv_sum_override: Optional[float] = None
+    _lf_sum_override: Optional[float] = None
     if _is_all_markets and _is_all_months and cw_truth_gid is not None:
-        _r_ov, _s_ov = _closed_won_tcv_sum_from_source_truth_gid(sheet_id, int(cw_truth_gid))
+        _r_ov, _s_ov, _lf_ov = _closed_won_tcv_lf_sums_from_source_truth_gid(sheet_id, int(cw_truth_gid))
         if _r_ov > 0:
             _tcv_rows_override = int(_r_ov)
             _tcv_sum_override = float(_s_ov)
+            if _lf_ov and float(_lf_ov) > 0:
+                _lf_sum_override = float(_lf_ov)
 
     total_spend = float(spend_df["cost"].sum()) if "cost" in spend_df.columns else 0.0
     if total_spend <= 0.0 and _normalized_spend_cost_sum(spend_sheet_master) > 0.0:
@@ -9964,6 +10001,8 @@ def render_page_marketing_performance(
         total_tcv = float(_tcv_sum_override)
     elif isinstance(cw_kpi, pd.DataFrame) and "tcv" in cw_kpi.columns:
         total_tcv = float(pd.to_numeric(cw_kpi["tcv"], errors="coerce").fillna(0).sum())
+    if _lf_sum_override is not None and float(_lf_sum_override) > 0:
+        total_first_month_lf = float(_lf_sum_override)
     _sm_traffic = _mpo_traffic_totals_from_sm_pool(
         df_loaded,
         df,
