@@ -1895,6 +1895,18 @@ def _cw_dataframe_for_kpis(cw_df: pd.DataFrame, df_dashboard: pd.DataFrame) -> p
     if out.shape[1] >= 16:
         _m_p = out.iloc[:, 15].map(_is_closed_won_stage_text).fillna(False)
         _stage_union_mask = _m_p if _stage_union_mask is None else (_stage_union_mask | _m_p)
+    # Final fallback: if explicit stage candidates produce no hits, scan all text columns row-wise.
+    # This handles shifted/missing headers in the CW truth sheet while keeping matching strict
+    # to Closed Won/Approved text only.
+    if _stage_union_mask is None or not bool(_stage_union_mask.any()):
+        _row_any = pd.Series(False, index=out.index)
+        for _c in out.columns:
+            _s = out[_c]
+            if not (pd.api.types.is_object_dtype(_s) or pd.api.types.is_string_dtype(_s)):
+                continue
+            _row_any = _row_any | _s.map(_is_closed_won_stage_text).fillna(False)
+        if bool(_row_any.any()):
+            _stage_union_mask = _row_any
     if _stage_union_mask is not None and bool(_stage_union_mask.any()):
         _cw_existing = pd.to_numeric(out.get("closed_won", 0), errors="coerce").fillna(0).gt(0)
         out["closed_won"] = _to_int_series_safe(_cw_existing | _stage_union_mask)
