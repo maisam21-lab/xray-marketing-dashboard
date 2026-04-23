@@ -9636,6 +9636,10 @@ def render_page_marketing_performance(
     # Enforce CW card source-of-truth value after headline aggregation overwrites.
     if cw_total_source_truth > 0:
         total_cw = int(cw_total_source_truth)
+    # Keep Actual TCV aligned to the raw CW source-truth scope (Closed Won + Approved rows),
+    # even when headline month keys are narrower than the source table.
+    if isinstance(cw_kpi, pd.DataFrame) and not cw_kpi.empty and "tcv" in cw_kpi.columns:
+        total_tcv = float(pd.to_numeric(cw_kpi["tcv"], errors="coerce").fillna(0).sum())
 
     _sm_traffic = _mpo_traffic_totals_from_sm_pool(
         df_loaded,
