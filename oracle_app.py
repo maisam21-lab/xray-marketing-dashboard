@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-22-cw-from-leads-close-date-sep2025"
+DASHBOARD_BUILD = "2026-04-22-cw-zero-fix-leads-date-stage-detection"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -916,23 +916,41 @@ def _resolve_post_lead_stage_column(df: pd.DataFrame) -> Optional[str]:
     """Prefer Post Lead Stage / opportunity stage over the first generic *stage* column."""
     if df.empty or not len(df.columns):
         return None
+
+    def _is_stage_header_noise(nk: str) -> bool:
+        """Exclude timestamp / audit columns that happen to contain the substring ``stage``."""
+        if "stage" not in nk:
+            return True
+        if "date" in nk or "time" in nk or "timestamp" in nk or "age" in nk:
+            return True
+        if "change" in nk or "history" in nk or "audit" in nk:
+            return True
+        return False
+
     for c in df.columns:
         if _norm_header_key(c) == "post_lead_stage":
             return c
     best: list[tuple[int, str]] = []
     for c in df.columns:
         nk = _norm_header_key(c)
+        if _is_stage_header_noise(nk):
+            continue
         if "post_lead" in nk and "stage" in nk:
             best.append((0, c))
-        elif nk in ("stagename", "stage_name", "opportunity_stage"):
+        elif nk in ("stagename", "stage_name", "opportunity_stage", "deal_stage", "sales_stage", "lead_stage"):
             best.append((1, c))
     if best:
         best.sort(key=lambda x: (x[0], x[1]))
         return best[0][1]
     for c in df.columns:
-        if _norm_header_key(c) == "stage":
+        nk = _norm_header_key(c)
+        if nk == "stage" and not _is_stage_header_noise(nk):
             return c
-    return next((c for c in df.columns if "stage" in _norm_header_key(c)), None)
+    for c in df.columns:
+        nk = _norm_header_key(c)
+        if "stage" in nk and not _is_stage_header_noise(nk):
+            return c
+    return None
 
 
 def _is_closed_won_stage_text(val: Any) -> bool:
@@ -942,7 +960,9 @@ def _is_closed_won_stage_text(val: Any) -> bool:
         return False
     if "closed lost" in t:
         return False
-    if "closed won" in t:
+    if "closed won" in t or re.search(r"\bclosed\s*[-_/]*won\b", t):
+        return True
+    if re.search(r"\bcw\b", t) and "closed lost" not in t:
         return True
     if "not approved" in t or "unapproved" in t:
         return False
@@ -1932,7 +1952,19 @@ def _ensure_closed_won_from_text_flags(df: pd.DataFrame) -> pd.DataFrame:
     else:
         for c in out.columns:
             nk = _norm_header_key(c)
-            if nk in {"lead_status", "status", "deal_status", "opportunity_status"}:
+            if nk in {"stage", "stagename", "stage_name", "opportunity_stage", "deal_stage"}:
+                src_col = c
+                break
+        if src_col is None:
+            for c in out.columns:
+                nk = _norm_header_key(c)
+                if nk in {"lead_status", "status", "deal_status", "opportunity_status"}:
+                    src_col = c
+                    break
+    if src_col is None:
+        for c in out.columns:
+            nk = _norm_header_key(c)
+            if "status" in nk and not any(x in nk for x in ("date", "time", "timestamp", "history", "change")):
                 src_col = c
                 break
     if src_col is None:
@@ -2583,7 +2615,7 @@ def _preprocess_excel_sheet(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
                 empty_m = mser.eq("") | mser.str.lower().isin(["nan", "none", "nat"])
                 if bool(empty_m.all()):
                     df[mcol] = df[pcol].values
-    if ("raw" in t and "lead" in t and "post" not in t):
+    if ("lead" in t and "post" not in t):
         # Convert lead rows into additive metrics so they can be combined with spend.
         if "Leads" not in df.columns:
             df["Leads"] = 1
@@ -2592,6 +2624,14 @@ def _preprocess_excel_sheet(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
             df["Qualified"] = _to_int_series_safe(status.str.contains("qualified", na=False))
         if "Date Formatted" in df.columns and "Date" not in df.columns:
             df["Date"] = pd.to_datetime(df["Date Formatted"], errors="coerce")
+        # Salesforce exports often use ``Close Date`` for CW timing — map into ``Date`` when primary dates are blank.
+        if "Close Date" in df.columns:
+            cd = pd.to_datetime(df["Close Date"], errors="coerce", dayfirst=True)
+            if "Date" not in df.columns:
+                df["Date"] = cd
+            else:
+                base = pd.to_datetime(df["Date"], errors="coerce")
+                df["Date"] = base.where(base.notna(), cd)
     if _is_post_lead_pipeline_tab(t):
         # Stage rows become pipeline counters (post-lead funnel). Prefer Post Lead Stage column.
         stage_col = _resolve_post_lead_stage_column(df)
