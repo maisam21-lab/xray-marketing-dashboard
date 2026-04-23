@@ -9364,14 +9364,16 @@ def render_page_marketing_performance(
             mask = mask | s.str.contains(k.lower(), na=False, regex=True)
         return frame[mask].copy()
 
-    def _strict_gid_source(gid: Optional[int]) -> pd.DataFrame:
+    def _strict_gid_source(gid: Optional[int], *, prefer_full_rows: bool = False) -> pd.DataFrame:
         """Load one worksheet as source of truth for non-spend metrics."""
         if gid is None:
             return pd.DataFrame()
+        by_gid_all = _rows_by_worksheet_id(df_loaded, int(gid), sheet_id)
+        if prefer_full_rows and not by_gid_all.empty:
+            return by_gid_all
         by_gid_date = _rows_by_worksheet_id(df_date, int(gid), sheet_id)
         if not by_gid_date.empty:
             return by_gid_date
-        by_gid_all = _rows_by_worksheet_id(df_loaded, int(gid), sheet_id)
         if not by_gid_all.empty:
             return by_gid_all
         try:
@@ -9428,9 +9430,9 @@ def render_page_marketing_performance(
     # TCV source of truth: prefer CW source-truth sheet (gid 1871946442, column T: TCV converted),
     # then fall back to RAW CW gid.
     tcv_source_gid = cw_truth_gid if cw_truth_gid is not None else raw_cw_gid
-    cw_df = _strict_gid_source(tcv_source_gid)
+    cw_df = _strict_gid_source(tcv_source_gid, prefer_full_rows=True)
     if cw_df.empty and raw_cw_gid is not None and (tcv_source_gid is None or int(raw_cw_gid) != int(tcv_source_gid)):
-        cw_df = _strict_gid_source(raw_cw_gid)
+        cw_df = _strict_gid_source(raw_cw_gid, prefer_full_rows=True)
     if cw_df.empty:
         cw_df = _resolve_cw_tcv_dataframe(df_loaded, df)
     if cw_df.empty and use_truth_for_nonspend:
