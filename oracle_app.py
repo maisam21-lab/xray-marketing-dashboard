@@ -9332,7 +9332,8 @@ def render_page_marketing_performance(
         cw_df = _resolve_cw_tcv_dataframe(df_loaded, df)
     if cw_df.empty and use_truth_for_nonspend:
         cw_df = truth_df.copy()
-    cw_kpi = _cw_dataframe_for_kpis(cw_df, df)
+    # For Actual TCV from the CW source sheet, keep stage-filtered RAW totals without extra dashboard pair trimming.
+    cw_kpi = _cw_dataframe_for_kpis(cw_df, pd.DataFrame())
 
     total_spend = float(spend_df["cost"].sum()) if "cost" in spend_df.columns else 0.0
     if total_spend <= 0.0 and _normalized_spend_cost_sum(spend_sheet_master) > 0.0:
