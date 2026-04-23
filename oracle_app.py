@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-22-cw-source-truth-gid-1871946442"
+DASHBOARD_BUILD = "2026-04-22-cw-row-count-from-source"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -2007,7 +2007,7 @@ def _closed_won_kpi_count_from_leads_gid(
     *,
     close_date_min: pd.Timestamp = pd.Timestamp("2025-09-01"),
 ) -> int:
-    """CW (inc. approved) from Leads tab: stage text + Close Date >= Sep 2025, unique-opportunity safe."""
+    """CW (inc. approved) from Leads tab: count matching rows after date/stage filtering."""
     base = _rows_by_worksheet_id(df_loaded, int(leads_gid), sheet_id)
     if base.empty:
         try:
@@ -2021,7 +2021,7 @@ def _closed_won_kpi_count_from_leads_gid(
         d = pd.to_datetime(work["date"], errors="coerce")
         work = work.loc[d.isna() | (d >= close_date_min)].copy()
     work = work.loc[pd.to_numeric(work.get("closed_won", 0), errors="coerce").fillna(0) > 0].copy()
-    return _sum_closed_won_unique_opportunities(work)
+    return int(len(work.index))
 
 
 def _closed_won_kpi_count_from_source_truth_gid(
@@ -2030,7 +2030,7 @@ def _closed_won_kpi_count_from_source_truth_gid(
     *,
     close_date_min: pd.Timestamp = pd.Timestamp("2025-09-01"),
 ) -> int:
-    """CW source-of-truth count from one worksheet (stage col incl. col P), filtered to Closed Won/Approved."""
+    """CW source-of-truth count from one worksheet (each matching row = 1 CW)."""
     secret_creds = _service_account_from_streamlit_secrets()
     if not secret_creds:
         return 0
@@ -2084,6 +2084,7 @@ def _closed_won_kpi_count_from_source_truth_gid(
         d = _scrub_pre_2000_dates(_coerce_sheet_serial_dates(d))
         cw_mask = cw_mask & (d.isna() | (d >= close_date_min))
 
+    # Requested rule: publish CW as raw matching row count (no dedupe by opportunity).
     return int(_to_int_series_safe(cw_mask).sum())
 
 
