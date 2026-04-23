@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-22-cw-zero-fix-leads-date-stage-detection"
+DASHBOARD_BUILD = "2026-04-22-global-reporting-from-sep-2025"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -1153,8 +1153,8 @@ def _master_df_coalesce_month_country(master_df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-# Reject Unix-epoch / Excel-zero style dates (shows as **Jan 1970** in the grid).
-_MIN_DASHBOARD_PERIOD = pd.Period("2000-01", freq="M")
+# Global reporting floor: keep dashboard data from Sep 2025 onward.
+_MIN_DASHBOARD_PERIOD = pd.Period("2025-09", freq="M")
 _MAX_DASHBOARD_PERIOD = pd.Period(date.today(), freq="M")
 _MIN_SPEND_PERIOD = pd.Period("2025-09", freq="M")
 
