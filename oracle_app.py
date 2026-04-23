@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-22-cw-source-sheet-no-extra-date-filter"
+DASHBOARD_BUILD = "2026-04-22-cw-card-zero-fallback-hardened"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -2060,6 +2060,7 @@ def _closed_won_kpi_count_from_source_truth_gid(
     if raw.empty:
         return 0
 
+    raw_orig = raw.copy()
     raw = _promote_wide_metric_header_row_if_needed(raw)
     raw = _coerce_two_row_sheet_headers(raw)
 
@@ -2072,13 +2073,28 @@ def _closed_won_kpi_count_from_source_truth_gid(
     # User confirmed stage is in column P (16th column) on this source-truth tab.
     if stage_s is None and raw.shape[1] >= 16:
         stage_s = raw.iloc[:, 15].astype(str)
+    if stage_s is None and raw_orig.shape[1] >= 16:
+        # Keep a strict fallback to source column P from the unmodified sheet extract.
+        stage_s = raw_orig.iloc[:, 15].astype(str)
     if stage_s is None:
+        stage_s = None
+
+    if stage_s is not None:
+        cw_mask = stage_s.map(_is_closed_won_stage_text).fillna(False)
+        # Requested rule: publish CW as raw matching row count (no dedupe by opportunity).
+        return int(_to_int_series_safe(cw_mask).sum())
+
+    # Fallback: normalized parse path from the same worksheet gid.
+    try:
+        norm = load_worksheet_by_gid_preprocessed(sheet_id, int(worksheet_gid), _secret_fingerprint(_service_account_from_streamlit_secrets()))
+    except Exception:
+        norm = pd.DataFrame()
+    if norm.empty:
         return 0
-
-    cw_mask = stage_s.map(_is_closed_won_stage_text).fillna(False)
-
-    # Requested rule: publish CW as raw matching row count (no dedupe by opportunity).
-    return int(_to_int_series_safe(cw_mask).sum())
+    norm = _ensure_closed_won_from_text_flags(norm)
+    if "closed_won" not in norm.columns:
+        return 0
+    return int(pd.to_numeric(norm["closed_won"], errors="coerce").fillna(0).gt(0).sum())
 
 
 def _sum_closed_won_sheet_style(df: pd.DataFrame) -> int:
