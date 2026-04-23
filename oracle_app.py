@@ -1864,6 +1864,40 @@ def _cw_dataframe_for_kpis(cw_df: pd.DataFrame, df_dashboard: pd.DataFrame) -> p
         return out
     # Apply stage-derived CW flags (Closed Won + Approved) with robust fallbacks.
     out = _ensure_closed_won_from_text_flags(out)
+    # Hard-safe for CW truth layouts: include rows if ANY plausible stage/status column indicates CW/Approved.
+    # This avoids undercount when a single detected status column is incomplete/misaligned.
+    _stage_union_mask: Optional[pd.Series] = None
+    _stage_cols: list[str] = []
+    _st = _resolve_post_lead_stage_column(out)
+    if _st is not None and _st in out.columns:
+        _stage_cols.append(_st)
+    for _c in out.columns:
+        _nk = _norm_header_key(str(_c))
+        if _nk in {
+            "stage",
+            "stagename",
+            "stage_name",
+            "opportunity_stage",
+            "deal_stage",
+            "lead_status",
+            "status",
+            "deal_status",
+            "opportunity_status",
+        }:
+            _stage_cols.append(_c)
+    _stage_cols = list(dict.fromkeys(_stage_cols))
+    for _c in _stage_cols:
+        _s = out[_c]
+        if not (pd.api.types.is_object_dtype(_s) or pd.api.types.is_string_dtype(_s)):
+            continue
+        _m = _s.map(_is_closed_won_stage_text).fillna(False)
+        _stage_union_mask = _m if _stage_union_mask is None else (_stage_union_mask | _m)
+    if out.shape[1] >= 16:
+        _m_p = out.iloc[:, 15].map(_is_closed_won_stage_text).fillna(False)
+        _stage_union_mask = _m_p if _stage_union_mask is None else (_stage_union_mask | _m_p)
+    if _stage_union_mask is not None and bool(_stage_union_mask.any()):
+        _cw_existing = pd.to_numeric(out.get("closed_won", 0), errors="coerce").fillna(0).gt(0)
+        out["closed_won"] = _to_int_series_safe(_cw_existing | _stage_union_mask)
     if "closed_won" in out.columns:
         s = pd.to_numeric(out["closed_won"], errors="coerce").fillna(0)
         if float(s.sum()) > 0:
