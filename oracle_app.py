@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-22-cw-debug-live-values"
+DASHBOARD_BUILD = "2026-04-22-cw-debug-banner-visible"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -9592,9 +9592,9 @@ def render_page_marketing_performance(
         cpc = (total_spend / float(total_clicks)) if total_clicks else 0.0
 
     _hm_cw_dbg = int(_hm["total_cw"]) if (_hm and "total_cw" in _hm) else 0
-    st.caption(
-        f"CW debug — source_gid:{int(cw_truth_gid) if cw_truth_gid is not None else 'none'} "
-        f"source_count:{int(cw_total_source_truth)} headline_count:{_hm_cw_dbg} final_count:{int(total_cw)}"
+    st.info(
+        f"DEBUG BUILD {DASHBOARD_BUILD} | CW source_gid:{int(cw_truth_gid) if cw_truth_gid is not None else 'none'} "
+        f"| source_count:{int(cw_total_source_truth)} | headline_count:{_hm_cw_dbg} | final_count:{int(total_cw)}"
     )
 
     _kpi_block(
