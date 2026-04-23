@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-24-cpcwlf-ratio-precision"
+DASHBOARD_BUILD = "2026-04-24-cpcwlf-looker-spend-over-lf"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -1005,7 +1005,7 @@ _POST_LEAD_SOURCE_TAB_PATTERNS: tuple[str, ...] = (
     r"post.*qualif",
 )
 
-# RAW CW / TCV tab — Actual TCV, 1st Month LF, CPCW:LF (CpCW:LF = (Spend ÷ CW) ÷ 1st Month LF at scorecard level).
+# RAW CW / TCV tab — Actual TCV, 1st Month LF, CPCW:LF (Looker-aligned: CpCW ÷ avg LF per CW = Spend ÷ Σ 1st Month LF).
 _RAW_CW_TAB_PATTERNS: tuple[str, ...] = (
     r"raw\s*cw",
     r"raw.*\bcw\b",
@@ -6266,8 +6266,8 @@ def _kpi_two_month_compare_dict(
     cpcw_c = (sc / pipe_c["cw"]) if pipe_c["cw"] > 0 else None
     cpcw_p = (sp / pipe_p["cw"]) if pipe_p["cw"] > 0 else None
     out["mom_cpcw_c"], out["mom_cpcw_p"] = cpcw_c, cpcw_p
-    cpcwlf_c = ((sc / float(pipe_c["cw"])) / lf_c) if pipe_c["cw"] > 0 and lf_c > 0 else None
-    cpcwlf_p = ((sp / float(pipe_p["cw"])) / lf_p) if pipe_p["cw"] > 0 and lf_p > 0 else None
+    cpcwlf_c = (sc / lf_c) if pipe_c["cw"] > 0 and lf_c > 0 else None
+    cpcwlf_p = (sp / lf_p) if pipe_p["cw"] > 0 and lf_p > 0 else None
     out["mom_cpcwlf_c"], out["mom_cpcwlf_p"] = cpcwlf_c, cpcwlf_p
     pct_c = (sc / tcv_c * 100.0) if tcv_c > 0 else None
     pct_p = (sp / tcv_p * 100.0) if tcv_p > 0 else None
@@ -6805,7 +6805,7 @@ def _kpi_block(
     q_rate = (_cw_q / _q_d * 100) if _q_d else 0.0
     sql_rate = (total_qualified / total_leads * 100) if total_leads else 0.0
     cpcw = (total_spend / total_cw) if total_cw else 0.0
-    cpcw_lf = (cpcw / total_first_month_lf) if total_cw and total_first_month_lf else 0.0
+    cpcw_lf = (total_spend / total_first_month_lf) if total_cw and total_first_month_lf else 0.0
     spend_tcv_pct = (total_spend / total_tcv * 100) if total_tcv else 0.0
 
     pv = prior or {}
@@ -7778,8 +7778,8 @@ def _mpo_metric_definition(metric_name: str) -> str:
             "Sum of actual total contract value (TCV) from the RAW CW tab for this month and market."
         ),
         "CPCW:LF": (
-            "CpCW:LF ratio: cost per closed won divided by first-month license fee in the same slice — "
-            "(Spend ÷ CW) ÷ 1st Month LF."
+            "CpCW:LF (Looker-style): CpCW divided by average first-month LF per closed won in the slice — "
+            "Spend ÷ Σ 1st Month LF (equivalent to (Spend÷CW) ÷ (Σ LF÷CW))."
         ),
         "Cost/TCV%": (
             "Spend as a percentage of actual TCV in the same month and market (spend ÷ TCV × 100)."
@@ -7865,7 +7865,8 @@ def _mpo_calculation_trail(metric_name: str, row: pd.Series) -> list[dict[str, s
         ]
     elif metric_name == "CPCW:LF":
         cpcw_ratio = (spend / cw) if cw else float("nan")
-        ratio = (cpcw_ratio / lf) if cw and lf else float("nan")
+        avg_lf = (lf / cw) if cw else float("nan")
+        ratio = (spend / lf) if lf else float("nan")
         out = [
             {"Step": "1", "Component": "Spend", "Value": _format_spend_k(spend), "Combines as": "—"},
             {"Step": "2", "Component": "CW (Inc Approved)", "Value": f"{cw:,}", "Combines as": "—"},
@@ -7875,12 +7876,18 @@ def _mpo_calculation_trail(metric_name: str, row: pd.Series) -> list[dict[str, s
                 "Value": _format_compact_k(cpcw_ratio) if cw and cpcw_ratio == cpcw_ratio else "—",
                 "Combines as": "—",
             },
-            {"Step": "4", "Component": "1st Month LF (denominator)", "Value": _fmt_small_money(lf), "Combines as": "—"},
             {
-                "Step": "5",
-                "Component": "CpCW:LF = CpCW ÷ 1st Month LF",
+                "Step": "4",
+                "Component": "Avg 1st Month LF per CW = Σ LF ÷ CW",
+                "Value": _format_compact_k(float(avg_lf)) if cw and lf and avg_lf == avg_lf else "—",
+                "Combines as": "—",
+            },
+            {"Step": "5", "Component": "Σ 1st Month LF (same slice)", "Value": _fmt_small_money(lf), "Combines as": "—"},
+            {
+                "Step": "6",
+                "Component": "CpCW:LF = CpCW ÷ Avg LF = Spend ÷ Σ LF",
                 "Value": _format_ratio_cpcw_lf(float(ratio)) if cw and lf and ratio == ratio else "—",
-                "Combines as": "Final ratio",
+                "Combines as": "Final ratio (Looker)",
             },
         ]
     elif metric_name == "Cost/TCV%":
@@ -8846,7 +8853,7 @@ def _master_build_gm_with_metrics(
     )
     if "lf" in gm.columns:
         gm["CPCW:LF"] = gm.apply(
-            lambda r: ((r["spend"] / r["cw"]) / r["lf"]) if r["cw"] and r["cw"] > 0 and r["lf"] and r["lf"] > 0 else float("nan"),
+            lambda r: (r["spend"] / r["lf"]) if r["cw"] and r["cw"] > 0 and r["lf"] and r["lf"] > 0 else float("nan"),
             axis=1,
         )
     if "tcv" in gm.columns:
@@ -8887,7 +8894,7 @@ def _t3b3_add_derived_from_sums(row: dict[str, Any]) -> None:
     leads = float(row.get("leads", 0) or 0)
     qual = float(row.get("qualified", 0) or 0)
     row["CPCW"] = (sp / cw) if cw > 0 else float("nan")
-    row["CPCW:LF"] = ((sp / cw) / lf) if cw > 0 and lf > 0 else float("nan")
+    row["CPCW:LF"] = (sp / lf) if cw > 0 and lf > 0 else float("nan")
     row["Cost/TCV%"] = (sp / tcv * 100) if tcv > 0 else float("nan")
     row["Spend"] = sp
     row["CW (Inc Approved)"] = round(cw, 2)
