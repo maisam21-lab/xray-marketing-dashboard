@@ -2001,9 +2001,11 @@ def _ensure_closed_won_from_text_flags(df: pd.DataFrame) -> pd.DataFrame:
         return df
     out = df.copy()
     has_cw = "closed_won" in out.columns
-    cw_sum = float(pd.to_numeric(out.get("closed_won", 0), errors="coerce").fillna(0).sum()) if has_cw else 0.0
-    if has_cw and cw_sum > 0.0:
-        return out
+    cw_existing = (
+        _to_int_series_safe(pd.to_numeric(out.get("closed_won", 0), errors="coerce").fillna(0) > 0)
+        if has_cw
+        else pd.Series(0, index=out.index, dtype=int)
+    )
 
     src_col: Optional[str] = None
     st_col = _resolve_post_lead_stage_column(out)
@@ -2027,13 +2029,32 @@ def _ensure_closed_won_from_text_flags(df: pd.DataFrame) -> pd.DataFrame:
             if "status" in nk and not any(x in nk for x in ("date", "time", "timestamp", "history", "change")):
                 src_col = c
                 break
+    derived: Optional[pd.Series] = None
     if src_col is None:
         # CW source-truth layout often has Stage in column P (16th column) without a stable header.
         if out.shape[1] >= 16:
-            stage_series = out.iloc[:, 15]
-            out["closed_won"] = _to_int_series_safe(stage_series.map(_is_closed_won_stage_text))
+            derived = _to_int_series_safe(out.iloc[:, 15].map(_is_closed_won_stage_text))
+        else:
+            # Last-resort fallback: infer stage-like text from any object column.
+            best: Optional[pd.Series] = None
+            best_hits = 0
+            for c in out.columns:
+                s = out[c]
+                if not (pd.api.types.is_object_dtype(s) or pd.api.types.is_string_dtype(s)):
+                    continue
+                cand = _to_int_series_safe(s.map(_is_closed_won_stage_text))
+                hits = int(cand.sum())
+                if hits > best_hits:
+                    best_hits = hits
+                    best = cand
+            derived = best if best is not None and best_hits > 0 else None
+    else:
+        derived = _to_int_series_safe(out[src_col].map(_is_closed_won_stage_text))
+
+    if derived is None:
+        out["closed_won"] = cw_existing if has_cw else 0
         return out
-    out["closed_won"] = _to_int_series_safe(out[src_col].map(_is_closed_won_stage_text))
+    out["closed_won"] = _to_int_series_safe((cw_existing > 0) | (derived > 0))
     return out
 
 
