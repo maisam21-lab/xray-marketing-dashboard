@@ -1988,49 +1988,58 @@ def _ensure_closed_won_from_text_flags(df: pd.DataFrame) -> pd.DataFrame:
         else pd.Series(0, index=out.index, dtype=int)
     )
 
-    src_col: Optional[str] = None
+    # Score candidate stage/status columns and pick the strongest CW/Approved signal.
+    candidate_cols: list[str] = []
     st_col = _resolve_post_lead_stage_column(out)
-    if st_col is not None:
-        src_col = st_col
-    else:
-        for c in out.columns:
-            nk = _norm_header_key(c)
-            if nk in {"stage", "stagename", "stage_name", "opportunity_stage", "deal_stage"}:
-                src_col = c
-                break
-        if src_col is None:
-            for c in out.columns:
-                nk = _norm_header_key(c)
-                if nk in {"lead_status", "status", "deal_status", "opportunity_status"}:
-                    src_col = c
-                    break
-    if src_col is None:
-        for c in out.columns:
-            nk = _norm_header_key(c)
-            if "status" in nk and not any(x in nk for x in ("date", "time", "timestamp", "history", "change")):
-                src_col = c
-                break
+    if st_col is not None and st_col in out.columns:
+        candidate_cols.append(st_col)
+    for c in out.columns:
+        nk = _norm_header_key(c)
+        if nk in {"stage", "stagename", "stage_name", "opportunity_stage", "deal_stage"}:
+            candidate_cols.append(c)
+    for c in out.columns:
+        nk = _norm_header_key(c)
+        if nk in {"lead_status", "status", "deal_status", "opportunity_status"}:
+            candidate_cols.append(c)
+    for c in out.columns:
+        nk = _norm_header_key(c)
+        if "status" in nk and not any(x in nk for x in ("date", "time", "timestamp", "history", "change")):
+            candidate_cols.append(c)
+
+    # Keep order while de-duplicating.
+    candidate_cols = list(dict.fromkeys(candidate_cols))
+
     derived: Optional[pd.Series] = None
-    if src_col is None:
-        # CW source-truth layout often has Stage in column P (16th column) without a stable header.
-        if out.shape[1] >= 16:
-            derived = _to_int_series_safe(out.iloc[:, 15].map(_is_closed_won_stage_text))
-        else:
-            # Last-resort fallback: infer stage-like text from any object column.
-            best: Optional[pd.Series] = None
-            best_hits = 0
-            for c in out.columns:
-                s = out[c]
-                if not (pd.api.types.is_object_dtype(s) or pd.api.types.is_string_dtype(s)):
-                    continue
-                cand = _to_int_series_safe(s.map(_is_closed_won_stage_text))
-                hits = int(cand.sum())
-                if hits > best_hits:
-                    best_hits = hits
-                    best = cand
-            derived = best if best is not None and best_hits > 0 else None
-    else:
-        derived = _to_int_series_safe(out[src_col].map(_is_closed_won_stage_text))
+    best_hits = 0
+    for c in candidate_cols:
+        s = out[c]
+        if not (pd.api.types.is_object_dtype(s) or pd.api.types.is_string_dtype(s)):
+            continue
+        cand = _to_int_series_safe(s.map(_is_closed_won_stage_text))
+        hits = int(cand.sum())
+        if hits > best_hits:
+            best_hits = hits
+            derived = cand
+
+    # CW source-truth layout often has Stage in column P (16th column) without a stable header.
+    if (derived is None or best_hits == 0) and out.shape[1] >= 16:
+        col_p = _to_int_series_safe(out.iloc[:, 15].map(_is_closed_won_stage_text))
+        hits_p = int(col_p.sum())
+        if hits_p > best_hits:
+            best_hits = hits_p
+            derived = col_p
+
+    # Last-resort fallback: infer from any object/string column.
+    if derived is None or best_hits == 0:
+        for c in out.columns:
+            s = out[c]
+            if not (pd.api.types.is_object_dtype(s) or pd.api.types.is_string_dtype(s)):
+                continue
+            cand = _to_int_series_safe(s.map(_is_closed_won_stage_text))
+            hits = int(cand.sum())
+            if hits > best_hits:
+                best_hits = hits
+                derived = cand
 
     if derived is None:
         out["closed_won"] = cw_existing if has_cw else 0
