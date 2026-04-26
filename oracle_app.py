@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-26-cpcwlf-card-sub-b1-b3-not-tcv"
+DASHBOARD_BUILD = "2026-04-24-cpcwlf-definition-tooltip"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -6774,6 +6774,17 @@ def _kpi_funnel_sub_row(label: str, value: str) -> str:
     )
 
 
+# Hover text for the Marketing performance CpCW:LF tile (HTML title attribute).
+_CPCW_LF_CARD_TOOLTIP = (
+    "CpCW:LF = Cost per Close Won to Licence Fee ratio. "
+    "Formula: CpCW ÷ (average 1st month licence fee per closed-won deal in this slice). "
+    "Same number as Total Spend ÷ Σ 1st month LF (ME B6). "
+    "CpCW = total marketing spend ÷ number of closed-won deals; 1st month LF comes from Salesforce per deal. "
+    "Below 1.0 = spend is less than the slice's summed first-month LF (strong efficiency). "
+    "Above 1.0 = spend exceeds that LF sum. Example: 0.58 means about 58¢ of marketing per $1 of first-month LF in the slice."
+)
+
+
 def _kpi_funnel_pastel_card_html(
     *,
     icon: str,
@@ -6785,6 +6796,7 @@ def _kpi_funnel_pastel_card_html(
     hue: str = "cw",
     extra_class: str = "",
     biz_signal: str = "na",
+    tooltip: Optional[str] = None,
 ) -> str:
     """Single pastel funnel scorecard tile — same markup as ``_kpi_block`` ``_card`` (Marketing performance)."""
     h = html.escape(hue, quote=True)
@@ -6792,8 +6804,11 @@ def _kpi_funnel_pastel_card_html(
     xcls = f" {xc}" if xc else ""
     b = str(biz_signal).strip().lower()
     biz_cls = f" kpi-funnel-card--{html.escape(b, quote=True)}" if b not in ("", "na") else ""
+    tip = ""
+    if tooltip and str(tooltip).strip():
+        tip = f' title="{html.escape(str(tooltip).strip(), quote=True)}"'
     return (
-        f'<div class="kpi-funnel-card kpi-funnel-card--pastel kpi-funnel-card--pastel-{h}{xcls}{biz_cls}" '
+        f'<div class="kpi-funnel-card kpi-funnel-card--pastel kpi-funnel-card--pastel-{h}{xcls}{biz_cls}"{tip} '
         f'style="animation-delay:{delay:.2f}s">'
         f'<span class="kpi-funnel-icon" aria-hidden="true">{icon}</span>'
         f'<div class="kpi-funnel-title">{html.escape(title)}</div>'
@@ -7050,6 +7065,7 @@ def _kpi_block(
         hue: str = "cw",
         extra_class: str = "",
         biz_signal: str = "na",
+        tooltip: Optional[str] = None,
     ) -> str:
         return _kpi_funnel_pastel_card_html(
             icon=icon,
@@ -7061,6 +7077,7 @@ def _kpi_block(
             hue=hue,
             extra_class=extra_class,
             biz_signal=biz_signal,
+            tooltip=tooltip,
         )
 
     def _section(title: str, accent: str, cards: list[str]) -> str:
@@ -7177,6 +7194,7 @@ def _kpi_block(
         biz_signal=_kpi_biz_signal(
             pv.get("mom_cpcwlf_c"), pv.get("mom_cpcwlf_p"), domain="efficiency", lower_is_better=True, disabled=_no_delta
         ),
+        tooltip=_CPCW_LF_CARD_TOOLTIP,
     )
     card_ctcv = _card(
         "%",
@@ -7997,8 +8015,8 @@ def _mpo_metric_definition(metric_name: str) -> str:
             "month × market in the master merge."
         ),
         "CPCW": (
-            "Cost per closed won: how much spend was required for each closed won in this slice. "
-            "It is a ratio, not summed across rows in the sheet."
+            "**Cost per closed won (CpCW):** total marketing spend in the slice ÷ number of closed-won deals. "
+            "It is a ratio (not summed across sheet rows)."
         ),
         "1st Month LF": (
             "Sum of first-month license fee amounts from the RAW CW / deal tab for opportunities in this month and market."
@@ -8007,9 +8025,16 @@ def _mpo_metric_definition(metric_name: str) -> str:
             "Sum of actual total contract value (TCV) from the RAW CW tab for this month and market."
         ),
         "CPCW:LF": (
-            "ME CpCW Analysis **B6** = **B1 ÷ B3** (Total Marketing Spend ÷ Σ 1st Month License Fee on the B2/B3 row set). "
-            "Equivalent to **B5 ÷ B4** when B5 = B1÷B2 (CpCW) and B4 = (Σ LF)÷CW (avg fee per deal). "
-            "Master view uses the same Spend ÷ Σ LF ratio for that month × market slice."
+            "**Cost per close won to licence fee ratio (CpCW:LF).** It tells you how many multiples of "
+            "first-month licence fee your marketing spend represents for the closed-won set in this slice. "
+            "**Formula:** **CpCW ÷ (average 1st month LF per closed-won deal)** — algebraically the same as "
+            "**Total Spend ÷ Σ 1st month LF** (ME **B6** = **B1 ÷ B3** on the B2/B3 row set), and the same as "
+            "**B5 ÷ B4** when B5 = Spend÷CW and B4 = (Σ LF)÷CW. "
+            "**CpCW** = total marketing spend ÷ number of closed-won deals. "
+            "**1st month LF** = first month's licence fee from each opportunity (Salesforce), summed as Σ LF in B3. "
+            "**Below 1.0** → spend is *less* than the slice's summed first-month LF (strong efficiency). "
+            "**Above 1.0** → spend *exceeds* that LF sum. "
+            "**Example:** **0.58** ≈ **$0.58** of marketing spend per **$1** of summed first-month LF in the slice."
         ),
         "Cost/TCV%": (
             "Spend as a percentage of actual TCV in the same month and market (spend ÷ TCV × 100)."
@@ -8115,7 +8140,7 @@ def _mpo_calculation_trail(metric_name: str, row: pd.Series) -> list[dict[str, s
             {"Step": "5", "Component": "Σ 1st Month LF (same slice)", "Value": _fmt_small_money(lf), "Combines as": "—"},
             {
                 "Step": "6",
-                "Component": "CpCW:LF = B1÷B3 = Spend÷Σ LF (= B5÷B4)",
+                "Component": "CpCW:LF = CpCW ÷ avg LF = B1÷B3 = Spend÷Σ LF (= B5÷B4)",
                 "Value": _format_ratio_cpcw_lf(float(ratio)) if cw and lf and ratio == ratio else "—",
                 "Combines as": "Final ratio (ME B6 / Looker)",
             },
