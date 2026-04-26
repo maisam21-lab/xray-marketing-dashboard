@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-24-cpcwlf-source-truth-lf-override"
+DASHBOARD_BUILD = "2026-04-24-cpcwlf-postqual-lf-dash-spend"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -3203,6 +3203,16 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
         else:
             out[field] = _col_as_series(df, srcs[0])
 
+    # Actual Close Date — ME **CpCW Analysis** (B2/B3) filters on this; ``date`` may prefer First Lead Created on post-lead tabs.
+    _close_src: Optional[str] = None
+    for col in df.columns:
+        if _norm_header_key(str(col)) == "close_date":
+            _close_src = col
+            break
+    if _close_src is not None:
+        _cds = pd.to_datetime(_col_as_series(df, _close_src), errors="coerce", dayfirst=True)
+        out["cw_close_date"] = _scrub_pre_2000_dates(_coerce_sheet_serial_dates(_cds))
+
     # Hard fallback for spend: if explicit mapping missed it, infer from any spend/cost/amount-like header.
     if "cost" not in out.columns:
         spend_like_cols = []
@@ -5754,6 +5764,56 @@ def _mpo_rows_for_norm_month(df: pd.DataFrame, month_key: Optional[str]) -> pd.D
     return df.loc[df["month"].map(_month_norm_key).astype(str).str.strip() == nk].copy()
 
 
+def _normalized_post_qual_for_cw_analysis(post_df: pd.DataFrame) -> pd.DataFrame:
+    """Normalize post-lead / pipeline tab rows for **CpCW Analysis**-style LF (same sheet as B2/B3)."""
+    if post_df.empty:
+        return post_df
+    w = _ensure_closed_won_from_text_flags(post_df.copy())
+    w = _normalize(w)
+    return _normalize_master_merge_frame(w)
+
+
+def _post_qual_cw_analysis_mask(frame: pd.DataFrame) -> pd.Series:
+    """Closed Won + Approved with **Close Date** on or after 2025-09-01 (ME CpCW Analysis)."""
+    if frame.empty or "closed_won" not in frame.columns:
+        return pd.Series(False, index=frame.index)
+    cw = pd.to_numeric(frame["closed_won"], errors="coerce").fillna(0) > 0
+    _floor = pd.Timestamp("2025-09-01")
+    if "cw_close_date" in frame.columns and bool(frame["cw_close_date"].notna().any()):
+        cd = pd.to_datetime(frame["cw_close_date"], errors="coerce")
+        ok = cd.notna() & (cd >= _floor)
+        return cw & ok
+    return cw
+
+
+def _post_qual_first_month_lf_cw_analysis_sum(
+    post_norm: pd.DataFrame,
+    *,
+    month_keys: Optional[list[str]],
+) -> float:
+    """Σ ``first_month_lf`` on CpCW Analysis rows; if ``month_keys`` set, keep deals whose **close month** is listed."""
+    if post_norm.empty or "first_month_lf" not in post_norm.columns:
+        return 0.0
+    base = _post_qual_cw_analysis_mask(post_norm)
+    if month_keys:
+        want = {str(_month_norm_key(m)).strip() for m in month_keys if str(_month_norm_key(m)).strip()}
+        if "cw_close_date" in post_norm.columns and bool(post_norm["cw_close_date"].notna().any()):
+            cd = pd.to_datetime(post_norm["cw_close_date"], errors="coerce")
+            close_m = cd.dt.to_period("M").astype(str)
+            sel = base & cd.notna() & close_m.isin(want)
+        else:
+            mk = post_norm.get("month", pd.Series("", index=post_norm.index, dtype=object))
+            mk = mk.map(_month_norm_key).astype(str).str.strip()
+            sel = base & mk.isin(want)
+    else:
+        sel = base
+    sub = post_norm.loc[sel].copy()
+    if sub.empty:
+        return 0.0
+    d = _dedupe_post_lead_rows(sub)
+    return float(pd.to_numeric(d["first_month_lf"], errors="coerce").fillna(0).sum())
+
+
 def _mpo_leads_for_norm_month(leads_df: pd.DataFrame, month_key: Optional[str]) -> pd.DataFrame:
     if leads_df.empty or not month_key:
         return leads_df.iloc[0:0]
@@ -6284,16 +6344,21 @@ def _kpi_two_month_compare_dict(
     cw_sub_p = _mpo_rows_for_norm_month(cw_kpi, ref_k)
     tcv_c = float(pd.to_numeric(cw_sub_c["tcv"], errors="coerce").fillna(0).sum()) if "tcv" in cw_sub_c.columns else 0.0
     tcv_p = float(pd.to_numeric(cw_sub_p["tcv"], errors="coerce").fillna(0).sum()) if "tcv" in cw_sub_p.columns else 0.0
-    lf_c = (
-        float(pd.to_numeric(cw_sub_c["first_month_lf"], errors="coerce").fillna(0).sum())
-        if "first_month_lf" in cw_sub_c.columns
-        else 0.0
-    )
-    lf_p = (
-        float(pd.to_numeric(cw_sub_p["first_month_lf"], errors="coerce").fillna(0).sum())
-        if "first_month_lf" in cw_sub_p.columns
-        else 0.0
-    )
+    post_norm_cmp = _normalized_post_qual_for_cw_analysis(post_df_kpi)
+    lf_c = _post_qual_first_month_lf_cw_analysis_sum(post_norm_cmp, month_keys=[cur_k] if cur_k else None)
+    lf_p = _post_qual_first_month_lf_cw_analysis_sum(post_norm_cmp, month_keys=[ref_k] if ref_k else None)
+    if lf_c <= 0:
+        lf_c = (
+            float(pd.to_numeric(cw_sub_c["first_month_lf"], errors="coerce").fillna(0).sum())
+            if "first_month_lf" in cw_sub_c.columns
+            else 0.0
+        )
+    if lf_p <= 0:
+        lf_p = (
+            float(pd.to_numeric(cw_sub_p["first_month_lf"], errors="coerce").fillna(0).sum())
+            if "first_month_lf" in cw_sub_p.columns
+            else 0.0
+        )
     out["mom_tcv_c"], out["mom_tcv_p"] = tcv_c, tcv_p
     out["mom_lf_c"], out["mom_lf_p"] = lf_c, lf_p
 
@@ -6349,6 +6414,10 @@ def _mpo_scorecard_headline_totals_for_month(
         if not cw_sub.empty and "first_month_lf" in cw_sub.columns
         else 0.0
     )
+    post_norm_cw = _normalized_post_qual_for_cw_analysis(post_df_kpi)
+    lf_cw = _post_qual_first_month_lf_cw_analysis_sum(post_norm_cw, month_keys=[cur_k] if cur_k else None)
+    if lf_cw > 0:
+        total_first_month_lf = float(lf_cw)
     cw_q, qual_q = _q_win_rate_inputs(post_c, leads_df)
     return {
         "total_spend": float(sc),
@@ -6424,6 +6493,10 @@ def _mpo_scorecard_headline_totals_for_months(
         if not cw_sub.empty and "first_month_lf" in cw_sub.columns
         else 0.0
     )
+    post_norm_cw = _normalized_post_qual_for_cw_analysis(post_df_kpi)
+    lf_cw = _post_qual_first_month_lf_cw_analysis_sum(post_norm_cw, month_keys=month_keys)
+    if lf_cw > 0:
+        total_first_month_lf = float(lf_cw)
     cw_q, qual_q = _q_win_rate_inputs(post_all, leads_df)
     return {
         "total_spend": float(ts),
@@ -7812,8 +7885,9 @@ def _mpo_metric_definition(metric_name: str) -> str:
             "Sum of actual total contract value (TCV) from the RAW CW tab for this month and market."
         ),
         "CPCW:LF": (
-            "CpCW:LF (Looker-style): CpCW divided by average first-month LF per closed won in the slice — "
-            "Spend ÷ Σ 1st Month LF (equivalent to (Spend÷CW) ÷ (Σ LF÷CW))."
+            "CpCW:LF (ME CpCW Analysis / Looker): **dashboard Spend ÷ Σ 1st Month License Fee** on closed-won rows "
+            "(Closed Won + Approved, Close Date from Sep 2025) from the post-lead tab when available; master cells use "
+            "the same Spend ÷ Σ LF math for that month × market merge."
         ),
         "Cost/TCV%": (
             "Spend as a percentage of actual TCV in the same month and market (spend ÷ TCV × 100)."
@@ -10001,7 +10075,7 @@ def render_page_marketing_performance(
         total_tcv = float(_tcv_sum_override)
     elif isinstance(cw_kpi, pd.DataFrame) and "tcv" in cw_kpi.columns:
         total_tcv = float(pd.to_numeric(cw_kpi["tcv"], errors="coerce").fillna(0).sum())
-    if _lf_sum_override is not None and float(_lf_sum_override) > 0:
+    if _lf_sum_override is not None and float(_lf_sum_override) > 0 and float(total_first_month_lf) <= 0:
         total_first_month_lf = float(_lf_sum_override)
     _sm_traffic = _mpo_traffic_totals_from_sm_pool(
         df_loaded,
