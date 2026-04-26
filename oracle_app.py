@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-24-cpcwlf-lf-dedupe-per-opp"
+DASHBOARD_BUILD = "2026-04-24-cpcwlf-lf-from-cw-kpi"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -1444,6 +1444,39 @@ def _mpo_post_lead_first_month_lf_sum_on_cw_rows(post_df: pd.DataFrame, df_scope
         return 0.0
     mask = pd.to_numeric(w["closed_won"], errors="coerce").fillna(0) > 0
     lf = pd.to_numeric(w.loc[mask, "first_month_lf"], errors="coerce").fillna(0)
+    return float(lf.sum())
+
+
+def _mpo_headline_lf_sum_from_cw_kpi_for_ratio(cw_kpi: pd.DataFrame, headline_month_keys: list[str]) -> float:
+    """Σ ``first_month_lf`` from the CW / deal tab (``cw_kpi``) for the **CpCW:LF** denominator.
+
+    ``cw_kpi`` is already closed-won–scoped and market-filtered (``_cw_dataframe_for_kpis``). This restricts to
+    ``headline_month_keys`` and sums **one LF per opportunity** (``max`` per key) so the headline matches
+    Excel ``=Spend / Σ first month LF`` (e.g. ``121842 / 131958``).
+    """
+    if cw_kpi.empty or not headline_month_keys or "first_month_lf" not in cw_kpi.columns:
+        return 0.0
+    want = {str(_month_norm_key(m)).strip() for m in headline_month_keys if str(_month_norm_key(m)).strip()}
+    if not want:
+        return 0.0
+    w = cw_kpi.copy()
+    if "month" not in w.columns:
+        return 0.0
+    mk = w["month"].map(_month_norm_key).astype(str).str.strip()
+    w = w.loc[mk.isin(want)].copy()
+    if w.empty:
+        return 0.0
+    if "closed_won" in w.columns:
+        cwm = pd.to_numeric(w["closed_won"], errors="coerce").fillna(0) > 0
+        w = w.loc[cwm].copy()
+    if w.empty:
+        return 0.0
+    lf = pd.to_numeric(w["first_month_lf"], errors="coerce").fillna(0)
+    keys = _opp_key_columns_for_post_lead(w)
+    if keys:
+        tmp = w.loc[:, list(keys)].copy()
+        tmp["_lf"] = lf
+        return float(tmp.groupby(keys, dropna=False)["_lf"].max().sum())
     return float(lf.sum())
 
 
@@ -10282,16 +10315,19 @@ def render_page_marketing_performance(
         cw_for_qwin = _hm.get("cw_for_qwin")
         qual_for_qwin = _hm.get("qual_for_qwin")
 
-    # Σ LF for CpCW:LF: same **Market** as ``df``, same **months** as headline spend (``_headline_keys``), and
-    # **max LF per opportunity** so duplicate post-qual rows do not multiply LF (~$430K vs ~$132K for 67 deals).
+    # Σ LF for CpCW:LF = Excel ``Spend / Σ first month LF``. Prefer **cw_kpi** (RAW CW / deal tab): canonical LF
+    # column + closed-won scope; post-qual often lacks or duplicates LF so post-only paths stayed ~$430K vs ~$132K.
+    _lf_cw_kpi = _mpo_headline_lf_sum_from_cw_kpi_for_ratio(cw_kpi, _headline_keys)
     _post_geo_lf = _mpo_slice_by_dashboard_ref(post_df_cpcw_analysis, df)
     _post_norm_lf = _normalized_post_qual_for_cw_analysis(_post_geo_lf)
-    _lf_headline = _post_qual_first_month_lf_sum_max_lf_per_opp(
+    _lf_post = _post_qual_first_month_lf_sum_max_lf_per_opp(
         _post_norm_lf,
         month_keys=_headline_keys if _headline_keys else None,
     )
-    if _lf_headline > 0:
-        total_first_month_lf = float(_lf_headline)
+    if _lf_cw_kpi > 0:
+        total_first_month_lf = float(_lf_cw_kpi)
+    elif _lf_post > 0:
+        total_first_month_lf = float(_lf_post)
     else:
         _lf_same_rows = _mpo_post_lead_first_month_lf_sum_on_cw_rows(post_df_cpcw_analysis, df)
         if _lf_same_rows > 0:
