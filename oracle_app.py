@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-24-cpcwlf-definition-tooltip"
+DASHBOARD_BUILD = "2026-04-24-cpcwlf-card-formula-subtitle"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -6797,6 +6797,7 @@ def _kpi_funnel_pastel_card_html(
     extra_class: str = "",
     biz_signal: str = "na",
     tooltip: Optional[str] = None,
+    title_sub: Optional[str] = None,
 ) -> str:
     """Single pastel funnel scorecard tile — same markup as ``_kpi_block`` ``_card`` (Marketing performance)."""
     h = html.escape(hue, quote=True)
@@ -6807,11 +6808,15 @@ def _kpi_funnel_pastel_card_html(
     tip = ""
     if tooltip and str(tooltip).strip():
         tip = f' title="{html.escape(str(tooltip).strip(), quote=True)}"'
+    sub_title = ""
+    if title_sub and str(title_sub).strip():
+        sub_title = f'<div class="kpi-funnel-title-sub">{html.escape(str(title_sub).strip())}</div>'
     return (
         f'<div class="kpi-funnel-card kpi-funnel-card--pastel kpi-funnel-card--pastel-{h}{xcls}{biz_cls}"{tip} '
         f'style="animation-delay:{delay:.2f}s">'
         f'<span class="kpi-funnel-icon" aria-hidden="true">{icon}</span>'
         f'<div class="kpi-funnel-title">{html.escape(title)}</div>'
+        f"{sub_title}"
         f'<div class="kpi-funnel-value">{html.escape(value_s)}</div>'
         f"{delta_html}"
         f'<div class="kpi-funnel-sub">{sub_html}</div></div>'
@@ -7066,6 +7071,7 @@ def _kpi_block(
         extra_class: str = "",
         biz_signal: str = "na",
         tooltip: Optional[str] = None,
+        title_sub: Optional[str] = None,
     ) -> str:
         return _kpi_funnel_pastel_card_html(
             icon=icon,
@@ -7078,6 +7084,7 @@ def _kpi_block(
             extra_class=extra_class,
             biz_signal=biz_signal,
             tooltip=tooltip,
+            title_sub=title_sub,
         )
 
     def _section(title: str, accent: str, cards: list[str]) -> str:
@@ -7140,8 +7147,10 @@ def _kpi_block(
     cw_sub = _kpi_funnel_sub_row("CPCW", cpcw_s) + _kpi_funnel_sub_row("Paid media (Σ)", _format_spend_k(total_spend) if total_spend else "$0")
     cpcw_sub = _kpi_funnel_sub_row("CW + Approved (count)", f"{total_cw:,}") + _kpi_funnel_sub_row("Paid media (Σ)", _format_spend_k(total_spend) if total_spend else "$0")
     tcv_sub = _kpi_funnel_sub_row("CpCW:LF", cpcwlf_s) + _kpi_funnel_sub_row("Cost / TCV %", f"{spend_tcv_pct:.2f}%" if total_tcv else "—")
-    # CpCW:LF = B1÷B3 only — sub-rows show those inputs (TCV is unrelated and confused readers).
-    cpcwlf_sub = _kpi_funnel_sub_row("Σ 1st Month LF (B3)", lf_sum_s) + _kpi_funnel_sub_row("Spend (B1)", _format_spend_k(total_spend) if total_spend else "$0")
+    # CpCW:LF = B1÷B3 — sub-rows in division order (Spend then Σ LF); TCV is not part of this ratio.
+    cpcwlf_sub = _kpi_funnel_sub_row("Spend (B1)", _format_spend_k(total_spend) if total_spend else "$0") + _kpi_funnel_sub_row(
+        "Σ 1st Month LF (B3)", lf_sum_s
+    )
     pct_tcv_sub = _kpi_funnel_sub_row("Actual TCV", tcv_s) + _kpi_funnel_sub_row("Spend", _format_spend_k(total_spend) if total_spend else "$0")
 
     card_cw = _card(
@@ -7195,6 +7204,7 @@ def _kpi_block(
             pv.get("mom_cpcwlf_c"), pv.get("mom_cpcwlf_p"), domain="efficiency", lower_is_better=True, disabled=_no_delta
         ),
         tooltip=_CPCW_LF_CARD_TOOLTIP,
+        title_sub="Spend ÷ Σ 1st month LF (B1÷B3). Same as CpCW ÷ avg LF.",
     )
     card_ctcv = _card(
         "%",
@@ -13312,6 +13322,20 @@ def main() -> None:
     .kpi-funnel-wrap--pastel-scorecard .kpi-funnel-card--pastel-leads .kpi-funnel-title,
     .kpi-funnel-wrap--pastel-scorecard .kpi-funnel-card--pastel-pipe .kpi-funnel-title {
         color: #718096 !important;
+    }
+    .kpi-funnel-title-sub {
+        font-size: 9.5px;
+        font-weight: 500;
+        color: #64748b;
+        line-height: 1.35;
+        margin: 0 0 5px 0;
+        text-transform: none;
+        letter-spacing: 0.01em;
+    }
+    .kpi-funnel-wrap--pastel-scorecard .kpi-funnel-title-sub {
+        font-size: 10px;
+        color: #475569;
+        margin-top: -1px;
     }
     .kpi-funnel-wrap--pastel-scorecard .kpi-funnel-value {
         font-size: clamp(1.12rem, 2.15vw, 1.52rem);
