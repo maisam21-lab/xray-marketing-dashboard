@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-24-cpcwlf-lf-same-cw-card-deals"
+DASHBOARD_BUILD = "2026-04-24-cpcwlf-preserve-lf-on-renorm"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -2546,6 +2546,8 @@ _NORM_TO_FIELD: dict[str, str] = {
     "actual_tcv_usd": "tcv",
     "1st_month_lf": "first_month_lf",
     "monthly_lf_usd": "first_month_lf",
+    # Canonical column from a prior ``_normalize`` pass — must map through so CpCW / B3 re-ingest does not zero LF.
+    "first_month_lf": "first_month_lf",
     # Salesforce exports often label first-month LF as "Monthly License Fee" (sometimes with (converted)/(USD)).
     "monthly_license_fee": "first_month_lf",
     "monthly_license_fee_converted": "first_month_lf",
@@ -2602,6 +2604,24 @@ _NUM_FIELDS = frozenset(
         "closed_lost",
     }
 )
+
+
+def _lf_column_sort_key(column_name: str) -> tuple[int, str]:
+    """Order LF source columns: converted/USD before local ``Monthly License Fee`` (max of both was wrong)."""
+    nk = _norm_header_key(str(column_name))
+    if nk == "monthly_license_fee_converted":
+        pri = 0
+    elif nk in ("monthly_license_fee_usd", "monthly_lf_usd"):
+        pri = 1
+    elif nk in ("1st_month_lf", "first_month_lf"):
+        pri = 2
+    elif nk == "monthly_license_fee":
+        pri = 3
+    elif nk == "license_fee":
+        pri = 4
+    else:
+        pri = 5
+    return (pri, str(column_name).lower())
 
 
 def _to_number_series(s: pd.Series) -> pd.Series:
@@ -3236,6 +3256,12 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
             ),
         )
 
+    if "first_month_lf" in field_to_sources:
+        field_to_sources["first_month_lf"] = sorted(
+            field_to_sources["first_month_lf"],
+            key=_lf_column_sort_key,
+        )
+
     out = pd.DataFrame(index=df.index)
 
     def _col_as_series(frame: pd.DataFrame, col_name: str) -> pd.Series:
@@ -3246,8 +3272,8 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
                 return pd.Series(index=frame.index, dtype=object)
             return got.iloc[:, 0]
         return got
-    # These often appear as two headers for the same measure (e.g. Actual TCV + TCV USD); summing doubles row TCV/LF.
-    _DEDUPE_NUMERIC_MAX_FIELDS = frozenset({"tcv", "first_month_lf"})
+    # Row-wise max dedupes duplicate TCV columns; do **not** use it for LF — local vs converted must pick converted, not max.
+    _DEDUPE_NUMERIC_MAX_FIELDS = frozenset({"tcv"})
     for field, srcs in field_to_sources.items():
         if field == "closed_won":
             is_cw_cols = [c for c in srcs if _norm_header_key(str(c)) == "is_cw"]
@@ -3260,6 +3286,9 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
                         acc = acc.combine(_closed_won_to_numeric_series(_col_as_series(df, c)), max)
                     out[field] = acc
                 continue
+        if field == "first_month_lf" and len(srcs) > 1:
+            out[field] = _to_number_series(_col_as_series(df, srcs[0]))
+            continue
         if len(srcs) == 1:
             out[field] = _col_as_series(df, srcs[0])
         elif field in _NUM_FIELDS:
@@ -3335,6 +3364,7 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
         for c in df.columns:
             nk = _norm_header_key(str(c))
             if nk in {
+                "first_month_lf",
                 "monthly_lf_usd",
                 "monthly_license_fee",
                 "monthly_license_fee_converted",
@@ -3345,12 +3375,8 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
             elif ("license" in nk and "fee" in nk) and all(x not in nk for x in ("tcv", "cost", "spend", "tax")):
                 lf_like_cols.append(c)
         if lf_like_cols:
-            inferred_lf = _to_number_series(df[lf_like_cols[0]])
-            for c in lf_like_cols[1:]:
-                cand = _to_number_series(df[c])
-                if float(cand.abs().sum()) > float(inferred_lf.abs().sum()):
-                    inferred_lf = cand
-            out["first_month_lf"] = inferred_lf
+            lf_like_cols = sorted(lf_like_cols, key=_lf_column_sort_key)
+            out["first_month_lf"] = _to_number_series(df[lf_like_cols[0]])
 
     if "date" in out.columns:
         s_dt = out["date"].copy()
