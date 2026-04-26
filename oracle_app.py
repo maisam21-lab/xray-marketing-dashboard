@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-24-cpcwlf-lf-sum-per-unique-opp"
+DASHBOARD_BUILD = "2026-04-24-cpcw-copy-paid-media-vs-cw-approved"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -7090,8 +7090,8 @@ def _kpi_block(
     cpcw_s = _format_compact_k(cpcw) if total_cw and cpcw == cpcw else "—"
     tcv_s = _format_tcv_short(float(total_tcv)) if total_tcv else "—"
     cpcwlf_s = _format_ratio_cpcw_lf(float(cpcw_lf)) if total_first_month_lf else "—"
-    cw_sub = _kpi_funnel_sub_row("CPCW", cpcw_s) + _kpi_funnel_sub_row("Spend (same window)", _format_spend_k(total_spend) if total_spend else "$0")
-    cpcw_sub = _kpi_funnel_sub_row("Closed won (same window)", f"{total_cw:,}") + _kpi_funnel_sub_row("Spend", _format_spend_k(total_spend) if total_spend else "$0")
+    cw_sub = _kpi_funnel_sub_row("CPCW", cpcw_s) + _kpi_funnel_sub_row("Paid media (Σ)", _format_spend_k(total_spend) if total_spend else "$0")
+    cpcw_sub = _kpi_funnel_sub_row("CW + Approved (count)", f"{total_cw:,}") + _kpi_funnel_sub_row("Paid media (Σ)", _format_spend_k(total_spend) if total_spend else "$0")
     tcv_sub = _kpi_funnel_sub_row("CpCW:LF", cpcwlf_s) + _kpi_funnel_sub_row("Cost / TCV %", f"{spend_tcv_pct:.2f}%" if total_tcv else "—")
     cpcwlf_sub = _kpi_funnel_sub_row("Actual TCV", tcv_s) + _kpi_funnel_sub_row("Spend", _format_spend_k(total_spend) if total_spend else "$0")
     pct_tcv_sub = _kpi_funnel_sub_row("Actual TCV", tcv_s) + _kpi_funnel_sub_row("Spend", _format_spend_k(total_spend) if total_spend else "$0")
