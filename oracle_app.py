@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-26-sep2025-all-sheets-except-leads-postlead"
+DASHBOARD_BUILD = "2026-04-26-cpcwlf-doc-b1-b3-b6"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -7031,7 +7031,7 @@ def _kpi_block(
     q_rate = (_cw_q / _q_d * 100) if _q_d else 0.0
     sql_rate = (total_qualified / total_leads * 100) if total_leads else 0.0
     cpcw = (total_spend / total_cw) if total_cw else 0.0
-    # CpCW:LF = Spend ÷ Σ LF (sheet B6); show whenever LF exists — CW can be 0 briefly if counts lag LF slice.
+    # CpCW:LF = ME **B6** = **B1 ÷ B3** (Total Spend ÷ Σ 1st Month LF) — same as **B5 ÷ B4** when B5=B1/B2 and B4=(Σ LF)/CW.
     cpcw_lf = (total_spend / total_first_month_lf) if total_first_month_lf else 0.0
     spend_tcv_pct = (total_spend / total_tcv * 100) if total_tcv else 0.0
 
@@ -8005,9 +8005,9 @@ def _mpo_metric_definition(metric_name: str) -> str:
             "Sum of actual total contract value (TCV) from the RAW CW tab for this month and market."
         ),
         "CPCW:LF": (
-            "CpCW:LF (ME CpCW Analysis / Looker): **dashboard Spend ÷ Σ 1st Month License Fee** on closed-won rows "
-            "(Closed Won + Approved) from the post-lead tab when available; master cells use "
-            "the same Spend ÷ Σ LF math for that month × market merge."
+            "ME CpCW Analysis **B6** = **B1 ÷ B3** (Total Marketing Spend ÷ Σ 1st Month License Fee on the B2/B3 row set). "
+            "Equivalent to **B5 ÷ B4** when B5 = B1÷B2 (CpCW) and B4 = (Σ LF)÷CW (avg fee per deal). "
+            "Master view uses the same Spend ÷ Σ LF ratio for that month × market slice."
         ),
         "Cost/TCV%": (
             "Spend as a percentage of actual TCV in the same month and market (spend ÷ TCV × 100)."
@@ -8113,9 +8113,9 @@ def _mpo_calculation_trail(metric_name: str, row: pd.Series) -> list[dict[str, s
             {"Step": "5", "Component": "Σ 1st Month LF (same slice)", "Value": _fmt_small_money(lf), "Combines as": "—"},
             {
                 "Step": "6",
-                "Component": "CpCW:LF = CpCW ÷ Avg LF = Spend ÷ Σ LF",
+                "Component": "CpCW:LF = B1÷B3 = Spend÷Σ LF (= B5÷B4)",
                 "Value": _format_ratio_cpcw_lf(float(ratio)) if cw and lf and ratio == ratio else "—",
-                "Combines as": "Final ratio (Looker)",
+                "Combines as": "Final ratio (ME B6 / Looker)",
             },
         ]
     elif metric_name == "Cost/TCV%":
