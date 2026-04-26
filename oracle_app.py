@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-24-cpcwlf-postqual-lf-dash-spend"
+DASHBOARD_BUILD = "2026-04-24-cpcw-analysis-cw-lf-same-slice"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -5786,14 +5786,14 @@ def _post_qual_cw_analysis_mask(frame: pd.DataFrame) -> pd.Series:
     return cw
 
 
-def _post_qual_first_month_lf_cw_analysis_sum(
+def _post_qual_cw_analysis_slice(
     post_norm: pd.DataFrame,
     *,
     month_keys: Optional[list[str]],
-) -> float:
-    """Σ ``first_month_lf`` on CpCW Analysis rows; if ``month_keys`` set, keep deals whose **close month** is listed."""
-    if post_norm.empty or "first_month_lf" not in post_norm.columns:
-        return 0.0
+) -> pd.DataFrame:
+    """Deduped post-qual rows in **CpCW Analysis** scope (optional **close month** ∈ ``month_keys``)."""
+    if post_norm.empty:
+        return post_norm.iloc[0:0]
     base = _post_qual_cw_analysis_mask(post_norm)
     if month_keys:
         want = {str(_month_norm_key(m)).strip() for m in month_keys if str(_month_norm_key(m)).strip()}
@@ -5809,8 +5809,31 @@ def _post_qual_first_month_lf_cw_analysis_sum(
         sel = base
     sub = post_norm.loc[sel].copy()
     if sub.empty:
+        return sub
+    return _dedupe_post_lead_rows(sub)
+
+
+def _post_qual_closed_won_cw_analysis_count(
+    post_norm: pd.DataFrame,
+    *,
+    month_keys: Optional[list[str]],
+) -> int:
+    """Unique closed-won deals in the same slice as B2 / B3 (matches **CpCW** = Spend ÷ this count)."""
+    d = _post_qual_cw_analysis_slice(post_norm, month_keys=month_keys)
+    if d.empty or "closed_won" not in d.columns:
+        return 0
+    return int(_sum_closed_won_unique_opportunities(d))
+
+
+def _post_qual_first_month_lf_cw_analysis_sum(
+    post_norm: pd.DataFrame,
+    *,
+    month_keys: Optional[list[str]],
+) -> float:
+    """Σ ``first_month_lf`` on the same slice as ``_post_qual_closed_won_cw_analysis_count`` (B3)."""
+    d = _post_qual_cw_analysis_slice(post_norm, month_keys=month_keys)
+    if d.empty or "first_month_lf" not in d.columns:
         return 0.0
-    d = _dedupe_post_lead_rows(sub)
     return float(pd.to_numeric(d["first_month_lf"], errors="coerce").fillna(0).sum())
 
 
@@ -6334,7 +6357,14 @@ def _kpi_two_month_compare_dict(
     post_p = _dedupe_post_lead_rows(_mpo_rows_for_norm_month(post_df_kpi, ref_k))
     pipe_c = _mpo_pipeline_month_totals(post_c)
     pipe_p = _mpo_pipeline_month_totals(post_p)
-    out["mom_cw_c"], out["mom_cw_p"] = float(pipe_c["cw"]), float(pipe_p["cw"])
+    post_norm_cmp = _normalized_post_qual_for_cw_analysis(post_df_kpi)
+    cw_c = _post_qual_closed_won_cw_analysis_count(post_norm_cmp, month_keys=[cur_k] if cur_k else None)
+    cw_p = _post_qual_closed_won_cw_analysis_count(post_norm_cmp, month_keys=[ref_k] if ref_k else None)
+    if cw_c <= 0:
+        cw_c = int(pipe_c["cw"])
+    if cw_p <= 0:
+        cw_p = int(pipe_p["cw"])
+    out["mom_cw_c"], out["mom_cw_p"] = float(cw_c), float(cw_p)
     out["mom_live_c"], out["mom_live_p"] = float(pipe_c["total_live"]), float(pipe_p["total_live"])
     out["mom_nego_c"], out["mom_nego_p"] = float(pipe_c["negotiation"]), float(pipe_p["negotiation"])
     out["mom_commit_c"], out["mom_commit_p"] = float(pipe_c["commitment"]), float(pipe_p["commitment"])
@@ -6344,7 +6374,6 @@ def _kpi_two_month_compare_dict(
     cw_sub_p = _mpo_rows_for_norm_month(cw_kpi, ref_k)
     tcv_c = float(pd.to_numeric(cw_sub_c["tcv"], errors="coerce").fillna(0).sum()) if "tcv" in cw_sub_c.columns else 0.0
     tcv_p = float(pd.to_numeric(cw_sub_p["tcv"], errors="coerce").fillna(0).sum()) if "tcv" in cw_sub_p.columns else 0.0
-    post_norm_cmp = _normalized_post_qual_for_cw_analysis(post_df_kpi)
     lf_c = _post_qual_first_month_lf_cw_analysis_sum(post_norm_cmp, month_keys=[cur_k] if cur_k else None)
     lf_p = _post_qual_first_month_lf_cw_analysis_sum(post_norm_cmp, month_keys=[ref_k] if ref_k else None)
     if lf_c <= 0:
@@ -6362,11 +6391,11 @@ def _kpi_two_month_compare_dict(
     out["mom_tcv_c"], out["mom_tcv_p"] = tcv_c, tcv_p
     out["mom_lf_c"], out["mom_lf_p"] = lf_c, lf_p
 
-    cpcw_c = (sc / pipe_c["cw"]) if pipe_c["cw"] > 0 else None
-    cpcw_p = (sp / pipe_p["cw"]) if pipe_p["cw"] > 0 else None
+    cpcw_c = (sc / float(cw_c)) if cw_c > 0 else None
+    cpcw_p = (sp / float(cw_p)) if cw_p > 0 else None
     out["mom_cpcw_c"], out["mom_cpcw_p"] = cpcw_c, cpcw_p
-    cpcwlf_c = (sc / lf_c) if pipe_c["cw"] > 0 and lf_c > 0 else None
-    cpcwlf_p = (sp / lf_p) if pipe_p["cw"] > 0 and lf_p > 0 else None
+    cpcwlf_c = (sc / lf_c) if lf_c > 0 else None
+    cpcwlf_p = (sp / lf_p) if lf_p > 0 else None
     out["mom_cpcwlf_c"], out["mom_cpcwlf_p"] = cpcwlf_c, cpcwlf_p
     pct_c = (sc / tcv_c * 100.0) if tcv_c > 0 else None
     pct_p = (sp / tcv_p * 100.0) if tcv_p > 0 else None
@@ -6418,6 +6447,9 @@ def _mpo_scorecard_headline_totals_for_month(
     lf_cw = _post_qual_first_month_lf_cw_analysis_sum(post_norm_cw, month_keys=[cur_k] if cur_k else None)
     if lf_cw > 0:
         total_first_month_lf = float(lf_cw)
+    cw_cw = _post_qual_closed_won_cw_analysis_count(post_norm_cw, month_keys=[cur_k] if cur_k else None)
+    if cw_cw > 0:
+        total_cw = int(cw_cw)
     cw_q, qual_q = _q_win_rate_inputs(post_c, leads_df)
     return {
         "total_spend": float(sc),
@@ -6497,6 +6529,10 @@ def _mpo_scorecard_headline_totals_for_months(
     lf_cw = _post_qual_first_month_lf_cw_analysis_sum(post_norm_cw, month_keys=month_keys)
     if lf_cw > 0:
         total_first_month_lf = float(lf_cw)
+    total_cw_out = int(pipe_c["cw"])
+    cw_cw = _post_qual_closed_won_cw_analysis_count(post_norm_cw, month_keys=month_keys)
+    if cw_cw > 0:
+        total_cw_out = int(cw_cw)
     cw_q, qual_q = _q_win_rate_inputs(post_all, leads_df)
     return {
         "total_spend": float(ts),
@@ -6505,7 +6541,7 @@ def _mpo_scorecard_headline_totals_for_months(
         "ctr": float(ctr),
         "total_leads": int(total_leads),
         "total_qualified": int(total_qualified),
-        "total_cw": int(pipe_c["cw"]),
+        "total_cw": total_cw_out,
         "total_tcv": float(total_tcv),
         "total_first_month_lf": float(total_first_month_lf),
         "cpc": float(cpc),
@@ -10067,8 +10103,8 @@ def render_page_marketing_performance(
         cw_for_qwin = _hm.get("cw_for_qwin")
         qual_for_qwin = _hm.get("qual_for_qwin")
 
-    # Enforce CW card source-of-truth value after headline aggregation overwrites.
-    if cw_total_source_truth > 0:
+    # Source-truth CW count only when post-qual CpCW slice did not yield a headline count (same sheet as B2/B3).
+    if cw_total_source_truth > 0 and int(total_cw) <= 0:
         total_cw = int(cw_total_source_truth)
     # Keep Actual TCV card aligned with the same CW KPI slice used for the TCV check banner.
     if _tcv_sum_override is not None:
