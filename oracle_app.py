@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-24-leads-inmemory-before-api"
+DASHBOARD_BUILD = "2026-04-24-pipeline-from-postqual-no-leads-table"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -1414,20 +1414,6 @@ def _mpo_slice_by_dashboard_ref(frame: pd.DataFrame, df_ref: pd.DataFrame) -> pd
             km = out["month"].map(_month_norm_key)
             out = out[km.isin(allow_m) | (km == "")]
     return out
-
-
-def _mpo_leads_worksheet_detail_frame(
-    sheet_id: str,
-    leads_gid: int,
-    df_scope: pd.DataFrame,
-    _secret_fp: str,
-) -> tuple[pd.DataFrame, str]:
-    """Load the Leads worksheet and apply the same Market × Month scope as the filtered dashboard ``df_scope``."""
-    title = _tab_title_for_worksheet_gid(sheet_id, int(leads_gid), _secret_fp)
-    raw = load_worksheet_by_gid_preprocessed(sheet_id, int(leads_gid), _secret_fp)
-    if raw.empty or df_scope.empty:
-        return raw, title
-    return _mpo_slice_by_dashboard_ref(raw, df_scope), title
 
 
 def _mpo_post_qual_closed_won_rows_for_kpis(post_df: pd.DataFrame, df_scope: pd.DataFrame) -> pd.DataFrame:
@@ -9976,9 +9962,7 @@ def render_page_marketing_performance(
         if leads_df.empty:
             leads_df = _tab_subset(df_date, list(_MPO_LEAD_TAB_PATTERNS))
     leads_df = _ensure_closed_won_from_text_flags(leads_df)
-    # Cards, CPL/CPSQL, Q-win, Master overlay — use **Leads worksheet** rows in the same Market × Month scope as
-    # ``df`` (matches the detail expander), not rolled-up truth-tab counts when this tab loads.
-    _leads_detail_preload: Optional[tuple[pd.DataFrame, str]] = None
+    # Cards, CPL/CPSQL, Q-win, Master overlay — use **Leads worksheet** rows in the same Market × Month scope as ``df``.
     # Prefer rows already in the merged workbook (same tab) to avoid an extra Sheets round-trip per run.
     _lw_tab = _rows_by_worksheet_id(df_date, int(leads_gid), sheet_id)
     if _lw_tab.empty:
@@ -9991,10 +9975,6 @@ def render_page_marketing_performance(
     if not _lw_tab.empty:
         _lw_scoped = _mpo_slice_by_dashboard_ref(_lw_tab, df) if not df.empty else _lw_tab.copy()
         leads_df = _ensure_closed_won_from_text_flags(_lw_scoped)
-        _leads_detail_preload = (
-            leads_df.copy(),
-            _tab_title_for_worksheet_gid(sheet_id, int(leads_gid), _fp_mpo),
-        )
 
     pq_gid = _optional_post_qual_gid_from_secrets()
     if use_truth_for_nonspend:
@@ -10021,14 +10001,35 @@ def render_page_marketing_performance(
     # CW (inc. approved) — **locked** to post-qual / post-lead sheet: same Market × Month as tab, stage Closed Won + Approved.
     total_cw = _mpo_cw_kpi_post_lead_record_count(post_df_cpcw_analysis, df)
 
-    # Pipeline / “Qualified leads” cards: same **Market × Month** scope as the spend table (not full truth tab rollups).
+    # Pipeline / “Qualified leads” cards: same **Market × Month** scope as the spend table.
     post_df_kpi_scoped = (
         _mpo_slice_by_dashboard_ref(post_df_kpi, df)
         if (not post_df_kpi.empty and not df.empty)
         else post_df_kpi.copy()
     )
+    post_df_cpcw_scoped = (
+        _mpo_slice_by_dashboard_ref(post_df_cpcw_analysis, df)
+        if (not post_df_cpcw_analysis.empty and not df.empty)
+        else post_df_cpcw_analysis.copy()
+    )
+
+    def _crm_stage_activity_sum(_fr: pd.DataFrame) -> float:
+        if _fr.empty:
+            return 0.0
+        _acc = 0.0
+        for _col in ("qualifying", "pitching", "negotiation", "commitment"):
+            if _col in _fr.columns:
+                _acc += float(pd.to_numeric(_fr[_col], errors="coerce").fillna(0).sum())
+        return _acc
+
+    # Source-of-truth tabs usually lack per-row stage columns (all zeros); post-qual carries Qualifying…Commitment.
+    post_df_pipe_scoped = (
+        post_df_cpcw_scoped
+        if _crm_stage_activity_sum(post_df_cpcw_scoped) > _crm_stage_activity_sum(post_df_kpi_scoped)
+        else post_df_kpi_scoped
+    )
     # Closed-won KPI should stay deduped to avoid cross-tab opportunity duplication.
-    post_df = _dedupe_post_lead_rows(post_df_kpi_scoped)
+    post_df = _dedupe_post_lead_rows(post_df_pipe_scoped)
 
     cw_truth_gid = _optional_cw_source_truth_gid_from_secrets()
     raw_cw_gid = _optional_raw_cw_gid_from_secrets()
@@ -10094,15 +10095,15 @@ def render_page_marketing_performance(
                 leads_df = exact2
                 total_leads = _lead_rows_count(leads_df)
                 total_qualified = _qualified_count_from_leads(leads_df)
-    total_pitching = int(post_df_kpi_scoped["pitching"].sum()) if "pitching" in post_df_kpi_scoped.columns else 0
+    total_pitching = int(post_df_pipe_scoped["pitching"].sum()) if "pitching" in post_df_pipe_scoped.columns else 0
     total_new = int(post_df["new"].sum()) if "new" in post_df.columns else 0
     total_working = int(post_df["working"].sum()) if "working" in post_df.columns else 0
-    total_negotiation = int(post_df_kpi_scoped["negotiation"].sum()) if "negotiation" in post_df_kpi_scoped.columns else 0
-    total_commitment = int(post_df_kpi_scoped["commitment"].sum()) if "commitment" in post_df_kpi_scoped.columns else 0
-    total_qualifying = int(post_df_kpi_scoped["qualifying"].sum()) if "qualifying" in post_df_kpi_scoped.columns else 0
+    total_negotiation = int(post_df_pipe_scoped["negotiation"].sum()) if "negotiation" in post_df_pipe_scoped.columns else 0
+    total_commitment = int(post_df_pipe_scoped["commitment"].sum()) if "commitment" in post_df_pipe_scoped.columns else 0
+    total_qualifying = int(post_df_pipe_scoped["qualifying"].sum()) if "qualifying" in post_df_pipe_scoped.columns else 0
     # Total Live (CRM): Qualifying + Pitching + Negotiation + Commitment — not the broader sheet `total_live` flag.
     total_total_live = total_qualifying + total_pitching + total_negotiation + total_commitment
-    total_closed_lost = int(post_df_kpi_scoped["closed_lost"].sum()) if "closed_lost" in post_df_kpi_scoped.columns else 0
+    total_closed_lost = int(post_df_pipe_scoped["closed_lost"].sum()) if "closed_lost" in post_df_pipe_scoped.columns else 0
     total_tcv = float(cw_kpi["tcv"].sum()) if "tcv" in cw_kpi.columns else 0.0
     if _tcv_sum_override is not None:
         total_tcv = float(_tcv_sum_override)
@@ -10319,7 +10320,7 @@ def render_page_marketing_performance(
             post_df_kpi=(
                 post_df_cpcw_headline
                 if not post_df_cpcw_headline.empty
-                else (post_df_kpi_scoped if not post_df_kpi_scoped.empty else post_df_cpcw_analysis)
+                else (post_df_pipe_scoped if not post_df_pipe_scoped.empty else post_df_cpcw_analysis)
             ),
             cw_kpi=cw_kpi,
         )
@@ -10375,13 +10376,13 @@ def render_page_marketing_performance(
         total_leads = int(_lead_rows_count(leads_df))
         total_qualified = int(_qualified_count_from_leads(leads_df))
         total_new_working = int(_new_working_count_from_leads(leads_df))
-    if not post_df_kpi_scoped.empty:
-        total_pitching = int(pd.to_numeric(post_df_kpi_scoped["pitching"], errors="coerce").fillna(0).sum()) if "pitching" in post_df_kpi_scoped.columns else 0
-        total_negotiation = int(pd.to_numeric(post_df_kpi_scoped["negotiation"], errors="coerce").fillna(0).sum()) if "negotiation" in post_df_kpi_scoped.columns else 0
-        total_commitment = int(pd.to_numeric(post_df_kpi_scoped["commitment"], errors="coerce").fillna(0).sum()) if "commitment" in post_df_kpi_scoped.columns else 0
-        total_qualifying = int(pd.to_numeric(post_df_kpi_scoped["qualifying"], errors="coerce").fillna(0).sum()) if "qualifying" in post_df_kpi_scoped.columns else 0
+    if not post_df_pipe_scoped.empty:
+        total_pitching = int(pd.to_numeric(post_df_pipe_scoped["pitching"], errors="coerce").fillna(0).sum()) if "pitching" in post_df_pipe_scoped.columns else 0
+        total_negotiation = int(pd.to_numeric(post_df_pipe_scoped["negotiation"], errors="coerce").fillna(0).sum()) if "negotiation" in post_df_pipe_scoped.columns else 0
+        total_commitment = int(pd.to_numeric(post_df_pipe_scoped["commitment"], errors="coerce").fillna(0).sum()) if "commitment" in post_df_pipe_scoped.columns else 0
+        total_qualifying = int(pd.to_numeric(post_df_pipe_scoped["qualifying"], errors="coerce").fillna(0).sum()) if "qualifying" in post_df_pipe_scoped.columns else 0
         total_total_live = total_qualifying + total_pitching + total_negotiation + total_commitment
-        total_closed_lost = int(pd.to_numeric(post_df_kpi_scoped["closed_lost"], errors="coerce").fillna(0).sum()) if "closed_lost" in post_df_kpi_scoped.columns else 0
+        total_closed_lost = int(pd.to_numeric(post_df_pipe_scoped["closed_lost"], errors="coerce").fillna(0).sum()) if "closed_lost" in post_df_pipe_scoped.columns else 0
     cpl = (total_spend / float(total_leads)) if total_leads else 0.0
     cpsql = (total_spend / float(total_qualified)) if total_qualified else 0.0
     cw_for_qwin, qual_for_qwin = _q_win_rate_inputs(_pqw, leads_df)
@@ -10425,41 +10426,6 @@ def render_page_marketing_performance(
         prior=_kpi_prior,
     )
 
-    if _leads_detail_preload is not None and not _leads_detail_preload[0].empty:
-        _leads_detail_df, _leads_detail_title = _leads_detail_preload
-    else:
-        _leads_detail_df, _leads_detail_title = _mpo_leads_worksheet_detail_frame(
-            sheet_id,
-            int(leads_gid),
-            df,
-            _fp_mpo,
-        )
-    _leads_sheet_url = (
-        f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit?gid={int(leads_gid)}#gid={int(leads_gid)}"
-    )
-    with st.expander("Leads detail — all rows & qualified-only", expanded=False):
-        st.markdown(
-            f"Worksheet **{_leads_detail_title}** (gid `{int(leads_gid)}`). "
-            f"[Open in Google Sheets]({_leads_sheet_url}). "
-            "The table uses the same **Market** and **Month** filters as above; rows with an empty month stay visible when the slice allows it."
-        )
-        if _leads_detail_df.empty:
-            st.info("No rows after filters, or the Leads tab could not be loaded. Check **XRAY_LEADS_GID** and service-account access.")
-        else:
-            _ld_view = st.radio(
-                "Rows to show",
-                ("All leads", "Qualified only"),
-                horizontal=True,
-                key=f"{key_suffix}_mpo_leads_detail_rows",
-            )
-            _ld_show = _leads_detail_df
-            if _ld_view == "Qualified only":
-                _ld_show = _leads_detail_df.loc[_leads_is_qualified_mask(_leads_detail_df)].copy()
-            _n_all = int(len(_leads_detail_df))
-            _n_qual = int(_leads_is_qualified_mask(_leads_detail_df).sum())
-            st.caption(f"Showing **{len(_ld_show)}** row(s) · **{_n_all}** leads in scope after filters · **{_n_qual}** qualified (status / Is_Qualifying-style flags).")
-            st.dataframe(_ld_show, use_container_width=True, hide_index=True)
-
     gm_mpo = _master_build_gm_with_metrics(master_df, _spend_for_master_ui, pivot_dimension="market")
     gm_mpo = _overlay_gm_leads_qualified_from_raw_leads(gm_mpo, leads_df)
     _render_master_view_pivot_from_gm(
@@ -10469,7 +10435,7 @@ def render_page_marketing_performance(
         detail_sources={
             "spend": spend_sheet_for_kpis,
             "leads": leads_df,
-            "post": post_df_kpi_scoped,
+            "post": post_df_pipe_scoped,
             "cw": cw_kpi,
         },
         pivot_dimension="market",
@@ -10486,7 +10452,7 @@ def render_page_marketing_performance(
         df_loaded=df_loaded,
         sheet_id=sheet_id,
         leads_df=leads_df,
-        post_df_kpi=post_df_kpi_scoped,
+        post_df_kpi=post_df_pipe_scoped,
         df_ref_for_scope=df,
     )
 
