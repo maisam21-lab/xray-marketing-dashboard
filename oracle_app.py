@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-24-cpcw-copy-paid-media-vs-cw-approved"
+DASHBOARD_BUILD = "2026-04-24-cpcw-b2-sumcw-rowcount-b3-align"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -5807,7 +5807,7 @@ def _post_qual_cw_analysis_mask(frame: pd.DataFrame) -> pd.Series:
     cw = pd.to_numeric(frame["closed_won"], errors="coerce").fillna(0) > 0
     _floor = pd.Timestamp("2025-09-01")
     if "cw_close_date" in frame.columns and bool(frame["cw_close_date"].notna().any()):
-        cd = pd.to_datetime(frame["cw_close_date"], errors="coerce")
+        cd = pd.to_datetime(frame["cw_close_date"], errors="coerce", dayfirst=True)
         ok = cd.notna() & (cd >= _floor)
         return cw & ok
     return cw
@@ -5827,7 +5827,7 @@ def _post_qual_cw_analysis_slice(
         sel = pd.Series(False, index=post_norm.index)
         # Prefer **close month** (ME CpCW Analysis). Keys must match ``_month_norm_key`` (Period.astype(str) does not).
         if "cw_close_date" in post_norm.columns:
-            cd = pd.to_datetime(post_norm["cw_close_date"], errors="coerce")
+            cd = pd.to_datetime(post_norm["cw_close_date"], errors="coerce", dayfirst=True)
             close_m = cd.map(lambda t: _month_norm_key(t) if pd.notna(t) else "")
             sel_close = base & close_m.ne("") & close_m.isin(want)
             if bool(sel_close.any()):
@@ -5850,11 +5850,13 @@ def _post_qual_closed_won_cw_analysis_count(
     *,
     month_keys: Optional[list[str]],
 ) -> int:
-    """Unique closed-won deals in the same slice as B2 / B3 (matches **CpCW** = Spend ÷ this count)."""
+    """B2-style CW in the CpCW slice: ``SUM(CW)`` across rows when that exceeds unique opps (same as Q-win)."""
     d = _post_qual_cw_analysis_slice(post_norm, month_keys=month_keys)
     if d.empty or "closed_won" not in d.columns:
         return 0
-    return int(_sum_closed_won_unique_opportunities(d))
+    sheet = _sum_closed_won_sheet_style(d)
+    uniq = _sum_closed_won_unique_opportunities(d)
+    return int(sheet if sheet > uniq else uniq)
 
 
 def _post_qual_first_month_lf_cw_analysis_sum(
@@ -5862,16 +5864,19 @@ def _post_qual_first_month_lf_cw_analysis_sum(
     *,
     month_keys: Optional[list[str]],
 ) -> float:
-    """Σ ``first_month_lf`` on the same slice as ``_post_qual_closed_won_cw_analysis_count`` (B3).
+    """Σ ``first_month_lf`` on the same slice as B3, aligned with how B2 counts rows (sheet vs unique).
 
-    Rows for the **same opportunity** can repeat within a tab (pipeline stages); CW uses
-    ``_sum_closed_won_unique_opportunities`` (max per opp). B3 / Looker-style Σ LF must not
-    multiply LF across those duplicates — take **one LF per opp** (``max`` matches TCV/LF dedupe).
+    When ``SUM(CW)`` exceeds unique opportunities, ME / Sheets sum **LF across the same rows** (B3).
+    Otherwise de-dupe LF per opportunity (``max`` per key) so pipeline duplicate rows do not inflate Σ LF.
     """
     d = _post_qual_cw_analysis_slice(post_norm, month_keys=month_keys)
     if d.empty or "first_month_lf" not in d.columns:
         return 0.0
     lf = pd.to_numeric(d["first_month_lf"], errors="coerce").fillna(0)
+    sheet_cw = _sum_closed_won_sheet_style(d)
+    uniq_cw = _sum_closed_won_unique_opportunities(d)
+    if bool(sheet_cw > uniq_cw):
+        return float(lf.sum())
     keys = _opp_key_columns_for_post_lead(d)
     if keys:
         tmp = d.loc[:, list(keys)].copy()
