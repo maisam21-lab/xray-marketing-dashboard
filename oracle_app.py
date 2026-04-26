@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-24-cpcwlf-scoped-empty-unscoped-lf-cw"
+DASHBOARD_BUILD = "2026-04-24-cpcwlf-lf-sum-per-unique-opp"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -5862,11 +5862,22 @@ def _post_qual_first_month_lf_cw_analysis_sum(
     *,
     month_keys: Optional[list[str]],
 ) -> float:
-    """Σ ``first_month_lf`` on the same slice as ``_post_qual_closed_won_cw_analysis_count`` (B3)."""
+    """Σ ``first_month_lf`` on the same slice as ``_post_qual_closed_won_cw_analysis_count`` (B3).
+
+    Rows for the **same opportunity** can repeat within a tab (pipeline stages); CW uses
+    ``_sum_closed_won_unique_opportunities`` (max per opp). B3 / Looker-style Σ LF must not
+    multiply LF across those duplicates — take **one LF per opp** (``max`` matches TCV/LF dedupe).
+    """
     d = _post_qual_cw_analysis_slice(post_norm, month_keys=month_keys)
     if d.empty or "first_month_lf" not in d.columns:
         return 0.0
-    return float(pd.to_numeric(d["first_month_lf"], errors="coerce").fillna(0).sum())
+    lf = pd.to_numeric(d["first_month_lf"], errors="coerce").fillna(0)
+    keys = _opp_key_columns_for_post_lead(d)
+    if keys:
+        tmp = d.loc[:, list(keys)].copy()
+        tmp["_lf"] = lf
+        return float(tmp.groupby(keys, dropna=False)["_lf"].max().sum())
+    return float(lf.sum())
 
 
 def _mpo_leads_for_norm_month(leads_df: pd.DataFrame, month_key: Optional[str]) -> pd.DataFrame:
