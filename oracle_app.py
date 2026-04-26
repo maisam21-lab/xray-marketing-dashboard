@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-24-mpo-cw-postlead-locked"
+DASHBOARD_BUILD = "2026-04-24-cpcwlf-card-no-b-labels"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -6813,14 +6813,12 @@ def _kpi_funnel_sub_row(label: str, value: str) -> str:
     )
 
 
-# Hover text for the Marketing performance CpCW:LF tile (HTML title attribute).
+# Hover text for the Marketing performance CpCW:LF tile (HTML title attribute). No spreadsheet row codes (B1…).
 _CPCW_LF_CARD_TOOLTIP = (
-    "CpCW:LF = Cost per Close Won to Licence Fee ratio. "
-    "Formula: CpCW ÷ (average 1st month licence fee per closed-won deal in this slice). "
-    "Same number as Total Spend ÷ Σ 1st month LF (ME B6). "
-    "CpCW = total marketing spend ÷ number of closed-won deals; 1st month LF comes from Salesforce per deal. "
-    "Below 1.0 = spend is less than the slice's summed first-month LF (strong efficiency). "
-    "Above 1.0 = spend exceeds that LF sum. Example: 0.58 means about 58¢ of marketing per $1 of first-month LF in the slice."
+    "CpCW:LF — cost per close won vs first-month licence fee. "
+    "Main value = total marketing spend in your scope ÷ sum of first-month licence fees on the same closed-won + approved rows. "
+    "Same as CpCW ÷ average first-month LF, because (Spend÷deals)÷(Σ LF÷deals)=Spend÷Σ LF. "
+    "Below 1.0: spend is under the summed first-month LF for those deals. Above 1.0: spend exceeds that sum."
 )
 
 
@@ -7186,9 +7184,9 @@ def _kpi_block(
     cw_sub = _kpi_funnel_sub_row("CPCW", cpcw_s) + _kpi_funnel_sub_row("Paid media (Σ)", _format_spend_k(total_spend) if total_spend else "$0")
     cpcw_sub = _kpi_funnel_sub_row("CW + Approved (count)", f"{total_cw:,}") + _kpi_funnel_sub_row("Paid media (Σ)", _format_spend_k(total_spend) if total_spend else "$0")
     tcv_sub = _kpi_funnel_sub_row("CpCW:LF", cpcwlf_s) + _kpi_funnel_sub_row("Cost / TCV %", f"{spend_tcv_pct:.2f}%" if total_tcv else "—")
-    # CpCW:LF = B1÷B3 — sub-rows in division order (Spend then Σ LF); TCV is not part of this ratio.
-    cpcwlf_sub = _kpi_funnel_sub_row("Spend (B1)", _format_spend_k(total_spend) if total_spend else "$0") + _kpi_funnel_sub_row(
-        "Σ 1st Month LF (B3)", lf_sum_s
+    # Sub-rows are the ratio inputs only (no TCV); labels stay free of spreadsheet row codes on this card.
+    cpcwlf_sub = _kpi_funnel_sub_row("Spend", _format_spend_k(total_spend) if total_spend else "$0") + _kpi_funnel_sub_row(
+        "Σ 1st month LF", lf_sum_s
     )
     pct_tcv_sub = _kpi_funnel_sub_row("Actual TCV", tcv_s) + _kpi_funnel_sub_row("Spend", _format_spend_k(total_spend) if total_spend else "$0")
 
@@ -7243,7 +7241,6 @@ def _kpi_block(
             pv.get("mom_cpcwlf_c"), pv.get("mom_cpcwlf_p"), domain="efficiency", lower_is_better=True, disabled=_no_delta
         ),
         tooltip=_CPCW_LF_CARD_TOOLTIP,
-        title_sub="Spend ÷ Σ 1st month LF (B1÷B3). Same as CpCW ÷ avg LF.",
     )
     card_ctcv = _card(
         "%",
