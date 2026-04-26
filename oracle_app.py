@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-24-cpcwlf-preserve-lf-on-renorm"
+DASHBOARD_BUILD = "2026-04-24-cpcwlf-ratio-2dp"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -4764,22 +4764,13 @@ def _format_compact_k(v: float) -> str:
 
 
 def _format_ratio_cpcw_lf(v: float) -> str:
-    """Unitless ratio like CpCW:LF — extra precision when values are < 1 (2dp would often read as 0.00)."""
+    """Unitless ratio like CpCW:LF — always two decimal places."""
     if pd.isna(v) or v != v:
         return "—"
     n = float(v)
     if abs(n) < 1e-12:
-        return "0"
-    ax = abs(n)
-    if ax >= 1000:
-        return f"{n:,.2f}"
-    if ax >= 1:
-        return f"{n:,.4f}".rstrip("0").rstrip(".")
-    if ax >= 0.01:
-        return f"{n:.4f}".rstrip("0").rstrip(".")
-    if ax >= 0.0001:
-        return f"{n:.6f}".rstrip("0").rstrip(".")
-    return f"{n:.4g}"
+        return "0.00"
+    return f"{n:.2f}"
 
 
 def _lead_rows_count(frame: pd.DataFrame) -> int:
