@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-24-cpcwlf-lf-spend-months-only"
+DASHBOARD_BUILD = "2026-04-24-cpcwlf-lf-same-cw-card-deals"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -1414,70 +1414,66 @@ def _mpo_slice_by_dashboard_ref(frame: pd.DataFrame, df_ref: pd.DataFrame) -> pd
     return out
 
 
+def _mpo_post_qual_closed_won_rows_for_kpis(post_df: pd.DataFrame, df_scope: pd.DataFrame) -> pd.DataFrame:
+    """Post-qual / post-lead rows in **Market × Month** scope with **Closed Won + Approved** (``closed_won`` > 0).
+
+    Shared by the **CW (inc. approved)** count and the **CpCW:LF** Σ first-month LF denominator so both use the
+    **same deal row set** (then LF is one value per opportunity when keys exist).
+    """
+    if post_df.empty or df_scope.empty:
+        return pd.DataFrame()
+    sl = _mpo_slice_by_dashboard_ref(post_df, df_scope)
+    if sl.empty:
+        return sl
+    w = _ensure_closed_won_from_text_flags(sl.copy())
+    if "closed_won" not in w.columns:
+        return pd.DataFrame()
+    hit = pd.to_numeric(w["closed_won"], errors="coerce").fillna(0) > 0
+    return w.loc[hit].copy()
+
+
+def _mpo_first_month_lf_sum_same_deals_as_post_qual_cw_rows(cw_only: pd.DataFrame, cw_kpi: pd.DataFrame) -> float:
+    """Σ ``first_month_lf`` for the **same opportunities** as ``cw_only`` (CW card slice).
+
+    If post-qual carries ``first_month_lf``, use **max LF per opportunity** on those rows. Otherwise join **cw_kpi**
+    (RAW CW / deal tab) on shared opportunity keys and sum one LF per key (rent / licence fee for those deals).
+    """
+    if cw_only.empty:
+        return 0.0
+    if "first_month_lf" in cw_only.columns:
+        lf = pd.to_numeric(cw_only["first_month_lf"], errors="coerce").fillna(0)
+        keys = _opp_key_columns_for_post_lead(cw_only)
+        if keys:
+            tmp = cw_only.loc[:, list(keys)].copy()
+            tmp["_lf"] = lf
+            return float(tmp.groupby(keys, dropna=False)["_lf"].max().sum())
+        return float(lf.sum())
+    if cw_kpi.empty or "first_month_lf" not in cw_kpi.columns:
+        return 0.0
+    keys = [c for c in _opp_key_columns_for_post_lead(cw_only) if c in cw_only.columns and c in cw_kpi.columns]
+    if not keys:
+        return 0.0
+    left = cw_only.loc[:, keys].drop_duplicates()
+    right = cw_kpi.copy()
+    if "closed_won" in right.columns:
+        right = right.loc[pd.to_numeric(right["closed_won"], errors="coerce").fillna(0) > 0].copy()
+    if "first_month_lf" not in right.columns:
+        return 0.0
+    use_cols = list(dict.fromkeys([c for c in keys if c in right.columns] + ["first_month_lf"]))
+    right = right.loc[:, use_cols].copy()
+    right["first_month_lf"] = pd.to_numeric(right["first_month_lf"], errors="coerce").fillna(0)
+    agg = right.groupby(keys, dropna=False)["first_month_lf"].max().reset_index()
+    merged = left.merge(agg, on=keys, how="left")
+    return float(pd.to_numeric(merged["first_month_lf"], errors="coerce").fillna(0).sum())
+
+
 def _mpo_cw_kpi_post_lead_record_count(post_df: pd.DataFrame, df_scope: pd.DataFrame) -> int:
     """**CW (inc. approved)** for Marketing performance — fixed definition (do not swap for source-truth or CpCW B2).
 
     Count **records** on the post-qualification / post-lead worksheet in ``post_df`` after the same **Market × Month**
     filters as the tab (``df_scope``), where **Stage** is Closed Won or Approved (via ``_ensure_closed_won_from_text_flags``).
     """
-    if post_df.empty or df_scope.empty:
-        return 0
-    sl = _mpo_slice_by_dashboard_ref(post_df, df_scope)
-    if sl.empty:
-        return 0
-    w = _ensure_closed_won_from_text_flags(sl.copy())
-    if "closed_won" not in w.columns:
-        return 0
-    hit = pd.to_numeric(w["closed_won"], errors="coerce").fillna(0) > 0
-    return int(hit.sum())
-
-
-def _mpo_post_lead_first_month_lf_sum_on_cw_rows(post_df: pd.DataFrame, df_scope: pd.DataFrame) -> float:
-    """Σ ``first_month_lf`` on the **same** post-qual rows as ``_mpo_cw_kpi_post_lead_record_count`` (CW flag > 0)."""
-    if post_df.empty or df_scope.empty:
-        return 0.0
-    sl = _mpo_slice_by_dashboard_ref(post_df, df_scope)
-    if sl.empty:
-        return 0.0
-    w = _ensure_closed_won_from_text_flags(sl.copy())
-    if "closed_won" not in w.columns or "first_month_lf" not in w.columns:
-        return 0.0
-    mask = pd.to_numeric(w["closed_won"], errors="coerce").fillna(0) > 0
-    lf = pd.to_numeric(w.loc[mask, "first_month_lf"], errors="coerce").fillna(0)
-    return float(lf.sum())
-
-
-def _mpo_headline_lf_sum_from_cw_kpi_for_ratio(cw_kpi: pd.DataFrame, headline_month_keys: list[str]) -> float:
-    """Σ ``first_month_lf`` from the CW / deal tab (``cw_kpi``) for the **CpCW:LF** denominator.
-
-    ``cw_kpi`` is already closed-won–scoped and market-filtered (``_cw_dataframe_for_kpis``). This restricts to
-    ``headline_month_keys`` and sums **one LF per opportunity** (``max`` per key) so the headline matches
-    Excel ``=Spend / Σ first month LF`` (e.g. ``121842 / 131958``).
-    """
-    if cw_kpi.empty or not headline_month_keys or "first_month_lf" not in cw_kpi.columns:
-        return 0.0
-    want = {str(_month_norm_key(m)).strip() for m in headline_month_keys if str(_month_norm_key(m)).strip()}
-    if not want:
-        return 0.0
-    w = cw_kpi.copy()
-    if "month" not in w.columns:
-        return 0.0
-    mk = w["month"].map(_month_norm_key).astype(str).str.strip()
-    w = w.loc[mk.isin(want)].copy()
-    if w.empty:
-        return 0.0
-    if "closed_won" in w.columns:
-        cwm = pd.to_numeric(w["closed_won"], errors="coerce").fillna(0) > 0
-        w = w.loc[cwm].copy()
-    if w.empty:
-        return 0.0
-    lf = pd.to_numeric(w["first_month_lf"], errors="coerce").fillna(0)
-    keys = _opp_key_columns_for_post_lead(w)
-    if keys:
-        tmp = w.loc[:, list(keys)].copy()
-        tmp["_lf"] = lf
-        return float(tmp.groupby(keys, dropna=False)["_lf"].max().sum())
-    return float(lf.sum())
+    return int(len(_mpo_post_qual_closed_won_rows_for_kpis(post_df, df_scope)))
 
 
 def _mpo_slice_supermetrics_pool_for_kpis(
@@ -5969,29 +5965,6 @@ def _post_qual_first_month_lf_cw_analysis_sum(
     return float(lf.sum())
 
 
-def _post_qual_first_month_lf_sum_max_lf_per_opp(
-    post_norm: pd.DataFrame,
-    *,
-    month_keys: Optional[list[str]],
-) -> float:
-    """Σ ``first_month_lf`` with **one LF per opportunity** (``max`` per opp key), same closed-won slice as B3.
-
-    The ME sheet sometimes has **duplicate rows per deal** where ``SUM(CW)`` exceeds unique opps; the raw row-sum
-    LF path then **multiplies** LF (~$430K vs ~$132K for 67 deals). The Marketing headline CpCW:LF denominator
-    uses this path so Σ LF matches **one fee per closed-won + approved opportunity** in the slice.
-    """
-    d = _post_qual_cw_analysis_slice(post_norm, month_keys=month_keys)
-    if d.empty or "first_month_lf" not in d.columns:
-        return 0.0
-    lf = pd.to_numeric(d["first_month_lf"], errors="coerce").fillna(0)
-    keys = _opp_key_columns_for_post_lead(d)
-    if keys:
-        tmp = d.loc[:, list(keys)].copy()
-        tmp["_lf"] = lf
-        return float(tmp.groupby(keys, dropna=False)["_lf"].max().sum())
-    return float(lf.sum())
-
-
 def _mpo_leads_for_norm_month(leads_df: pd.DataFrame, month_key: Optional[str]) -> pd.DataFrame:
     if leads_df.empty or not month_key:
         return leads_df.iloc[0:0]
@@ -6022,31 +5995,6 @@ def _mpo_spend_activity_for_month(spend_df: pd.DataFrame, month_key: Optional[st
     impr = int(pd.to_numeric(sub["impressions"], errors="coerce").fillna(0).sum()) if "impressions" in sub.columns else 0
     clicks = int(pd.to_numeric(sub["clicks"], errors="coerce").fillna(0).sum()) if "clicks" in sub.columns else 0
     return cost, impr, clicks
-
-
-def _mpo_headline_month_keys_with_positive_spend(
-    spend_df: pd.DataFrame,
-    headline_month_keys: list[str],
-) -> list[str]:
-    """Subset of ``headline_month_keys`` where **spend** in ``spend_df`` is > 0 (same month cut as headline cost).
-
-    If we sum Σ LF across **all** headline months but only **one** of those months has paid media, spend stays
-    ~single-month while LF stacks ~N months (~$411K vs ~$132K, ratio ~0.30 vs ~0.92).
-    """
-    if not headline_month_keys:
-        return []
-    if spend_df.empty or "cost" not in spend_df.columns:
-        return list(headline_month_keys)
-    out: list[str] = []
-    seen: set[str] = set()
-    for mk in headline_month_keys:
-        sc, _, _ = _mpo_spend_activity_for_month(spend_df, mk)
-        if float(sc) > 1e-6:
-            sk = str(_month_norm_key(mk)).strip()
-            if sk and sk not in seen:
-                seen.add(sk)
-                out.append(mk)
-    return out if out else list(headline_month_keys)
 
 
 def _mpo_rows_paid_media_from_combined(df_loaded: pd.DataFrame) -> pd.DataFrame:
@@ -10340,25 +10288,12 @@ def render_page_marketing_performance(
         cw_for_qwin = _hm.get("cw_for_qwin")
         qual_for_qwin = _hm.get("qual_for_qwin")
 
-    # Σ LF for CpCW:LF = Excel ``Spend / Σ first month LF``. Use **months with spend > 0** only so LF is not summed
-    # across extra headline months that have CW/LF but **$0** media (otherwise ~$411K vs ~$132K, ratio ~0.30).
-    _lf_month_keys = _mpo_headline_month_keys_with_positive_spend(spend_df, _headline_keys)
-    # Prefer **cw_kpi** (RAW CW / deal tab) for canonical ``first_month_lf``; post-qual is fallback.
-    _lf_cw_kpi = _mpo_headline_lf_sum_from_cw_kpi_for_ratio(cw_kpi, _lf_month_keys)
-    _post_geo_lf = _mpo_slice_by_dashboard_ref(post_df_cpcw_analysis, df)
-    _post_norm_lf = _normalized_post_qual_for_cw_analysis(_post_geo_lf)
-    _lf_post = _post_qual_first_month_lf_sum_max_lf_per_opp(
-        _post_norm_lf,
-        month_keys=_lf_month_keys if _lf_month_keys else None,
-    )
-    if _lf_cw_kpi > 0:
-        total_first_month_lf = float(_lf_cw_kpi)
-    elif _lf_post > 0:
-        total_first_month_lf = float(_lf_post)
-    else:
-        _lf_same_rows = _mpo_post_lead_first_month_lf_sum_on_cw_rows(post_df_cpcw_analysis, df)
-        if _lf_same_rows > 0:
-            total_first_month_lf = float(_lf_same_rows)
+    # Σ LF for CpCW:LF = sum of first-month licence fee / **rent** for the **same deals** as the CW card
+    # (post-qual closed won + approved rows in the tab's Market × Month scope); join RAW ``cw_kpi`` when LF is not on post-qual.
+    _cw_only_lf = _mpo_post_qual_closed_won_rows_for_kpis(post_df_cpcw_analysis, df)
+    _lf_same_deals = _mpo_first_month_lf_sum_same_deals_as_post_qual_cw_rows(_cw_only_lf, cw_kpi)
+    if _lf_same_deals > 0:
+        total_first_month_lf = float(_lf_same_deals)
 
     # Keep Actual TCV card aligned with the same CW KPI slice used for the TCV check banner.
     if _tcv_sum_override is not None:
