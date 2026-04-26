@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-26-cost-sep2025-floor-spend-only"
+DASHBOARD_BUILD = "2026-04-26-ads-platform-sep2025-only-traffic"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -1167,9 +1167,9 @@ def _master_df_coalesce_month_country(master_df: pd.DataFrame) -> pd.DataFrame:
 # General month keys (CRM, merges): allow full history in loaded sheets.
 _MIN_DASHBOARD_PERIOD = pd.Period("1990-01", freq="M")
 _MAX_DASHBOARD_PERIOD = pd.Period(date.today(), freq="M")
-# **Paid cost / spend only**: ME reporting floor — pre–Sep 2025 cost rows stay out of spend KPIs, CPCW, CPM, CPL, etc.
-_MIN_SPEND_PERIOD = pd.Period("2025-09", freq="M")
-_MIN_COST_REPORTING_TS = pd.Timestamp("2025-09-01", tz=None)
+# **Ads platform tabs only** (Google / Meta / Snapchat / LinkedIn connector exports): Sep 2025 onward for cost, clicks, impressions.
+_MIN_ADS_PLATFORM_PERIOD = pd.Period("2025-09", freq="M")
+_MIN_ADS_PLATFORM_TS = pd.Timestamp("2025-09-01", tz=None)
 
 
 def _yyyymm_calendar_to_key(ni: int) -> str:
@@ -3476,10 +3476,8 @@ def _filter_spend_for_dashboard(df: pd.DataFrame, start: date, end: date) -> pd.
     """Prefer ``month``-period filtering for spend (sheet dates often mis-parse); fall back to calendar ``date``."""
     if df.empty:
         return df
-    allow_m = _month_norm_keys_in_reporting_window(start, end)
-    allow_m = {
-        k for k in allow_m if k and pd.Period(str(k), freq="M") >= _MIN_SPEND_PERIOD
-    }
+    df = _apply_sep2025_to_ads_platform_rows_only(df)
+    allow_m = set(_month_norm_keys_in_reporting_window(start, end))
 
     def _month_in_range(m: Any) -> bool:
         if m is None or (isinstance(m, float) and pd.isna(m)):
@@ -3496,9 +3494,6 @@ def _filter_spend_for_dashboard(df: pd.DataFrame, start: date, end: date) -> pd.
             return sub_m
 
     sub_d = _filter_by_date_range(df, start, end)
-    if not sub_d.empty and "date" in sub_d.columns:
-        d = pd.to_datetime(sub_d["date"], errors="coerce")
-        sub_d = sub_d.loc[d.isna() | (d >= _MIN_COST_REPORTING_TS)].copy()
     if _normalized_spend_cost_sum(sub_d) > 0.0:
         return sub_d
 
@@ -3507,9 +3502,30 @@ def _filter_spend_for_dashboard(df: pd.DataFrame, start: date, end: date) -> pd.
     return sub_d if not sub_d.empty else df
 
 
-def _apply_spend_cost_reporting_floor(df: pd.DataFrame) -> pd.DataFrame:
-    """ME **Sep 2025 onward** for rows that carry ``cost`` (paid spend pool / imputation source)."""
-    if df.empty or "cost" not in df.columns:
+def _ads_platform_row_mask(df: pd.DataFrame) -> pd.Series:
+    """Rows from **Google / Meta / Snapchat / LinkedIn** Ads Data exports (tab title or paid workbook + platform gid)."""
+    if df.empty:
+        return pd.Series(dtype=bool)
+    idx = df.index
+    st = df.get("source_tab", pd.Series("", index=idx)).astype(str)
+    is_title = st.map(lambda t: _tab_title_looks_like_ads_data_sheet(str(t))).fillna(False)
+    gid_match = pd.Series(False, index=idx)
+    if "worksheet_gid" in df.columns:
+        wg = pd.to_numeric(df["worksheet_gid"], errors="coerce")
+        gid_match = wg.isin(list(DEFAULT_PAID_MEDIA_PLATFORM_GIDS))
+    in_ads_wb = pd.Series(False, index=idx)
+    try:
+        ads_id = (_optional_paid_media_sheet_id_from_secrets() or "").strip()
+        if ads_id and "spreadsheet_id" in df.columns:
+            in_ads_wb = df["spreadsheet_id"].astype(str).str.strip() == str(_extract_sheet_id(ads_id))
+    except Exception:
+        pass
+    return is_title | (in_ads_wb & gid_match)
+
+
+def _apply_sep2025_month_date_floor(df: pd.DataFrame) -> pd.DataFrame:
+    """Sep 2025 onward by ``month`` and/or ``date`` (undated rows kept)."""
+    if df.empty:
         return df
     out = df.copy()
     if "month" in out.columns:
@@ -3518,15 +3534,31 @@ def _apply_spend_cost_reporting_floor(df: pd.DataFrame) -> pd.DataFrame:
                 k = _month_norm_key(m)
                 if not k:
                     return True
-                return bool(pd.Period(str(k), freq="M") >= _MIN_SPEND_PERIOD)
+                return bool(pd.Period(str(k), freq="M") >= _MIN_ADS_PLATFORM_PERIOD)
             except Exception:
                 return True
 
         out = out.loc[out["month"].map(_m_ok).fillna(True)].copy()
     if "date" in out.columns:
         d = pd.to_datetime(out["date"], errors="coerce")
-        out = out.loc[d.isna() | (d >= _MIN_COST_REPORTING_TS)].copy()
+        out = out.loc[d.isna() | (d >= _MIN_ADS_PLATFORM_TS)].copy()
     return out
+
+
+def _apply_sep2025_to_ads_platform_rows_only(df: pd.DataFrame) -> pd.DataFrame:
+    """Apply Sep 2025 floor **only** to ads-platform connector rows; leave ME Spend / CRM / leads / post-lead rows untouched."""
+    if df.empty:
+        return df
+    mask = _ads_platform_row_mask(df)
+    if not bool(mask.any()):
+        return df
+    ads_ix = df.index[mask]
+    rest_ix = df.index[~mask]
+    ads_part = _apply_sep2025_month_date_floor(df.loc[ads_ix].copy())
+    if len(rest_ix) == 0:
+        return ads_part.reset_index(drop=True)
+    rest = df.loc[rest_ix].copy()
+    return pd.concat([rest, ads_part], ignore_index=True)
 
 
 def _restrict_paid_media_workbook_to_date_range(
@@ -3596,7 +3628,7 @@ def _impute_master_df_cost_from_spend_pool(
     if "cost" not in spend_pool.columns or "month" not in spend_pool.columns:
         return master_df
 
-    sp = _normalize_master_merge_frame(_apply_spend_cost_reporting_floor(spend_pool.copy()))
+    sp = _normalize_master_merge_frame(_apply_sep2025_to_ads_platform_rows_only(spend_pool.copy()))
     sp["month"] = sp["month"].map(_month_norm_key)
     start_p = pd.Period(start_date, freq="M")
     end_p = pd.Period(end_date, freq="M")
@@ -5344,10 +5376,7 @@ def _mpo_month_picker_options(
     reporting_end: date,
 ) -> list[Any]:
     """Month values present in data only (deduped, newest first, limited to reporting window)."""
-    allow_keys = _month_norm_keys_in_reporting_window(reporting_start, reporting_end)
-    allow_keys = {
-        k for k in allow_keys if k and pd.Period(str(k), freq="M") >= _MIN_SPEND_PERIOD
-    }
+    allow_keys = set(_month_norm_keys_in_reporting_window(reporting_start, reporting_end))
     by_k: dict[str, Any] = {}
     if not df_date.empty and "month" in df_date.columns:
         for x in df_date["month"].dropna().unique().tolist():
@@ -5515,10 +5544,10 @@ def _mpo_load_spend_sheet_for_kpis(
             )
         )
         if has_cost and has_traffic:
-            spend_pool_full = _apply_spend_cost_reporting_floor(tr.copy())
+            spend_pool_full = _apply_sep2025_to_ads_platform_rows_only(tr.copy())
             spend_sheet_master = _filter_spend_for_dashboard(tr, start_date, end_date)
             if spend_sheet_master.empty:
-                spend_sheet_master = _apply_spend_cost_reporting_floor(tr.copy())
+                spend_sheet_master = _apply_sep2025_to_ads_platform_rows_only(tr.copy())
             return spend_sheet_master.copy(), spend_sheet_master, spend_pool_full, sheet_id, _fp_mpo
 
     df_spend_scope_primary = _rows_for_workbook_id(df_date, sheet_id)
@@ -5540,10 +5569,10 @@ def _mpo_load_spend_sheet_for_kpis(
         spend_pool_full = pd.DataFrame()
         spend_sheet_master = pd.DataFrame()
     else:
-        spend_pool_full = _apply_spend_cost_reporting_floor(spend_blended.copy())
+        spend_pool_full = _apply_sep2025_to_ads_platform_rows_only(spend_blended.copy())
         spend_sheet_master = _filter_spend_for_dashboard(spend_blended, start_date, end_date)
         if spend_sheet_master.empty:
-            spend_sheet_master = _apply_spend_cost_reporting_floor(spend_blended.copy())
+            spend_sheet_master = _apply_sep2025_to_ads_platform_rows_only(spend_blended.copy())
 
     spend_sheet_for_kpis = _mpo_merge_pool_clicks_impressions_onto_spend(
         spend_sheet_master,
@@ -5973,7 +6002,8 @@ def _mpo_supermetrics_pool_for_clicks_impressions(
     ads_only = df_loaded.loc[df_loaded["spreadsheet_id"].astype(str) == str(_extract_sheet_id(ads))].copy()
     if ads_only.empty:
         return ads_only
-    return _mpo_rows_paid_media_from_combined(ads_only)
+    out = _mpo_rows_paid_media_from_combined(ads_only)
+    return _apply_sep2025_month_date_floor(out) if not out.empty else out
 
 
 def _mpo_coalesce_str_series_with_tab_fallback(ser: pd.Series, tab_labels: pd.Series) -> pd.Series:
