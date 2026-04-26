@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-26-headline-cw-full-me-cohort"
+DASHBOARD_BUILD = "2026-04-26-all-data-no-date-floors"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -1164,10 +1164,10 @@ def _master_df_coalesce_month_country(master_df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-# Global reporting floor: keep dashboard data from Sep 2025 onward.
-_MIN_DASHBOARD_PERIOD = pd.Period("2025-09", freq="M")
+# Month keys before this are still dropped by ``_yyyymm_calendar_to_key`` / sanity checks where needed.
+_MIN_DASHBOARD_PERIOD = pd.Period("1990-01", freq="M")
 _MAX_DASHBOARD_PERIOD = pd.Period(date.today(), freq="M")
-_MIN_SPEND_PERIOD = pd.Period("2025-09", freq="M")
+_MIN_SPEND_PERIOD = pd.Period("1990-01", freq="M")
 
 
 def _yyyymm_calendar_to_key(ni: int) -> str:
@@ -1374,25 +1374,8 @@ def _month_norm_keys_in_reporting_window(start: date, end: date) -> set[str]:
 
 
 def _enforce_global_reporting_floor(df: pd.DataFrame) -> pd.DataFrame:
-    """Hard floor for published dashboard rows: keep Sep 2025 onward only."""
-    if df.empty:
-        return df
-    out = df.copy()
-    keep = pd.Series(True, index=out.index)
-    has_month = "month" in out.columns
-    has_date = "date" in out.columns
-    if has_month and has_date:
-        mk = out["month"].map(_month_norm_key)
-        d = pd.to_datetime(out["date"], errors="coerce")
-        # Keep row when either month key is valid (>= floor via _month_norm_key) or date meets cutoff.
-        keep = keep & (mk.ne("") | (d.notna() & (d >= pd.Timestamp("2025-09-01"))))
-    elif has_month:
-        mk = out["month"].map(_month_norm_key)
-        keep = keep & mk.ne("")
-    elif has_date:
-        d = pd.to_datetime(out["date"], errors="coerce")
-        keep = keep & (d.isna() | (d >= pd.Timestamp("2025-09-01")))
-    return out.loc[keep].copy()
+    """No-op: keep **all** loaded rows (historical Sep-2025-only floor removed — use full workbook history)."""
+    return df.copy() if not df.empty else df
 
 
 def _mpo_slice_by_dashboard_ref(frame: pd.DataFrame, df_ref: pd.DataFrame) -> pd.DataFrame:
@@ -2141,9 +2124,9 @@ def _closed_won_kpi_count_from_leads_gid(
     leads_gid: int,
     _fp_mpo: str,
     *,
-    close_date_min: pd.Timestamp = pd.Timestamp("2025-09-01"),
+    close_date_min: Optional[pd.Timestamp] = None,
 ) -> int:
-    """CW (inc. approved) from Leads tab: count matching rows after date/stage filtering."""
+    """CW (inc. approved) from Leads tab: count matching rows after optional date floor + stage."""
     base = _rows_by_worksheet_id(df_loaded, int(leads_gid), sheet_id)
     if base.empty:
         try:
@@ -2153,7 +2136,7 @@ def _closed_won_kpi_count_from_leads_gid(
     if base.empty:
         return 0
     work = _ensure_closed_won_from_text_flags(base.copy())
-    if "date" in work.columns:
+    if close_date_min is not None and "date" in work.columns:
         d = pd.to_datetime(work["date"], errors="coerce")
         work = work.loc[d.isna() | (d >= close_date_min)].copy()
     work = work.loc[pd.to_numeric(work.get("closed_won", 0), errors="coerce").fillna(0) > 0].copy()
@@ -3052,11 +3035,6 @@ def _preprocess_excel_sheet(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
                 df["Date"] = pd.to_datetime(df["Close Date"], errors="coerce", dayfirst=True)
             elif "Created Date" in df.columns:
                 df["Date"] = pd.to_datetime(df["Created Date"], errors="coerce")
-        # Business rule: in TCV/RAW CW sheet, only keep deals with Close Date from Sep 2025 onward.
-        if "Close Date" in df.columns:
-            _cw_close = pd.to_datetime(df["Close Date"], errors="coerce", dayfirst=True)
-            _cw_close = _scrub_pre_2000_dates(_coerce_sheet_serial_dates(_cw_close))
-            df = df.loc[_cw_close.isna() | (_cw_close >= pd.Timestamp("2025-09-01"))].copy()
         # Source of truth: prefer column T "TCV (converted)" when present; fallback to TCV (USD), then LF*term.
         tcv_converted_col = next((c for c in df.columns if _norm_header_key(str(c)) == "tcv_converted"), None)
         if tcv_converted_col is not None:
@@ -3516,9 +3494,6 @@ def _filter_spend_for_dashboard(df: pd.DataFrame, start: date, end: date) -> pd.
             return sub_m
 
     sub_d = _filter_by_date_range(df, start, end)
-    if not sub_d.empty and "date" in sub_d.columns:
-        d = pd.to_datetime(sub_d["date"], errors="coerce")
-        sub_d = sub_d.loc[d.isna() | (d >= pd.Timestamp("2025-09-01"))].copy()
     if _normalized_spend_cost_sum(sub_d) > 0.0:
         return sub_d
 
@@ -5802,16 +5777,10 @@ def _normalized_post_qual_for_cw_analysis(post_df: pd.DataFrame) -> pd.DataFrame
 
 
 def _post_qual_cw_analysis_mask(frame: pd.DataFrame) -> pd.Series:
-    """Closed Won + Approved with **Close Date** on or after 2025-09-01 (ME CpCW Analysis)."""
+    """Closed Won + Approved (``closed_won`` > 0) — no close-date cutoff; use all rows the sheet provides."""
     if frame.empty or "closed_won" not in frame.columns:
         return pd.Series(False, index=frame.index)
-    cw = pd.to_numeric(frame["closed_won"], errors="coerce").fillna(0) > 0
-    _floor = pd.Timestamp("2025-09-01")
-    if "cw_close_date" in frame.columns and bool(frame["cw_close_date"].notna().any()):
-        cd = pd.to_datetime(frame["cw_close_date"], errors="coerce", dayfirst=True)
-        ok = cd.notna() & (cd >= _floor)
-        return cw & ok
-    return cw
+    return pd.to_numeric(frame["closed_won"], errors="coerce").fillna(0) > 0
 
 
 def _post_qual_cw_analysis_slice(
@@ -6578,9 +6547,8 @@ def _mpo_scorecard_headline_totals_for_months(
     d_scoped = _post_qual_cw_analysis_slice(post_norm_cw, month_keys=month_keys)
     base_has_cw_rows = not post_norm_cw.empty and bool(_post_qual_cw_analysis_mask(post_norm_cw).any())
 
-    # Headline **CW (inc. approved)** / B3 LF: ME cohort is **Close Date ≥ Sep 2025** on Post Lead — not “close
-    # month must fall inside the dashboard month multiselect”. Scoped-by-month undercounted vs Excel; prefer the
-    # full analysis cohort whenever it has rows, else fall back to scoped then pipeline unique-CW.
+    # Headline **CW (inc. approved)** / B3 LF: prefer **full** Post Qual CpCW cohort (``month_keys=None``), then
+    # scoped months, then pipeline CW — no close-date floor on the mask (all sheet rows with CW flag).
     cw_full = _post_qual_closed_won_cw_analysis_count(post_norm_cw, month_keys=None)
     cw_scoped = _post_qual_closed_won_cw_analysis_count(post_norm_cw, month_keys=month_keys)
     lf_full = _post_qual_first_month_lf_cw_analysis_sum(post_norm_cw, month_keys=None)
@@ -7990,7 +7958,7 @@ def _mpo_metric_definition(metric_name: str) -> str:
         ),
         "CPCW:LF": (
             "CpCW:LF (ME CpCW Analysis / Looker): **dashboard Spend ÷ Σ 1st Month License Fee** on closed-won rows "
-            "(Closed Won + Approved, Close Date from Sep 2025) from the post-lead tab when available; master cells use "
+            "(Closed Won + Approved) from the post-lead tab when available; master cells use "
             "the same Spend ÷ Σ LF math for that month × market merge."
         ),
         "Cost/TCV%": (
@@ -9742,10 +9710,12 @@ def render_page_marketing_performance(
     end_date: date,
 ) -> None:
     key_suffix = "mpo"
-    df_filtered = _filter_by_date_range(df_loaded, start_date, end_date)
-    df_date = df_loaded if df_filtered.empty else df_filtered
+    # Marketing performance: use **entire merged workbook** — ignore sidebar date pickers for row scope.
+    _rng_lo, _rng_hi = date(1990, 1, 1), date(2100, 12, 31)
+    _ = start_date, end_date  # kept for signature compatibility with the tab router
+    df_date = df_loaded
     if df_date.empty:
-        st.info("No rows in the selected date range.")
+        st.info("No rows loaded.")
         return
 
     _dashboard_tab_page_header()
@@ -9753,15 +9723,15 @@ def render_page_marketing_performance(
     df, _ = _apply_marketing_performance_filters(
         df_date,
         key_suffix=key_suffix,
-        reporting_start=start_date,
-        reporting_end=end_date,
+        reporting_start=_rng_lo,
+        reporting_end=_rng_hi,
     )
 
     spend_sheet_for_kpis, spend_sheet_master, spend_pool_full, sheet_id, _fp_mpo = _mpo_load_spend_sheet_for_kpis(
         df_loaded,
         df_date,
-        start_date,
-        end_date,
+        _rng_lo,
+        _rng_hi,
     )
     spend_df = _spend_slice_for_dashboard_filters(spend_sheet_for_kpis, df)
 
@@ -9913,7 +9883,7 @@ def render_page_marketing_performance(
                 total_leads = _lead_rows_count(leads_df)
                 total_qualified = _qualified_count_from_leads(leads_df)
     total_pitching = int(post_df_kpi["pitching"].sum()) if "pitching" in post_df_kpi.columns else 0
-    # CW (inc. approved): Leads tab gid — stage Closed Won / Approved, Close Date >= Sep 2025, unique opportunities.
+    # CW (inc. approved): Leads tab gid — stage Closed Won / Approved (no mandatory close-date floor).
     cw_total_source_truth = (
         _closed_won_kpi_count_from_source_truth_gid(sheet_id, int(cw_truth_gid))
         if cw_truth_gid is not None
@@ -10129,8 +10099,8 @@ def render_page_marketing_performance(
             master_df = _impute_master_df_cost_from_spend_pool(
                 master_df,
                 spend_pool_full,
-                start_date=start_date,
-                end_date=end_date,
+                start_date=_rng_lo,
+                end_date=_rng_hi,
             )
     _spend_for_master_ui = spend_g
     if _normalized_spend_cost_sum(_spend_for_master_ui) < 1e-6 and _normalized_spend_cost_sum(spend_pool_full) > 1e-6:
@@ -10140,8 +10110,8 @@ def render_page_marketing_performance(
         master_df,
         df,
         key_suffix,
-        reporting_start=start_date,
-        reporting_end=end_date,
+        reporting_start=_rng_lo,
+        reporting_end=_rng_hi,
     )
     if not _headline_keys:
         _fb = _mpo_month_keys_sorted_master(master_df)
@@ -10198,8 +10168,8 @@ def render_page_marketing_performance(
         df_loaded,
         df,
         primary_sheet_id=sheet_id,
-        start_date=start_date,
-        end_date=end_date,
+        start_date=_rng_lo,
+        end_date=_rng_hi,
         headline_month_keys=_headline_keys,
         key_suffix=key_suffix,
     )
@@ -10250,8 +10220,8 @@ def render_page_marketing_performance(
     _render_t3b3_quarter_sections(gm_mpo, key_suffix=f"{key_suffix}_t3b3")
 
     _render_mpo_trend_charts(
-        start_date=start_date,
-        end_date=end_date,
+        start_date=_rng_lo,
+        end_date=_rng_hi,
         master_df=master_df,
         key_suffix=key_suffix,
         spend_for_charts=spend_df,
@@ -12468,14 +12438,6 @@ def render_main_dashboard(
             pass
 
     if not load_error and not df_loaded.empty:
-        try:
-            _ads_wb = _optional_paid_media_sheet_id_from_secrets()
-        except Exception:
-            _ads_wb = ""
-        if _ads_wb and str(_extract_sheet_id(_ads_wb)) != str(_extract_sheet_id(sheet_id)):
-            df_loaded = _restrict_paid_media_workbook_to_date_range(
-                df_loaded, _ads_wb, start_date, end_date
-            )
         df_loaded = _enforce_global_reporting_floor(df_loaded)
 
     _no_data_msg = (
