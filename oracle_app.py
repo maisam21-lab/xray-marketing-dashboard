@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-24-cpcwlf-close-month-key-fallback"
+DASHBOARD_BUILD = "2026-04-24-cpcwlf-postqual-tab-not-truth"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -3431,7 +3431,7 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
     out["month"] = ""
     _dok = out["date"].notna()
     if bool(_dok.any()):
-        out.loc[_dok, "month"] = out.loc[_dok, "date"].dt.to_period("M").astype(str)
+        out.loc[_dok, "month"] = out.loc[_dok, "date"].map(lambda t: _month_norm_key(t) if pd.notna(t) else "")
     _bad_m = out["month"].astype(str).str.strip().str.lower().isin(["", "nan", "nat", "none"])
     if bool(_bad_m.any()) and "report_month" in out.columns:
         rm_fix = _parse_report_month_series(out["report_month"])
@@ -3440,7 +3440,7 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
         ok_rm = rm_fix.notna() & (rm_fix >= pd.Timestamp("2000-01-01"))
         hit = _bad_m & ok_rm
         if bool(hit.any()):
-            out.loc[hit, "month"] = rm_fix.loc[hit].dt.to_period("M").astype(str)
+            out.loc[hit, "month"] = rm_fix.loc[hit].map(lambda t: _month_norm_key(t) if pd.notna(t) else "")
     attrs["fields_mapped"] = sorted(field_to_sources.keys())
     out.attrs.update(attrs)
     return out
@@ -9769,6 +9769,15 @@ def render_page_marketing_performance(
             post_df_kpi = _tab_subset(df_date, list(_POST_LEAD_SOURCE_TAB_PATTERNS))
     post_df_kpi = _ensure_closed_won_from_text_flags(post_df_kpi)
 
+    # **CpCW Analysis** (B2/B3) must read the dedicated Post Qual tab. When ``use_truth_for_nonspend`` maps
+    # ``post_df_kpi`` to the truth sheet, LF/close-date columns often do not match ME Post Lead — LF would fall
+    # back to RAW ``cw_kpi`` and crush CpCW:LF vs the spreadsheet.
+    post_df_cpcw_analysis = post_df_kpi
+    if use_truth_for_nonspend and pq_gid is not None:
+        _pq_cw = _strict_gid_source(pq_gid)
+        if not _pq_cw.empty:
+            post_df_cpcw_analysis = _ensure_closed_won_from_text_flags(_pq_cw)
+
     # Closed-won KPI should stay deduped to avoid cross-tab opportunity duplication.
     post_df = _dedupe_post_lead_rows(post_df_kpi)
 
@@ -10079,7 +10088,7 @@ def render_page_marketing_performance(
             _headline_keys,
             spend_df=spend_df,
             leads_df=leads_df,
-            post_df_kpi=post_df_kpi,
+            post_df_kpi=post_df_cpcw_analysis,
             cw_kpi=cw_kpi,
         )
         if _headline_keys
