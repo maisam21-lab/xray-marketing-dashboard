@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-24-cpcwlf-postqual-tab-not-truth"
+DASHBOARD_BUILD = "2026-04-24-cpcwlf-show-lf-prefer-full-postqual"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -6953,7 +6953,8 @@ def _kpi_block(
     q_rate = (_cw_q / _q_d * 100) if _q_d else 0.0
     sql_rate = (total_qualified / total_leads * 100) if total_leads else 0.0
     cpcw = (total_spend / total_cw) if total_cw else 0.0
-    cpcw_lf = (total_spend / total_first_month_lf) if total_cw and total_first_month_lf else 0.0
+    # CpCW:LF = Spend ÷ Σ LF (sheet B6); show whenever LF exists — CW can be 0 briefly if counts lag LF slice.
+    cpcw_lf = (total_spend / total_first_month_lf) if total_first_month_lf else 0.0
     spend_tcv_pct = (total_spend / total_tcv * 100) if total_tcv else 0.0
 
     pv = prior or {}
@@ -7039,7 +7040,7 @@ def _kpi_block(
 
     cpcw_s = _format_compact_k(cpcw) if total_cw and cpcw == cpcw else "—"
     tcv_s = _format_tcv_short(float(total_tcv)) if total_tcv else "—"
-    cpcwlf_s = _format_ratio_cpcw_lf(float(cpcw_lf)) if (total_cw and total_first_month_lf) else "—"
+    cpcwlf_s = _format_ratio_cpcw_lf(float(cpcw_lf)) if total_first_month_lf else "—"
     cw_sub = _kpi_funnel_sub_row("CPCW", cpcw_s) + _kpi_funnel_sub_row("Spend (same window)", _format_spend_k(total_spend) if total_spend else "$0")
     cpcw_sub = _kpi_funnel_sub_row("Closed won (same window)", f"{total_cw:,}") + _kpi_funnel_sub_row("Spend", _format_spend_k(total_spend) if total_spend else "$0")
     tcv_sub = _kpi_funnel_sub_row("CpCW:LF", cpcwlf_s) + _kpi_funnel_sub_row("Cost / TCV %", f"{spend_tcv_pct:.2f}%" if total_tcv else "—")
@@ -9774,7 +9775,11 @@ def render_page_marketing_performance(
     # back to RAW ``cw_kpi`` and crush CpCW:LF vs the spreadsheet.
     post_df_cpcw_analysis = post_df_kpi
     if use_truth_for_nonspend and pq_gid is not None:
-        _pq_cw = _strict_gid_source(pq_gid)
+        _pq_cw = _strict_gid_source(pq_gid, prefer_full_rows=True)
+        if _pq_cw.empty:
+            _pq_cw = _strict_gid_source(pq_gid)
+        if _pq_cw.empty and "source_tab" in df_date.columns:
+            _pq_cw = _tab_subset(df_date, list(_POST_LEAD_SOURCE_TAB_PATTERNS))
         if not _pq_cw.empty:
             post_df_cpcw_analysis = _ensure_closed_won_from_text_flags(_pq_cw)
 
