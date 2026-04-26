@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-24-cpcw-b2-sumcw-rowcount-b3-align"
+DASHBOARD_BUILD = "2026-04-26-postlead-stage-col-p-always"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -2067,8 +2067,9 @@ def _ensure_closed_won_from_text_flags(df: pd.DataFrame) -> pd.DataFrame:
             best_hits = hits
             derived = cand
 
-    # CW source-truth layout often has Stage in column P (16th column) without a stable header.
-    if (derived is None or best_hits == 0) and out.shape[1] >= 16:
+    # ME Post Lead / source-truth: Stage is often **column P** (index 15). Always pit it against named headers
+    # so a weaker wrong column cannot win and skip P (previously P ran only when best_hits == 0).
+    if out.shape[1] >= 16:
         col_p = _to_int_series_safe(out.iloc[:, 15].map(_is_closed_won_stage_text))
         hits_p = int(col_p.sum())
         if hits_p > best_hits:
