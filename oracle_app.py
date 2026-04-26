@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-24-remove-tcv-banner-restore-funnel-icons"
+DASHBOARD_BUILD = "2026-04-26-cache-merged-workbook-lazy-dash-nav"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -12491,27 +12491,30 @@ _DASH_NAV_OPTIONS = [
 ]
 
 
-def render_main_dashboard(
-    start_date: date,
-    end_date: date,
-) -> None:
-    """Load Google Sheets workbook (all tabs), then route to report pages."""
-    load_error: Optional[str] = None
+@st.cache_data(ttl=300, show_spinner=False)
+def _cached_merged_workbook_for_main_dashboard(
+    sheet_id: str,
+    paid_media_sheet_id: str,
+    truth_gid: int,
+    secret_fp: str,
+    *,
+    _ingest_version: str = DASHBOARD_BUILD,
+) -> tuple[pd.DataFrame, float, str]:
+    """Merge primary + optional paid-media workbook into one stacked frame (same steps as former inline load).
+
+    Cached separately from per-tab loaders so Streamlit Cloud cold starts avoid redundant concat work and
+    keep a single pickleable result for ~5 minutes (``ttl``). Bump ``DASHBOARD_BUILD`` to invalidate.
+    """
+    _ = _ingest_version
     df_loaded = pd.DataFrame()
-    sheet_id, _ = _workbook_id_resolution()
-    _fp = _secret_fingerprint(_service_account_from_streamlit_secrets())
-    _load_banner = st.empty()
-    _load_banner.info("**Loading…**")
+    gid0_sum = 0.0
     try:
-        # Source of truth: preferred canonical worksheet gid, with full-workbook fallback.
-        truth_gid = _default_truth_gid_from_secrets()
         try:
-            df_loaded = load_source_of_truth_tab(sheet_id, int(truth_gid), _fp)
+            df_loaded = load_source_of_truth_tab(sheet_id, int(truth_gid), secret_fp)
         except Exception:
             df_loaded = pd.DataFrame()
         if df_loaded.empty:
-            df_loaded = load_all_worksheets_combined(sheet_id, _fp)
-        # Prefer a spend-like tab injection if spend rows are missing from the combined load.
+            df_loaded = load_all_worksheets_combined(sheet_id, secret_fp)
         needs_spend_inject = True
         if not df_loaded.empty and "source_tab" in df_loaded.columns and "cost" in df_loaded.columns:
             sl = df_loaded["source_tab"].astype(str).str.strip().str.lower()
@@ -12524,21 +12527,18 @@ def render_main_dashboard(
         if needs_spend_inject:
             spend_norm = pd.DataFrame()
             try:
-                # Legacy path: exact worksheet title "Spend" (older workbooks).
-                spend_norm = load_named_worksheet_normalized(sheet_id, "Spend", _fp)
+                spend_norm = load_named_worksheet_normalized(sheet_id, "Spend", secret_fp)
             except Exception:
-                # Newer Supermetrics workbooks may not have a tab literally named "Spend".
                 spend_norm = pd.DataFrame()
             if spend_norm.empty:
-                spend_norm = load_spend_worksheet_fallback(sheet_id, _fp)
+                spend_norm = load_spend_worksheet_fallback(sheet_id, secret_fp)
             if not spend_norm.empty:
                 if df_loaded.empty:
                     df_loaded = spend_norm
                 else:
                     df_loaded = pd.concat([df_loaded, spend_norm], ignore_index=True)
-        # Hardwired spend source from gid=0 (requested source tab).
-        spend_gid0 = load_spend_gid0_normalized(sheet_id, _fp)
-        st.session_state["_gid0_spend_sum"] = load_spend_gid0_raw_sum(sheet_id, _fp)
+        spend_gid0 = load_spend_gid0_normalized(sheet_id, secret_fp)
+        gid0_sum = float(load_spend_gid0_raw_sum(sheet_id, secret_fp))
         if not spend_gid0.empty:
             if not df_loaded.empty and "source_tab" in df_loaded.columns:
                 _rm_syn = df_loaded["source_tab"].astype(str).str.match(r"^gid:\d+_spend$", na=False)
@@ -12548,24 +12548,23 @@ def render_main_dashboard(
             else:
                 df_loaded = pd.concat([df_loaded, spend_gid0], ignore_index=True)
 
-        # Explicitly ensure core business tabs are loaded by title-match (one worksheet list + four reads).
-        _ws_meta = list_worksheet_meta(sheet_id, _fp)
+        _ws_meta = list_worksheet_meta(sheet_id, secret_fp)
         spend_named = _load_first_matching_worksheet_from_meta(
-            sheet_id, (r"^spend$", r"raw\s*spend", r"sum\s*spend"), _fp, _ws_meta
+            sheet_id, (r"^spend$", r"raw\s*spend", r"sum\s*spend"), secret_fp, _ws_meta
         )
         leads_named = _load_first_matching_worksheet_from_meta(
-            sheet_id, (r"^leads?$", r"raw\s*leads?"), _fp, _ws_meta
+            sheet_id, (r"^leads?$", r"raw\s*leads?"), secret_fp, _ws_meta
         )
         post_named = _load_first_matching_worksheet_from_meta(
             sheet_id,
             (r"post\s*leads?", r"raw.*post.*qual", r"post\s+qual", r"post.*qualif"),
-            _fp,
+            secret_fp,
             _ws_meta,
         )
         cw_named = _load_first_matching_worksheet_from_meta(
             sheet_id,
             tuple(_RAW_CW_TAB_PATTERNS),
-            _fp,
+            secret_fp,
             _ws_meta,
         )
         extras = [x for x in (spend_named, leads_named, post_named, cw_named) if not x.empty]
@@ -12575,15 +12574,12 @@ def render_main_dashboard(
                 df_loaded = pd.concat(extras, ignore_index=True)
             else:
                 df_loaded = pd.concat([df_loaded] + extras, ignore_index=True)
-        # Primary workbook rows only (ME X-Ray / ``XRAY_SHEET_ID``).
         if not df_loaded.empty:
             df_loaded = _dataframe_with_spreadsheet_id(df_loaded, sheet_id)
-        # Optional second workbook: Supermetrics / per-platform ads tabs (``PAID_MEDIA_SHEET_ID``).
-        ads_id = _optional_paid_media_sheet_id_from_secrets()
+        ads_id = (paid_media_sheet_id or "").strip()
         if ads_id and ads_id != sheet_id:
-            df_ads = load_all_worksheets_combined(ads_id, _fp)
-            # Explicitly re-load the 4 platform gids so these critical tabs are always present.
-            df_ads_gid = _load_paid_media_platform_tabs_by_gid(ads_id, _fp)
+            df_ads = load_all_worksheets_combined(ads_id, secret_fp)
+            df_ads_gid = _load_paid_media_platform_tabs_by_gid(ads_id, secret_fp)
             if not df_ads_gid.empty:
                 if df_ads.empty:
                     df_ads = df_ads_gid
@@ -12600,16 +12596,42 @@ def render_main_dashboard(
                 else:
                     df_loaded = pd.concat([df_loaded, df_ads], ignore_index=True)
     except Exception as exc:
-        load_error = str(exc)
+        return pd.DataFrame(), 0.0, str(exc)
+
+    if not df_loaded.empty:
+        df_loaded = _enforce_global_reporting_floor(df_loaded)
+        df_loaded = _apply_sep2025_all_sheets_except_leads_postlead(df_loaded)
+    return df_loaded, gid0_sum, ""
+
+
+def render_main_dashboard(
+    start_date: date,
+    end_date: date,
+) -> None:
+    """Load Google Sheets workbook (all tabs), then route to report pages."""
+    sheet_id, _ = _workbook_id_resolution()
+    _fp = _secret_fingerprint(_service_account_from_streamlit_secrets())
+    truth_gid = _default_truth_gid_from_secrets()
+    ads_id = _optional_paid_media_sheet_id_from_secrets()
+    _load_banner = st.empty()
+    _load_banner.info("**Loading…**")
+    df_loaded = pd.DataFrame()
+    gid0_sum = 0.0
+    load_error = ""
+    try:
+        df_loaded, gid0_sum, load_error = _cached_merged_workbook_for_main_dashboard(
+            sheet_id,
+            ads_id or "",
+            int(truth_gid),
+            _fp,
+        )
     finally:
         try:
             _load_banner.empty()
         except Exception:
             pass
 
-    if not load_error and not df_loaded.empty:
-        df_loaded = _enforce_global_reporting_floor(df_loaded)
-        df_loaded = _apply_sep2025_all_sheets_except_leads_postlead(df_loaded)
+    st.session_state["_gid0_spend_sum"] = float(gid0_sum or 0.0)
 
     _no_data_msg = (
         "No data rows were returned. Check tabs and column headers against the ME X-Ray template."
@@ -12624,12 +12646,20 @@ def render_main_dashboard(
         st.warning(_no_data_msg)
         return
 
-    tab_mpo, tab_mom, tab_channels = st.tabs(_DASH_NAV_OPTIONS)
-    with tab_mpo:
+    # Horizontal radio (not ``st.tabs``): Streamlit runs **every** ``with tab:`` block on each rerun —
+    # lazy branch here cuts ~2/3 of dashboard Python work when users stay on one section.
+    _nav = st.radio(
+        "Dashboard section",
+        _DASH_NAV_OPTIONS,
+        horizontal=True,
+        key="dash_main_nav",
+        label_visibility="collapsed",
+    )
+    if _nav == "Marketing performance":
         render_page_marketing_performance(df_loaded, start_date, end_date)
-    with tab_mom:
+    elif _nav == "Market MoM":
         render_page_market_mom(df_loaded, start_date, end_date)
-    with tab_channels:
+    else:
         render_page_channels(df_loaded, start_date, end_date, inbound=False)
 
     # AI widget temporarily disabled per request.
@@ -13622,6 +13652,40 @@ def main() -> None:
         color: #64748b !important;
     }
     .stTabs [aria-selected="true"] span { color: white !important; }
+    /* Main section nav (replaces ``st.tabs``): pill strip aligned with tab styling above */
+    .st-key-dash_main_nav [role="radiogroup"] {
+        gap: 6px;
+        background: rgba(255, 255, 255, 0.72);
+        backdrop-filter: blur(10px);
+        -webkit-backdrop-filter: blur(10px);
+        padding: 6px;
+        border-radius: 999px;
+        border: 1px solid rgba(15, 23, 42, 0.06);
+        box-shadow: 0 2px 12px rgba(15, 23, 42, 0.04);
+        flex-wrap: wrap !important;
+        margin: 2px 0 8px 0;
+    }
+    .st-key-dash_main_nav label {
+        margin: 0 !important;
+        padding: 9px 18px !important;
+        border-radius: 999px !important;
+        font-weight: 600 !important;
+        font-size: 0.8125rem !important;
+        color: #64748b !important;
+        letter-spacing: -0.01em;
+        border: 1px solid transparent !important;
+        cursor: pointer;
+    }
+    .st-key-dash_main_nav label:has(input:checked) {
+        background: linear-gradient(135deg, #0d9488 0%, #0f766e 100%) !important;
+        color: #ffffff !important;
+        box-shadow: 0 2px 10px rgba(13, 148, 136, 0.35);
+        border-color: rgba(13, 148, 136, 0.35) !important;
+    }
+    .st-key-dash_main_nav label:has(input:checked) p,
+    .st-key-dash_main_nav label:has(input:checked) span {
+        color: #ffffff !important;
+    }
     .streamlit-expanderHeader { background: #F8FAFC; border-radius: 8px; border-left: 4px solid #4f8483; }
     .stTextInput input, .stSelectbox > div, .stDateInput input {
         border-radius: 10px !important;
