@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-24-cpcwlf-card-formula-subtitle"
+DASHBOARD_BUILD = "2026-04-24-headline-b2-b3-month-scoped"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -6595,20 +6595,26 @@ def _mpo_scorecard_headline_totals_for_months(
     d_scoped = _post_qual_cw_analysis_slice(post_norm_cw, month_keys=month_keys)
     base_has_cw_rows = not post_norm_cw.empty and bool(_post_qual_cw_analysis_mask(post_norm_cw).any())
 
-    # Headline **CW (inc. approved)** / B3 LF: prefer **full** Post Qual CpCW cohort (``month_keys=None``), then
-    # scoped months, then pipeline CW — no close-date floor on the mask (all sheet rows with CW flag).
+    # Headline B2/B3 must use the **same calendar window** as Total Marketing Spend (``month_keys``).
+    # Preferring ``month_keys=None`` first paired **scoped** spend with **all-time** Σ LF and crushed CpCW:LF (e.g. ~0.007 vs ~0.92).
     cw_full = _post_qual_closed_won_cw_analysis_count(post_norm_cw, month_keys=None)
     cw_scoped = _post_qual_closed_won_cw_analysis_count(post_norm_cw, month_keys=month_keys)
     lf_full = _post_qual_first_month_lf_cw_analysis_sum(post_norm_cw, month_keys=None)
     lf_scoped = _post_qual_first_month_lf_cw_analysis_sum(post_norm_cw, month_keys=month_keys)
+    lf_from_cw_tab = float(total_first_month_lf)
 
     lf_pick = 0.0
-    if cw_full > 0:
+    if cw_scoped > 0:
+        total_cw_out = int(cw_scoped)
+        if lf_scoped > 0:
+            lf_pick = float(lf_scoped)
+        elif lf_from_cw_tab > 0:
+            lf_pick = lf_from_cw_tab
+        elif lf_full > 0:
+            lf_pick = float(lf_full)
+    elif cw_full > 0:
         total_cw_out = int(cw_full)
         lf_pick = float(lf_full) if lf_full > 0 else float(lf_scoped)
-    elif cw_scoped > 0:
-        total_cw_out = int(cw_scoped)
-        lf_pick = float(lf_scoped) if lf_scoped > 0 else float(lf_full)
     else:
         total_cw_out = int(pipe_c["cw"])
         lf_pick = 0.0
