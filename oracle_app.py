@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-24-cpcwlf-card-no-b-labels"
+DASHBOARD_BUILD = "2026-04-24-cpcwlf-lf-headline-month-keys"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -10259,10 +10259,20 @@ def render_page_marketing_performance(
         cw_for_qwin = _hm.get("cw_for_qwin")
         qual_for_qwin = _hm.get("qual_for_qwin")
 
-    # Σ LF for CpCW:LF — same post-qual **rows** as locked CW when the tab carries ``first_month_lf`` (else keep headline LF).
-    _lf_same_rows = _mpo_post_lead_first_month_lf_sum_on_cw_rows(post_df_cpcw_analysis, df)
-    if _lf_same_rows > 0:
-        total_first_month_lf = float(_lf_same_rows)
+    # Σ LF for CpCW:LF must use the **same month keys** as headline spend (``_headline_keys``). Summing LF on every
+    # ``month`` present in ``df`` while spend only sums ``_headline_keys`` inflated the denominator (~0.28 vs ~0.92).
+    _post_geo_lf = _mpo_slice_by_dashboard_ref(post_df_cpcw_analysis, df)
+    _post_norm_lf = _normalized_post_qual_for_cw_analysis(_post_geo_lf)
+    _lf_headline = _post_qual_first_month_lf_cw_analysis_sum(
+        _post_norm_lf,
+        month_keys=_headline_keys if _headline_keys else None,
+    )
+    if _lf_headline > 0:
+        total_first_month_lf = float(_lf_headline)
+    else:
+        _lf_same_rows = _mpo_post_lead_first_month_lf_sum_on_cw_rows(post_df_cpcw_analysis, df)
+        if _lf_same_rows > 0:
+            total_first_month_lf = float(_lf_same_rows)
 
     # Keep Actual TCV card aligned with the same CW KPI slice used for the TCV check banner.
     if _tcv_sum_override is not None:
