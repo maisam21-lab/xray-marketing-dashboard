@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-24-headline-b2-b3-geo-scoped"
+DASHBOARD_BUILD = "2026-04-24-mpo-cw-postlead-locked"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -1412,6 +1412,39 @@ def _mpo_slice_by_dashboard_ref(frame: pd.DataFrame, df_ref: pd.DataFrame) -> pd
             km = out["month"].map(_month_norm_key)
             out = out[km.isin(allow_m) | (km == "")]
     return out
+
+
+def _mpo_cw_kpi_post_lead_record_count(post_df: pd.DataFrame, df_scope: pd.DataFrame) -> int:
+    """**CW (inc. approved)** for Marketing performance — fixed definition (do not swap for source-truth or CpCW B2).
+
+    Count **records** on the post-qualification / post-lead worksheet in ``post_df`` after the same **Market × Month**
+    filters as the tab (``df_scope``), where **Stage** is Closed Won or Approved (via ``_ensure_closed_won_from_text_flags``).
+    """
+    if post_df.empty or df_scope.empty:
+        return 0
+    sl = _mpo_slice_by_dashboard_ref(post_df, df_scope)
+    if sl.empty:
+        return 0
+    w = _ensure_closed_won_from_text_flags(sl.copy())
+    if "closed_won" not in w.columns:
+        return 0
+    hit = pd.to_numeric(w["closed_won"], errors="coerce").fillna(0) > 0
+    return int(hit.sum())
+
+
+def _mpo_post_lead_first_month_lf_sum_on_cw_rows(post_df: pd.DataFrame, df_scope: pd.DataFrame) -> float:
+    """Σ ``first_month_lf`` on the **same** post-qual rows as ``_mpo_cw_kpi_post_lead_record_count`` (CW flag > 0)."""
+    if post_df.empty or df_scope.empty:
+        return 0.0
+    sl = _mpo_slice_by_dashboard_ref(post_df, df_scope)
+    if sl.empty:
+        return 0.0
+    w = _ensure_closed_won_from_text_flags(sl.copy())
+    if "closed_won" not in w.columns or "first_month_lf" not in w.columns:
+        return 0.0
+    mask = pd.to_numeric(w["closed_won"], errors="coerce").fillna(0) > 0
+    lf = pd.to_numeric(w.loc[mask, "first_month_lf"], errors="coerce").fillna(0)
+    return float(lf.sum())
 
 
 def _mpo_slice_supermetrics_pool_for_kpis(
@@ -8027,8 +8060,9 @@ def _mpo_metric_definition(metric_name: str) -> str:
             "(dates → month, country → market). It is the same additive input used for efficiency ratios."
         ),
         "CW (Inc Approved)": (
-            "Closed won opportunities (including approved) from the post-qualification pipeline, summed for this "
-            "month × market in the master merge."
+            "**Locked definition (Marketing performance headline):** count of **post-qualification / post-lead** "
+            "worksheet **records** in your Market × Month scope whose **Stage** is **Closed Won** or **Approved** "
+            "(same rules as ``_is_closed_won_stage_text``). Not sourced from the RAW CW truth tab or CpCW B2 math."
         ),
         "CPCW": (
             "**Cost per closed won (CpCW):** total marketing spend in the slice ÷ number of closed-won deals. "
@@ -9906,6 +9940,9 @@ def render_page_marketing_performance(
         if not _pq_cw.empty:
             post_df_cpcw_analysis = _ensure_closed_won_from_text_flags(_pq_cw)
 
+    # CW (inc. approved) — **locked** to post-qual / post-lead sheet: same Market × Month as tab, stage Closed Won + Approved.
+    total_cw = _mpo_cw_kpi_post_lead_record_count(post_df_cpcw_analysis, df)
+
     # Closed-won KPI should stay deduped to avoid cross-tab opportunity duplication.
     post_df = _dedupe_post_lead_rows(post_df_kpi)
 
@@ -9974,19 +10011,6 @@ def render_page_marketing_performance(
                 total_leads = _lead_rows_count(leads_df)
                 total_qualified = _qualified_count_from_leads(leads_df)
     total_pitching = int(post_df_kpi["pitching"].sum()) if "pitching" in post_df_kpi.columns else 0
-    # CW (inc. approved): Leads tab gid — stage Closed Won / Approved (no mandatory close-date floor).
-    cw_total_source_truth = (
-        _closed_won_kpi_count_from_source_truth_gid(sheet_id, int(cw_truth_gid))
-        if cw_truth_gid is not None
-        else 0
-    )
-    total_cw = cw_total_source_truth
-    if total_cw == 0:
-        total_cw = _closed_won_kpi_count_from_leads_gid(df_loaded, sheet_id, int(leads_gid), _fp_mpo)
-    if total_cw == 0:
-        pl_only = _dedupe_post_lead_rows(_tab_subset(df, list(_POST_LEAD_SOURCE_TAB_PATTERNS)))
-        if not pl_only.empty and "closed_won" in pl_only.columns:
-            total_cw = _sum_closed_won_unique_opportunities(pl_only)
     total_new = int(post_df["new"].sum()) if "new" in post_df.columns else 0
     total_working = int(post_df["working"].sum()) if "working" in post_df.columns else 0
     total_negotiation = int(post_df_kpi["negotiation"].sum()) if "negotiation" in post_df_kpi.columns else 0
@@ -10008,11 +10032,6 @@ def render_page_marketing_performance(
     gid0_spend_sum = float(st.session_state.get("_gid0_spend_sum", 0.0) or 0.0)
     if total_spend == 0.0 and gid0_spend_sum > 0.0:
         total_spend = gid0_spend_sum
-    if total_cw == 0 and "closed_won" in df.columns:
-        pl_only = _dedupe_post_lead_rows(_tab_subset(df, list(_POST_LEAD_SOURCE_TAB_PATTERNS)))
-        if not pl_only.empty and "closed_won" in pl_only.columns:
-            total_cw = _sum_closed_won_unique_opportunities(pl_only)
-
     # Cloud safety net: if mapped sources still resolve to zeros, fall back to full filtered frame.
     if (
         total_spend == 0.0
@@ -10045,12 +10064,7 @@ def render_page_marketing_performance(
                 pass
         _pk = _pk if not _pk.empty else df
         total_pitching = int(_pk["pitching"].sum()) if "pitching" in _pk.columns else 0
-        pl_only = _dedupe_post_lead_rows(_tab_subset(df, list(_POST_LEAD_SOURCE_TAB_PATTERNS)))
-        total_cw = (
-            _sum_closed_won_unique_opportunities(pl_only)
-            if (not pl_only.empty and "closed_won" in pl_only.columns)
-            else 0
-        )
+        total_cw = _mpo_cw_kpi_post_lead_record_count(post_df_cpcw_analysis, df)
         total_new = int(df["new"].sum()) if "new" in df.columns else 0
         total_working = int(df["working"].sum()) if "working" in df.columns else 0
         total_negotiation = int(_pk["negotiation"].sum()) if "negotiation" in _pk.columns else 0
@@ -10233,7 +10247,6 @@ def render_page_marketing_performance(
         ctr = float(_hm["ctr"])
         total_leads = int(_hm["total_leads"])
         total_qualified = int(_hm["total_qualified"])
-        total_cw = int(_hm["total_cw"])
         total_tcv = float(_hm["total_tcv"])
         total_first_month_lf = float(_hm["total_first_month_lf"])
         cpc = float(_hm["cpc"])
@@ -10249,9 +10262,11 @@ def render_page_marketing_performance(
         cw_for_qwin = _hm.get("cw_for_qwin")
         qual_for_qwin = _hm.get("qual_for_qwin")
 
-    # Source-truth CW count only when post-qual CpCW slice did not yield a headline count (same sheet as B2/B3).
-    if cw_total_source_truth > 0 and int(total_cw) <= 0:
-        total_cw = int(cw_total_source_truth)
+    # Σ LF for CpCW:LF — same post-qual **rows** as locked CW when the tab carries ``first_month_lf`` (else keep headline LF).
+    _lf_same_rows = _mpo_post_lead_first_month_lf_sum_on_cw_rows(post_df_cpcw_analysis, df)
+    if _lf_same_rows > 0:
+        total_first_month_lf = float(_lf_same_rows)
+
     # Keep Actual TCV card aligned with the same CW KPI slice used for the TCV check banner.
     if _tcv_sum_override is not None:
         total_tcv = float(_tcv_sum_override)
