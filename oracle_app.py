@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-24-headline-b2-b3-month-scoped"
+DASHBOARD_BUILD = "2026-04-24-headline-b2-b3-geo-scoped"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -10210,13 +10210,17 @@ def render_page_marketing_performance(
 
     _kpi_prior: dict[str, Any] = {"_comparison_off": True}
 
+    # B2/B3 must use the **same Market × Month** scope as ``spend_df`` (``df``). Using the full post-qual tab here
+    # summed every geography's LF for the headline months while spend was ME-only → Σ LF ~ $17M vs ~$132k in Excel.
+    post_df_cpcw_headline = _mpo_slice_by_dashboard_ref(post_df_cpcw_analysis, df)
+
     # Headline KPIs: **sum** across months in scope — same **Data scope** as the multiselects (``spend_df``, ``cw_kpi``).
     _hm = (
         _mpo_scorecard_headline_totals_for_months(
             _headline_keys,
             spend_df=spend_df,
             leads_df=leads_df,
-            post_df_kpi=post_df_cpcw_analysis,
+            post_df_kpi=post_df_cpcw_headline if not post_df_cpcw_headline.empty else post_df_cpcw_analysis,
             cw_kpi=cw_kpi,
         )
         if _headline_keys
