@@ -7,6 +7,7 @@ Run (Windows: use ``py -m`` if ``streamlit`` is not on PATH):
 
 from __future__ import annotations
 
+import concurrent.futures
 import hashlib
 import html
 import io
@@ -28,7 +29,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-26-cache-merged-workbook-lazy-dash-nav"
+DASHBOARD_BUILD = "2026-04-26-parallel-tabs-no-merged-pickle-cache"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -3980,6 +3981,66 @@ def list_worksheet_meta(sheet_id: str, _secret_fp: str) -> list[tuple[str, int]]
     return [(w.title, int(w.id)) for w in sh.worksheets()]
 
 
+def _load_one_tab_row_for_combined_workbook(
+    sheet_id: str,
+    secret_creds: dict,
+    title: str,
+    ws_gid: int,
+) -> tuple[Optional[pd.DataFrame], tuple[str, int]]:
+    """Load + normalize one tab for ``load_all_worksheets_combined``. No Streamlit calls — safe for thread pools."""
+    prefer_grid = int(ws_gid) in DEFAULT_PAID_MEDIA_PLATFORM_GIDS or _tab_title_looks_like_ads_data_sheet(
+        title
+    )
+    raw = pd.DataFrame()
+    if prefer_grid:
+        raw = _dataframe_from_grid_best_supermetrics_header(sheet_id, secret_creds, int(ws_gid))
+    try:
+        if raw.empty or len(raw.columns) < 4:
+            raw = _read_sheet_auth(
+                sheet_id,
+                secret_creds,
+                worksheet_name=None,
+                worksheet_gid=int(ws_gid),
+            )
+            if raw.empty or len(raw.columns) == 0:
+                raw = _read_sheet_auth_loose(
+                    sheet_id,
+                    secret_creds,
+                    worksheet_gid=int(ws_gid),
+                )
+    except Exception:
+        try:
+            raw = _read_sheet_auth_loose(
+                sheet_id,
+                secret_creds,
+                worksheet_gid=int(ws_gid),
+            )
+        except Exception:
+            return None, (title, -1)
+    raw = _promote_wide_metric_header_row_if_needed(raw)
+    raw = _coerce_two_row_sheet_headers(raw)
+    raw = _preprocess_excel_sheet(raw, title)
+    df = _normalize(raw)
+    if not df.empty and int(ws_gid) in DEFAULT_PAID_MEDIA_PLATFORM_GIDS:
+        df = df.copy()
+        df["cost"] = _sum_cost_columns_raw(raw, len(df)).values
+        if "country" not in df.columns:
+            df["country"] = "Unknown"
+        ck = df["country"].astype(str).map(_country_join_key).fillna("unknown").astype(str).str.strip().str.lower()
+        bad_country = ck.isin({"", "unknown", "nan", "none", "<na>"})
+        if bool(bad_country.any()):
+            inferred = _infer_country_from_cost_headers_raw(raw, len(df))
+            df.loc[bad_country, "country"] = inferred.loc[bad_country].values
+        df = _apply_equal_split_all_market_engagement(df)
+        df = _canonicalize_spend_month_column(df)
+    if df.empty:
+        return None, (title, 0)
+    df = df.copy()
+    df["source_tab"] = (title.strip() if title.strip() else "Sheet")
+    df["worksheet_gid"] = int(ws_gid)
+    return df, (title, len(df))
+
+
 @st.cache_data(ttl=300)
 def load_all_worksheets_combined(
     sheet_id: str,
@@ -3998,63 +4059,25 @@ def load_all_worksheets_combined(
         )
     frames: list[pd.DataFrame] = []
     tab_stats: list[tuple[str, int]] = []
-    for title, ws_gid in meta:
-        prefer_grid = int(ws_gid) in DEFAULT_PAID_MEDIA_PLATFORM_GIDS or _tab_title_looks_like_ads_data_sheet(
-            title
-        )
-        raw = pd.DataFrame()
-        if prefer_grid:
-            raw = _dataframe_from_grid_best_supermetrics_header(sheet_id, secret_creds, int(ws_gid))
-        try:
-            if raw.empty or len(raw.columns) < 4:
-                raw = _read_sheet_auth(
-                    sheet_id,
-                    secret_creds,
-                    worksheet_name=None,
-                    worksheet_gid=int(ws_gid),
-                )
-                if raw.empty or len(raw.columns) == 0:
-                    raw = _read_sheet_auth_loose(
-                        sheet_id,
-                        secret_creds,
-                        worksheet_gid=int(ws_gid),
-                    )
-        except Exception:
-            # If strict read fails, retry with loose grid reader before skipping the tab.
-            try:
-                raw = _read_sheet_auth_loose(
-                    sheet_id,
-                    secret_creds,
-                    worksheet_gid=int(ws_gid),
-                )
-            except Exception:
-                tab_stats.append((title, -1))
-                continue
-        raw = _promote_wide_metric_header_row_if_needed(raw)
-        raw = _coerce_two_row_sheet_headers(raw)
-        raw = _preprocess_excel_sheet(raw, title)
-        df = _normalize(raw)
-        if not df.empty and int(ws_gid) in DEFAULT_PAID_MEDIA_PLATFORM_GIDS:
-            # Paid platform tabs: spend equals SUM(all raw headers containing "cost") per row.
-            df = df.copy()
-            df["cost"] = _sum_cost_columns_raw(raw, len(df)).values
-            if "country" not in df.columns:
-                df["country"] = "Unknown"
-            ck = df["country"].astype(str).map(_country_join_key).fillna("unknown").astype(str).str.strip().str.lower()
-            bad_country = ck.isin({"", "unknown", "nan", "none", "<na>"})
-            if bool(bad_country.any()):
-                inferred = _infer_country_from_cost_headers_raw(raw, len(df))
-                df.loc[bad_country, "country"] = inferred.loc[bad_country].values
-            df = _apply_equal_split_all_market_engagement(df)
-            df = _canonicalize_spend_month_column(df)
-        if df.empty:
-            tab_stats.append((title, 0))
-            continue
-        df = df.copy()
-        df["source_tab"] = (title.strip() if title.strip() else "Sheet")
-        df["worksheet_gid"] = int(ws_gid)
-        frames.append(df)
-        tab_stats.append((title, len(df)))
+    use_parallel = len(meta) >= 3
+    max_workers = min(8, max(1, len(meta)))
+    if use_parallel and max_workers > 1:
+
+        def _job(tpl: tuple[str, int]) -> tuple[Optional[pd.DataFrame], tuple[str, int]]:
+            t, g = tpl
+            return _load_one_tab_row_for_combined_workbook(sheet_id, secret_creds, t, int(g))
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+            for df, stat in pool.map(_job, meta):
+                tab_stats.append(stat)
+                if df is not None:
+                    frames.append(df)
+    else:
+        for title, ws_gid in meta:
+            df, stat = _load_one_tab_row_for_combined_workbook(sheet_id, secret_creds, title, int(ws_gid))
+            tab_stats.append(stat)
+            if df is not None:
+                frames.append(df)
     if not frames:
         out = pd.DataFrame()
         out.attrs["tab_stats"] = tab_stats
@@ -12491,30 +12514,27 @@ _DASH_NAV_OPTIONS = [
 ]
 
 
-@st.cache_data(ttl=300, show_spinner=False)
-def _cached_merged_workbook_for_main_dashboard(
-    sheet_id: str,
-    paid_media_sheet_id: str,
-    truth_gid: int,
-    secret_fp: str,
-    *,
-    _ingest_version: str = DASHBOARD_BUILD,
-) -> tuple[pd.DataFrame, float, str]:
-    """Merge primary + optional paid-media workbook into one stacked frame (same steps as former inline load).
-
-    Cached separately from per-tab loaders so Streamlit Cloud cold starts avoid redundant concat work and
-    keep a single pickleable result for ~5 minutes (``ttl``). Bump ``DASHBOARD_BUILD`` to invalidate.
-    """
-    _ = _ingest_version
+def render_main_dashboard(
+    start_date: date,
+    end_date: date,
+) -> None:
+    """Load Google Sheets workbook (all tabs), then route to report pages."""
+    sheet_id, _ = _workbook_id_resolution()
+    _fp = _secret_fingerprint(_service_account_from_streamlit_secrets())
+    truth_gid = _default_truth_gid_from_secrets()
+    ads_id = _optional_paid_media_sheet_id_from_secrets()
+    _load_banner = st.empty()
+    _load_banner.info("**Loading…**")
+    load_error: Optional[str] = None
     df_loaded = pd.DataFrame()
     gid0_sum = 0.0
     try:
         try:
-            df_loaded = load_source_of_truth_tab(sheet_id, int(truth_gid), secret_fp)
+            df_loaded = load_source_of_truth_tab(sheet_id, int(truth_gid), _fp)
         except Exception:
             df_loaded = pd.DataFrame()
         if df_loaded.empty:
-            df_loaded = load_all_worksheets_combined(sheet_id, secret_fp)
+            df_loaded = load_all_worksheets_combined(sheet_id, _fp)
         needs_spend_inject = True
         if not df_loaded.empty and "source_tab" in df_loaded.columns and "cost" in df_loaded.columns:
             sl = df_loaded["source_tab"].astype(str).str.strip().str.lower()
@@ -12527,18 +12547,18 @@ def _cached_merged_workbook_for_main_dashboard(
         if needs_spend_inject:
             spend_norm = pd.DataFrame()
             try:
-                spend_norm = load_named_worksheet_normalized(sheet_id, "Spend", secret_fp)
+                spend_norm = load_named_worksheet_normalized(sheet_id, "Spend", _fp)
             except Exception:
                 spend_norm = pd.DataFrame()
             if spend_norm.empty:
-                spend_norm = load_spend_worksheet_fallback(sheet_id, secret_fp)
+                spend_norm = load_spend_worksheet_fallback(sheet_id, _fp)
             if not spend_norm.empty:
                 if df_loaded.empty:
                     df_loaded = spend_norm
                 else:
                     df_loaded = pd.concat([df_loaded, spend_norm], ignore_index=True)
-        spend_gid0 = load_spend_gid0_normalized(sheet_id, secret_fp)
-        gid0_sum = float(load_spend_gid0_raw_sum(sheet_id, secret_fp))
+        spend_gid0 = load_spend_gid0_normalized(sheet_id, _fp)
+        gid0_sum = float(load_spend_gid0_raw_sum(sheet_id, _fp))
         if not spend_gid0.empty:
             if not df_loaded.empty and "source_tab" in df_loaded.columns:
                 _rm_syn = df_loaded["source_tab"].astype(str).str.match(r"^gid:\d+_spend$", na=False)
@@ -12548,23 +12568,23 @@ def _cached_merged_workbook_for_main_dashboard(
             else:
                 df_loaded = pd.concat([df_loaded, spend_gid0], ignore_index=True)
 
-        _ws_meta = list_worksheet_meta(sheet_id, secret_fp)
+        _ws_meta = list_worksheet_meta(sheet_id, _fp)
         spend_named = _load_first_matching_worksheet_from_meta(
-            sheet_id, (r"^spend$", r"raw\s*spend", r"sum\s*spend"), secret_fp, _ws_meta
+            sheet_id, (r"^spend$", r"raw\s*spend", r"sum\s*spend"), _fp, _ws_meta
         )
         leads_named = _load_first_matching_worksheet_from_meta(
-            sheet_id, (r"^leads?$", r"raw\s*leads?"), secret_fp, _ws_meta
+            sheet_id, (r"^leads?$", r"raw\s*leads?"), _fp, _ws_meta
         )
         post_named = _load_first_matching_worksheet_from_meta(
             sheet_id,
             (r"post\s*leads?", r"raw.*post.*qual", r"post\s+qual", r"post.*qualif"),
-            secret_fp,
+            _fp,
             _ws_meta,
         )
         cw_named = _load_first_matching_worksheet_from_meta(
             sheet_id,
             tuple(_RAW_CW_TAB_PATTERNS),
-            secret_fp,
+            _fp,
             _ws_meta,
         )
         extras = [x for x in (spend_named, leads_named, post_named, cw_named) if not x.empty]
@@ -12576,10 +12596,9 @@ def _cached_merged_workbook_for_main_dashboard(
                 df_loaded = pd.concat([df_loaded] + extras, ignore_index=True)
         if not df_loaded.empty:
             df_loaded = _dataframe_with_spreadsheet_id(df_loaded, sheet_id)
-        ads_id = (paid_media_sheet_id or "").strip()
         if ads_id and ads_id != sheet_id:
-            df_ads = load_all_worksheets_combined(ads_id, secret_fp)
-            df_ads_gid = _load_paid_media_platform_tabs_by_gid(ads_id, secret_fp)
+            df_ads = load_all_worksheets_combined(ads_id, _fp)
+            df_ads_gid = _load_paid_media_platform_tabs_by_gid(ads_id, _fp)
             if not df_ads_gid.empty:
                 if df_ads.empty:
                     df_ads = df_ads_gid
@@ -12596,35 +12615,7 @@ def _cached_merged_workbook_for_main_dashboard(
                 else:
                     df_loaded = pd.concat([df_loaded, df_ads], ignore_index=True)
     except Exception as exc:
-        return pd.DataFrame(), 0.0, str(exc)
-
-    if not df_loaded.empty:
-        df_loaded = _enforce_global_reporting_floor(df_loaded)
-        df_loaded = _apply_sep2025_all_sheets_except_leads_postlead(df_loaded)
-    return df_loaded, gid0_sum, ""
-
-
-def render_main_dashboard(
-    start_date: date,
-    end_date: date,
-) -> None:
-    """Load Google Sheets workbook (all tabs), then route to report pages."""
-    sheet_id, _ = _workbook_id_resolution()
-    _fp = _secret_fingerprint(_service_account_from_streamlit_secrets())
-    truth_gid = _default_truth_gid_from_secrets()
-    ads_id = _optional_paid_media_sheet_id_from_secrets()
-    _load_banner = st.empty()
-    _load_banner.info("**Loading…**")
-    df_loaded = pd.DataFrame()
-    gid0_sum = 0.0
-    load_error = ""
-    try:
-        df_loaded, gid0_sum, load_error = _cached_merged_workbook_for_main_dashboard(
-            sheet_id,
-            ads_id or "",
-            int(truth_gid),
-            _fp,
-        )
+        load_error = str(exc)
     finally:
         try:
             _load_banner.empty()
@@ -12632,6 +12623,10 @@ def render_main_dashboard(
             pass
 
     st.session_state["_gid0_spend_sum"] = float(gid0_sum or 0.0)
+
+    if not load_error and not df_loaded.empty:
+        df_loaded = _enforce_global_reporting_floor(df_loaded)
+        df_loaded = _apply_sep2025_all_sheets_except_leads_postlead(df_loaded)
 
     _no_data_msg = (
         "No data rows were returned. Check tabs and column headers against the ME X-Ray template."
