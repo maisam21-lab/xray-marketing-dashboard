@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-24-cpcwlf-ratio-2dp"
+DASHBOARD_BUILD = "2026-04-24-leads-detail-gid-1359284016"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -61,7 +61,9 @@ DEFAULT_SOURCE_TRUTH_GID = 1212330729
 ME_XRAY_SOURCE_OF_TRUTH_URL = (
     f"https://docs.google.com/spreadsheets/d/{DEFAULT_SHEET_ID}/edit?gid={DEFAULT_SOURCE_TRUTH_GID}"
 )
-DEFAULT_LEADS_WORKSHEET_GID = 839225260
+# Raw / detail leads tab (all lead rows + qualifying flags for SQL counts):
+# https://docs.google.com/spreadsheets/d/1tcjVk7UD-4LG3DG-73ELTNCfzD2XnwnEYqdS8NoH71I/edit?gid=1359284016
+DEFAULT_LEADS_WORKSHEET_GID = 1359284016
 DEFAULT_POST_QUAL_WORKSHEET_GID = 2124231650
 DEFAULT_RAW_CW_WORKSHEET_GID = 2126759408
 DEFAULT_SPEND_WORKSHEET_GID = 1666828602
@@ -1412,6 +1414,20 @@ def _mpo_slice_by_dashboard_ref(frame: pd.DataFrame, df_ref: pd.DataFrame) -> pd
             km = out["month"].map(_month_norm_key)
             out = out[km.isin(allow_m) | (km == "")]
     return out
+
+
+def _mpo_leads_worksheet_detail_frame(
+    sheet_id: str,
+    leads_gid: int,
+    df_scope: pd.DataFrame,
+    _secret_fp: str,
+) -> tuple[pd.DataFrame, str]:
+    """Load the Leads worksheet and apply the same Market × Month scope as the filtered dashboard ``df_scope``."""
+    title = _tab_title_for_worksheet_gid(sheet_id, int(leads_gid), _secret_fp)
+    raw = load_worksheet_by_gid_preprocessed(sheet_id, int(leads_gid), _secret_fp)
+    if raw.empty or df_scope.empty:
+        return raw, title
+    return _mpo_slice_by_dashboard_ref(raw, df_scope), title
 
 
 def _mpo_post_qual_closed_won_rows_for_kpis(post_df: pd.DataFrame, df_scope: pd.DataFrame) -> pd.DataFrame:
@@ -10356,6 +10372,38 @@ def render_page_marketing_performance(
         total_qualifying=total_qualifying,
         prior=_kpi_prior,
     )
+
+    _leads_detail_df, _leads_detail_title = _mpo_leads_worksheet_detail_frame(
+        sheet_id,
+        int(leads_gid),
+        df,
+        _fp_mpo,
+    )
+    _leads_sheet_url = (
+        f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit?gid={int(leads_gid)}#gid={int(leads_gid)}"
+    )
+    with st.expander("Leads detail — all rows & qualified-only", expanded=False):
+        st.markdown(
+            f"Worksheet **{_leads_detail_title}** (gid `{int(leads_gid)}`). "
+            f"[Open in Google Sheets]({_leads_sheet_url}). "
+            "The table uses the same **Market** and **Month** filters as above; rows with an empty month stay visible when the slice allows it."
+        )
+        if _leads_detail_df.empty:
+            st.info("No rows after filters, or the Leads tab could not be loaded. Check **XRAY_LEADS_GID** and service-account access.")
+        else:
+            _ld_view = st.radio(
+                "Rows to show",
+                ("All leads", "Qualified only"),
+                horizontal=True,
+                key=f"{key_suffix}_mpo_leads_detail_rows",
+            )
+            _ld_show = _leads_detail_df
+            if _ld_view == "Qualified only":
+                _ld_show = _leads_detail_df.loc[_leads_is_qualified_mask(_leads_detail_df)].copy()
+            _n_all = int(len(_leads_detail_df))
+            _n_qual = int(_leads_is_qualified_mask(_leads_detail_df).sum())
+            st.caption(f"Showing **{len(_ld_show)}** row(s) · **{_n_all}** leads in scope after filters · **{_n_qual}** qualified (status / Is_Qualifying-style flags).")
+            st.dataframe(_ld_show, use_container_width=True, hide_index=True)
 
     gm_mpo = _master_build_gm_with_metrics(master_df, _spend_for_master_ui, pivot_dimension="market")
     gm_mpo = _overlay_gm_leads_qualified_from_raw_leads(gm_mpo, leads_df)
