@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-24-cpcwlf-lf-from-cw-kpi"
+DASHBOARD_BUILD = "2026-04-24-cpcwlf-lf-spend-months-only"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -6024,6 +6024,31 @@ def _mpo_spend_activity_for_month(spend_df: pd.DataFrame, month_key: Optional[st
     return cost, impr, clicks
 
 
+def _mpo_headline_month_keys_with_positive_spend(
+    spend_df: pd.DataFrame,
+    headline_month_keys: list[str],
+) -> list[str]:
+    """Subset of ``headline_month_keys`` where **spend** in ``spend_df`` is > 0 (same month cut as headline cost).
+
+    If we sum Σ LF across **all** headline months but only **one** of those months has paid media, spend stays
+    ~single-month while LF stacks ~N months (~$411K vs ~$132K, ratio ~0.30 vs ~0.92).
+    """
+    if not headline_month_keys:
+        return []
+    if spend_df.empty or "cost" not in spend_df.columns:
+        return list(headline_month_keys)
+    out: list[str] = []
+    seen: set[str] = set()
+    for mk in headline_month_keys:
+        sc, _, _ = _mpo_spend_activity_for_month(spend_df, mk)
+        if float(sc) > 1e-6:
+            sk = str(_month_norm_key(mk)).strip()
+            if sk and sk not in seen:
+                seen.add(sk)
+                out.append(mk)
+    return out if out else list(headline_month_keys)
+
+
 def _mpo_rows_paid_media_from_combined(df_loaded: pd.DataFrame) -> pd.DataFrame:
     """Rows from paid-media tabs: **all non-CRM tabs** with spend/clicks/impressions (each tab = one platform)."""
     if df_loaded.empty or "source_tab" not in df_loaded.columns:
@@ -10315,14 +10340,16 @@ def render_page_marketing_performance(
         cw_for_qwin = _hm.get("cw_for_qwin")
         qual_for_qwin = _hm.get("qual_for_qwin")
 
-    # Σ LF for CpCW:LF = Excel ``Spend / Σ first month LF``. Prefer **cw_kpi** (RAW CW / deal tab): canonical LF
-    # column + closed-won scope; post-qual often lacks or duplicates LF so post-only paths stayed ~$430K vs ~$132K.
-    _lf_cw_kpi = _mpo_headline_lf_sum_from_cw_kpi_for_ratio(cw_kpi, _headline_keys)
+    # Σ LF for CpCW:LF = Excel ``Spend / Σ first month LF``. Use **months with spend > 0** only so LF is not summed
+    # across extra headline months that have CW/LF but **$0** media (otherwise ~$411K vs ~$132K, ratio ~0.30).
+    _lf_month_keys = _mpo_headline_month_keys_with_positive_spend(spend_df, _headline_keys)
+    # Prefer **cw_kpi** (RAW CW / deal tab) for canonical ``first_month_lf``; post-qual is fallback.
+    _lf_cw_kpi = _mpo_headline_lf_sum_from_cw_kpi_for_ratio(cw_kpi, _lf_month_keys)
     _post_geo_lf = _mpo_slice_by_dashboard_ref(post_df_cpcw_analysis, df)
     _post_norm_lf = _normalized_post_qual_for_cw_analysis(_post_geo_lf)
     _lf_post = _post_qual_first_month_lf_sum_max_lf_per_opp(
         _post_norm_lf,
-        month_keys=_headline_keys if _headline_keys else None,
+        month_keys=_lf_month_keys if _lf_month_keys else None,
     )
     if _lf_cw_kpi > 0:
         total_first_month_lf = float(_lf_cw_kpi)
