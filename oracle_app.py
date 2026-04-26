@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-24-cpcwlf-show-lf-prefer-full-postqual"
+DASHBOARD_BUILD = "2026-04-24-cpcwlf-scoped-empty-unscoped-lf-cw"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -3097,6 +3097,21 @@ def _preprocess_excel_sheet(df: pd.DataFrame, tab_name: str) -> pd.DataFrame:
     return df
 
 
+# Headers that populate ``cw_close_date`` (ME CpCW Analysis close-date gate) beyond exact ``close_date``.
+_CLOSE_DATE_SOURCE_HEADER_KEYS: frozenset[str] = frozenset(
+    {
+        "close_date",
+        "opportunity_close_date",
+        "deal_close_date",
+        "contract_close_date",
+        "sales_close_date",
+        "actual_close_date",
+        "closed_date",
+        "close_date_time",
+    }
+)
+
+
 def _normalize(df: pd.DataFrame) -> pd.DataFrame:
     raw_cols = [str(c).strip() for c in df.columns]
     attrs: dict[str, Any] = {"sheet_columns": raw_cols}
@@ -3209,6 +3224,18 @@ def _normalize(df: pd.DataFrame) -> pd.DataFrame:
         if _norm_header_key(str(col)) == "close_date":
             _close_src = col
             break
+    if _close_src is None:
+        for col in df.columns:
+            nk = _norm_header_key(str(col))
+            if nk in _CLOSE_DATE_SOURCE_HEADER_KEYS:
+                _close_src = col
+                break
+    if _close_src is None:
+        for col in df.columns:
+            nk = _norm_header_key(str(col))
+            if "close" in nk and "date" in nk and "created" not in nk and "start" not in nk:
+                _close_src = col
+                break
     if _close_src is not None:
         _cds = pd.to_datetime(_col_as_series(df, _close_src), errors="coerce", dayfirst=True)
         out["cw_close_date"] = _scrub_pre_2000_dates(_coerce_sheet_serial_dates(_cds))
@@ -6531,11 +6558,22 @@ def _mpo_scorecard_headline_totals_for_months(
         else 0.0
     )
     post_norm_cw = _normalized_post_qual_for_cw_analysis(post_df_kpi)
+    d_scoped = _post_qual_cw_analysis_slice(post_norm_cw, month_keys=month_keys)
+    base_has_cw_rows = not post_norm_cw.empty and bool(_post_qual_cw_analysis_mask(post_norm_cw).any())
+
     lf_cw = _post_qual_first_month_lf_cw_analysis_sum(post_norm_cw, month_keys=month_keys)
+    if d_scoped.empty and base_has_cw_rows:
+        lf_unscoped = _post_qual_first_month_lf_cw_analysis_sum(post_norm_cw, month_keys=None)
+        if lf_unscoped > 0:
+            lf_cw = float(lf_unscoped)
     if lf_cw > 0:
         total_first_month_lf = float(lf_cw)
     total_cw_out = int(pipe_c["cw"])
     cw_cw = _post_qual_closed_won_cw_analysis_count(post_norm_cw, month_keys=month_keys)
+    if d_scoped.empty and base_has_cw_rows:
+        cw_unscoped = _post_qual_closed_won_cw_analysis_count(post_norm_cw, month_keys=None)
+        if cw_unscoped > 0:
+            cw_cw = int(cw_unscoped)
     if cw_cw > 0:
         total_cw_out = int(cw_cw)
     cw_q, qual_q = _q_win_rate_inputs(post_all, leads_df)
