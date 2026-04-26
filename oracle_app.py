@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-24-pipeline-from-postqual-no-leads-table"
+DASHBOARD_BUILD = "2026-04-24-remove-tcv-banner-restore-funnel-icons"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -2156,46 +2156,6 @@ def _ensure_closed_won_from_text_flags(df: pd.DataFrame) -> pd.DataFrame:
         out["closed_won"] = cw_existing if has_cw else 0
         return out
     out["closed_won"] = _to_int_series_safe((cw_existing > 0) | (derived > 0))
-    return out
-
-
-def _cw_stage_detection_debug(df: pd.DataFrame) -> dict[str, Any]:
-    """Debug helper: show which column is interpreted as CW stage signal."""
-    out: dict[str, Any] = {"chosen": None, "hits": 0, "top_candidates": []}
-    if df.empty:
-        return out
-    cand_cols: list[str] = []
-    st_col = _resolve_post_lead_stage_column(df)
-    if st_col is not None and st_col in df.columns:
-        cand_cols.append(st_col)
-    for c in df.columns:
-        nk = _norm_header_key(c)
-        if nk in {"stage", "stagename", "stage_name", "opportunity_stage", "deal_stage"}:
-            cand_cols.append(c)
-    for c in df.columns:
-        nk = _norm_header_key(c)
-        if nk in {"lead_status", "status", "deal_status", "opportunity_status"}:
-            cand_cols.append(c)
-    for c in df.columns:
-        nk = _norm_header_key(c)
-        if "status" in nk and not any(x in nk for x in ("date", "time", "timestamp", "history", "change")):
-            cand_cols.append(c)
-    cand_cols = list(dict.fromkeys(cand_cols))
-    score_rows: list[tuple[str, int]] = []
-    for c in cand_cols:
-        s = df[c]
-        if not (pd.api.types.is_object_dtype(s) or pd.api.types.is_string_dtype(s)):
-            continue
-        hits = int(_to_int_series_safe(s.map(_is_closed_won_stage_text)).sum())
-        score_rows.append((str(c), hits))
-    if df.shape[1] >= 16:
-        p_hits = int(_to_int_series_safe(df.iloc[:, 15].map(_is_closed_won_stage_text)).sum())
-        score_rows.append(("COL_P_INDEX_15", p_hits))
-    score_rows = sorted(score_rows, key=lambda x: x[1], reverse=True)
-    if score_rows:
-        out["chosen"] = score_rows[0][0]
-        out["hits"] = int(score_rows[0][1])
-        out["top_candidates"] = score_rows[:3]
     return out
 
 
@@ -10051,13 +10011,11 @@ def render_page_marketing_performance(
     # Otherwise, keep the same dashboard Month x Country window.
     _cw_scope_df = pd.DataFrame() if (_is_all_markets and _is_all_months) else df
     cw_kpi = _cw_dataframe_for_kpis(cw_df, _cw_scope_df)
-    _tcv_rows_override: Optional[int] = None
     _tcv_sum_override: Optional[float] = None
     _lf_sum_override: Optional[float] = None
     if _is_all_markets and _is_all_months and cw_truth_gid is not None:
         _r_ov, _s_ov, _lf_ov = _closed_won_tcv_lf_sums_from_source_truth_gid(sheet_id, int(cw_truth_gid))
         if _r_ov > 0:
-            _tcv_rows_override = int(_r_ov)
             _tcv_sum_override = float(_s_ov)
             if _lf_ov and float(_lf_ov) > 0:
                 _lf_sum_override = float(_lf_ov)
@@ -10109,7 +10067,6 @@ def render_page_marketing_performance(
         total_tcv = float(_tcv_sum_override)
     total_first_month_lf = float(cw_kpi["first_month_lf"].sum()) if "first_month_lf" in cw_kpi.columns else 0.0
     total_new_working = _new_working_count_from_leads(leads_df)
-    _tcv_debug_rows = int(_tcv_rows_override) if _tcv_rows_override is not None else (int(len(cw_kpi.index)) if isinstance(cw_kpi, pd.DataFrame) else 0)
 
     # Per-metric safety fallbacks.
     if total_spend == 0.0 and "cost" in df.columns:
@@ -10166,17 +10123,6 @@ def render_page_marketing_performance(
     cpc = (total_spend / total_clicks) if total_clicks else 0.0
     cpl = (total_spend / total_leads) if total_leads else 0.0
     cpsql = (total_spend / total_qualified) if total_qualified else 0.0
-
-    _cw_dbg = _cw_stage_detection_debug(cw_df)
-    _cw_dbg_top = ", ".join([f"{k}:{v}" for k, v in (_cw_dbg.get("top_candidates") or [])]) or "none"
-    st.info(
-        "TCV check — gid:1871946442 | "
-        f"rows_matched:{_tcv_debug_rows:,} | "
-        f"tcv_sum:{_format_tcv_short(float(total_tcv))} | "
-        f"stage_col:{_cw_dbg.get('chosen') or 'none'} | "
-        f"stage_hits:{int(_cw_dbg.get('hits') or 0)} | "
-        f"top:{_cw_dbg_top}"
-    )
 
     def _agg_for_master(frame: pd.DataFrame, metrics: list[str]) -> pd.DataFrame:
         if frame.empty or "month" not in frame.columns or "country" not in frame.columns:
@@ -10356,7 +10302,7 @@ def render_page_marketing_performance(
     if _lf_same_deals > 0:
         total_first_month_lf = float(_lf_same_deals)
 
-    # Keep Actual TCV card aligned with the same CW KPI slice used for the TCV check banner.
+    # Keep Actual TCV card aligned with the CW KPI slice (post-qual / merged workbook scope).
     if _tcv_sum_override is not None:
         total_tcv = float(_tcv_sum_override)
     elif isinstance(cw_kpi, pd.DataFrame) and "tcv" in cw_kpi.columns:
@@ -13313,7 +13259,12 @@ def main() -> None:
         letter-spacing: 0.01em;
         margin-right: 0;
     }
-    .kpi-funnel-card--hero .kpi-funnel-icon { display: none !important; }
+    .kpi-funnel-card--hero .kpi-funnel-icon {
+        display: inline-block;
+        font-size: 1.2rem;
+        line-height: 1;
+        margin-bottom: 3px;
+    }
     .kpi-funnel-delta--pill-wrap {
         display: flex;
         flex-wrap: wrap;
@@ -13424,12 +13375,20 @@ def main() -> None:
         border-color: #cbd5e1;
         transform: translateY(-2px);
     }
-    .kpi-funnel-icon { display: none !important; }
-    .kpi-funnel-card--pastel .kpi-funnel-icon {
-        opacity: 0.2;
-        font-size: 0.95rem;
+    .kpi-funnel-icon {
+        display: inline-block;
+        line-height: 1;
+        margin-bottom: 2px;
+        font-size: 1.1rem;
     }
-    .kpi-funnel-wrap--pastel-scorecard .kpi-funnel-card--pastel .kpi-funnel-icon { display: none !important; }
+    .kpi-funnel-card--pastel .kpi-funnel-icon {
+        opacity: 0.88;
+        font-size: 1.05rem;
+    }
+    .kpi-funnel-wrap--pastel-scorecard .kpi-funnel-card--pastel .kpi-funnel-icon {
+        display: inline-block;
+        opacity: 0.9;
+    }
     .kpi-funnel-title {
         font-size: 9.5px;
         font-weight: 700;
