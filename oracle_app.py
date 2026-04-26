@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-24-cpcw-analysis-cw-lf-same-slice"
+DASHBOARD_BUILD = "2026-04-24-cpcwlf-close-month-key-fallback"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -5797,11 +5797,16 @@ def _post_qual_cw_analysis_slice(
     base = _post_qual_cw_analysis_mask(post_norm)
     if month_keys:
         want = {str(_month_norm_key(m)).strip() for m in month_keys if str(_month_norm_key(m)).strip()}
-        if "cw_close_date" in post_norm.columns and bool(post_norm["cw_close_date"].notna().any()):
+        sel = pd.Series(False, index=post_norm.index)
+        # Prefer **close month** (ME CpCW Analysis). Keys must match ``_month_norm_key`` (Period.astype(str) does not).
+        if "cw_close_date" in post_norm.columns:
             cd = pd.to_datetime(post_norm["cw_close_date"], errors="coerce")
-            close_m = cd.dt.to_period("M").astype(str)
-            sel = base & cd.notna() & close_m.isin(want)
-        else:
+            close_m = cd.map(lambda t: _month_norm_key(t) if pd.notna(t) else "")
+            sel_close = base & close_m.ne("") & close_m.isin(want)
+            if bool(sel_close.any()):
+                sel = sel_close
+        # If close dates missing / mis-keyed, fall back to dashboard **month** on the post tab (same as spend merge).
+        if not bool(sel.any()):
             mk = post_norm.get("month", pd.Series("", index=post_norm.index, dtype=object))
             mk = mk.map(_month_norm_key).astype(str).str.strip()
             sel = base & mk.isin(want)
