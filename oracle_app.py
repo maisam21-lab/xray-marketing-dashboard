@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-24-leads-detail-gid-1359284016"
+DASHBOARD_BUILD = "2026-04-24-leads-cards-match-worksheet"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -9976,6 +9976,20 @@ def render_page_marketing_performance(
         if leads_df.empty:
             leads_df = _tab_subset(df_date, list(_MPO_LEAD_TAB_PATTERNS))
     leads_df = _ensure_closed_won_from_text_flags(leads_df)
+    # Cards, CPL/CPSQL, Q-win, Master overlay — use **Leads worksheet** rows in the same Market × Month scope as
+    # ``df`` (matches the detail expander), not rolled-up truth-tab counts when this tab loads.
+    _leads_detail_preload: Optional[tuple[pd.DataFrame, str]] = None
+    try:
+        _lw_tab = load_worksheet_by_gid_preprocessed(sheet_id, int(leads_gid), _fp_mpo)
+    except Exception:
+        _lw_tab = pd.DataFrame()
+    if not _lw_tab.empty:
+        _lw_scoped = _mpo_slice_by_dashboard_ref(_lw_tab, df) if not df.empty else _lw_tab.copy()
+        leads_df = _ensure_closed_won_from_text_flags(_lw_scoped)
+        _leads_detail_preload = (
+            leads_df.copy(),
+            _tab_title_for_worksheet_gid(sheet_id, int(leads_gid), _fp_mpo),
+        )
 
     pq_gid = _optional_post_qual_gid_from_secrets()
     if use_truth_for_nonspend:
@@ -10141,8 +10155,6 @@ def render_page_marketing_performance(
     cpl = (total_spend / total_leads) if total_leads else 0.0
     cpsql = (total_spend / total_qualified) if total_qualified else 0.0
 
-    _pqw = post_df_kpi if not post_df_kpi.empty else post_df
-    cw_for_qwin, qual_for_qwin = _q_win_rate_inputs(_pqw, leads_df)
     _cw_dbg = _cw_stage_detection_debug(cw_df)
     _cw_dbg_top = ", ".join([f"{k}:{v}" for k, v in (_cw_dbg.get("top_candidates") or [])]) or "none"
     st.info(
@@ -10335,6 +10347,15 @@ def render_page_marketing_performance(
         total_tcv = float(pd.to_numeric(cw_kpi["tcv"], errors="coerce").fillna(0).sum())
     if _lf_sum_override is not None and float(_lf_sum_override) > 0 and float(total_first_month_lf) <= 0:
         total_first_month_lf = float(_lf_sum_override)
+    # Top-row lead counts: use full scoped **Leads** row set (same as expander). Headline month-sums can disagree.
+    _pqw = post_df_kpi if not post_df_kpi.empty else post_df
+    if not leads_df.empty:
+        total_leads = int(_lead_rows_count(leads_df))
+        total_qualified = int(_qualified_count_from_leads(leads_df))
+        total_new_working = int(_new_working_count_from_leads(leads_df))
+    cpl = (total_spend / float(total_leads)) if total_leads else 0.0
+    cpsql = (total_spend / float(total_qualified)) if total_qualified else 0.0
+    cw_for_qwin, qual_for_qwin = _q_win_rate_inputs(_pqw, leads_df)
     _sm_traffic = _mpo_traffic_totals_from_sm_pool(
         df_loaded,
         df,
@@ -10347,6 +10368,8 @@ def render_page_marketing_performance(
     if _sm_traffic is not None:
         total_impr, total_clicks, ctr = _sm_traffic
         cpc = (total_spend / float(total_clicks)) if total_clicks else 0.0
+        cpl = (total_spend / float(total_leads)) if total_leads else 0.0
+        cpsql = (total_spend / float(total_qualified)) if total_qualified else 0.0
 
     _kpi_block(
         total_spend=total_spend,
@@ -10373,12 +10396,15 @@ def render_page_marketing_performance(
         prior=_kpi_prior,
     )
 
-    _leads_detail_df, _leads_detail_title = _mpo_leads_worksheet_detail_frame(
-        sheet_id,
-        int(leads_gid),
-        df,
-        _fp_mpo,
-    )
+    if _leads_detail_preload is not None and not _leads_detail_preload[0].empty:
+        _leads_detail_df, _leads_detail_title = _leads_detail_preload
+    else:
+        _leads_detail_df, _leads_detail_title = _mpo_leads_worksheet_detail_frame(
+            sheet_id,
+            int(leads_gid),
+            df,
+            _fp_mpo,
+        )
     _leads_sheet_url = (
         f"https://docs.google.com/spreadsheets/d/{sheet_id}/edit?gid={int(leads_gid)}#gid={int(leads_gid)}"
     )
