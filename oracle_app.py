@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-24-qualified-leads-cards-scoped"
+DASHBOARD_BUILD = "2026-04-24-leads-inmemory-before-api"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -9979,10 +9979,15 @@ def render_page_marketing_performance(
     # Cards, CPL/CPSQL, Q-win, Master overlay — use **Leads worksheet** rows in the same Market × Month scope as
     # ``df`` (matches the detail expander), not rolled-up truth-tab counts when this tab loads.
     _leads_detail_preload: Optional[tuple[pd.DataFrame, str]] = None
-    try:
-        _lw_tab = load_worksheet_by_gid_preprocessed(sheet_id, int(leads_gid), _fp_mpo)
-    except Exception:
-        _lw_tab = pd.DataFrame()
+    # Prefer rows already in the merged workbook (same tab) to avoid an extra Sheets round-trip per run.
+    _lw_tab = _rows_by_worksheet_id(df_date, int(leads_gid), sheet_id)
+    if _lw_tab.empty:
+        _lw_tab = _rows_by_worksheet_id(df_loaded, int(leads_gid), sheet_id)
+    if _lw_tab.empty:
+        try:
+            _lw_tab = load_worksheet_by_gid_preprocessed(sheet_id, int(leads_gid), _fp_mpo)
+        except Exception:
+            _lw_tab = pd.DataFrame()
     if not _lw_tab.empty:
         _lw_scoped = _mpo_slice_by_dashboard_ref(_lw_tab, df) if not df.empty else _lw_tab.copy()
         leads_df = _ensure_closed_won_from_text_flags(_lw_scoped)
