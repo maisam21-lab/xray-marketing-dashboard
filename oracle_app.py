@@ -28,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-24-cpcwlf-lf-headline-month-keys"
+DASHBOARD_BUILD = "2026-04-24-cpcwlf-lf-dedupe-per-opp"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -5936,6 +5936,29 @@ def _post_qual_first_month_lf_cw_analysis_sum(
     return float(lf.sum())
 
 
+def _post_qual_first_month_lf_sum_max_lf_per_opp(
+    post_norm: pd.DataFrame,
+    *,
+    month_keys: Optional[list[str]],
+) -> float:
+    """Σ ``first_month_lf`` with **one LF per opportunity** (``max`` per opp key), same closed-won slice as B3.
+
+    The ME sheet sometimes has **duplicate rows per deal** where ``SUM(CW)`` exceeds unique opps; the raw row-sum
+    LF path then **multiplies** LF (~$430K vs ~$132K for 67 deals). The Marketing headline CpCW:LF denominator
+    uses this path so Σ LF matches **one fee per closed-won + approved opportunity** in the slice.
+    """
+    d = _post_qual_cw_analysis_slice(post_norm, month_keys=month_keys)
+    if d.empty or "first_month_lf" not in d.columns:
+        return 0.0
+    lf = pd.to_numeric(d["first_month_lf"], errors="coerce").fillna(0)
+    keys = _opp_key_columns_for_post_lead(d)
+    if keys:
+        tmp = d.loc[:, list(keys)].copy()
+        tmp["_lf"] = lf
+        return float(tmp.groupby(keys, dropna=False)["_lf"].max().sum())
+    return float(lf.sum())
+
+
 def _mpo_leads_for_norm_month(leads_df: pd.DataFrame, month_key: Optional[str]) -> pd.DataFrame:
     if leads_df.empty or not month_key:
         return leads_df.iloc[0:0]
@@ -10259,11 +10282,11 @@ def render_page_marketing_performance(
         cw_for_qwin = _hm.get("cw_for_qwin")
         qual_for_qwin = _hm.get("qual_for_qwin")
 
-    # Σ LF for CpCW:LF must use the **same month keys** as headline spend (``_headline_keys``). Summing LF on every
-    # ``month`` present in ``df`` while spend only sums ``_headline_keys`` inflated the denominator (~0.28 vs ~0.92).
+    # Σ LF for CpCW:LF: same **Market** as ``df``, same **months** as headline spend (``_headline_keys``), and
+    # **max LF per opportunity** so duplicate post-qual rows do not multiply LF (~$430K vs ~$132K for 67 deals).
     _post_geo_lf = _mpo_slice_by_dashboard_ref(post_df_cpcw_analysis, df)
     _post_norm_lf = _normalized_post_qual_for_cw_analysis(_post_geo_lf)
-    _lf_headline = _post_qual_first_month_lf_cw_analysis_sum(
+    _lf_headline = _post_qual_first_month_lf_sum_max_lf_per_opp(
         _post_norm_lf,
         month_keys=_headline_keys if _headline_keys else None,
     )
