@@ -10547,6 +10547,7 @@ def render_page_marketing_performance(
     gm_mpo = _master_build_gm_with_metrics(master_df, _spend_for_master_ui, pivot_dimension="market")
     gm_mpo = _overlay_gm_leads_qualified_from_raw_leads(gm_mpo, leads_df)
 
+    st.markdown("### Master view")
     try:
         _render_master_view_pivot_from_gm(
             gm_mpo,
@@ -10564,11 +10565,13 @@ def render_page_marketing_performance(
     except Exception:
         st.warning("Master view failed to render in this pass. Try refresh; core KPIs remain available.")
 
+    st.markdown("### T3B3")
     try:
         _render_t3b3_quarter_sections(gm_mpo, key_suffix=f"{key_suffix}_t3b3")
     except Exception:
         st.warning("T3B3 section failed to render in this pass.")
 
+    st.markdown("### Trends")
     try:
         _render_mpo_trend_charts(
             start_date=_rng_lo,
