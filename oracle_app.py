@@ -29,7 +29,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-27-hotpath-no-live-gid-fetches"
+DASHBOARD_BUILD = "2026-04-27-truth-sheet-cost-first-fast-path"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -5594,12 +5594,22 @@ def _mpo_load_spend_sheet_for_kpis(
                 or float(pd.to_numeric(tr["impressions"], errors="coerce").fillna(0).abs().sum()) > 1e-9
             )
         )
-        if has_cost and has_traffic:
+        # Fast path: if the aggregated truth tab already carries spend, render from it immediately.
+        # Do not force connector clicks/impressions merge on every run.
+        if has_cost:
             spend_pool_full = tr.copy()
             spend_sheet_master = _filter_spend_for_dashboard(tr, start_date, end_date)
             if spend_sheet_master.empty:
                 spend_sheet_master = tr.copy()
-            return spend_sheet_master.copy(), spend_sheet_master, spend_pool_full, sheet_id, _fp_mpo
+            spend_sheet_for_kpis = spend_sheet_master.copy()
+            for col in ("clicks", "impressions"):
+                if col not in spend_sheet_for_kpis.columns:
+                    spend_sheet_for_kpis[col] = 0.0
+                spend_sheet_for_kpis[col] = pd.to_numeric(spend_sheet_for_kpis[col], errors="coerce").fillna(0.0)
+            if has_traffic:
+                return spend_sheet_for_kpis, spend_sheet_master, spend_pool_full, sheet_id, _fp_mpo
+            # Even without traffic columns, keep this cheap path so cards render instead of stalling.
+            return spend_sheet_for_kpis, spend_sheet_master, spend_pool_full, sheet_id, _fp_mpo
 
     df_spend_scope_primary = _rows_for_workbook_id(df_date, sheet_id)
     spend_blended_primary = _mpo_blend_paid_media_for_master_df(df_spend_scope_primary)
