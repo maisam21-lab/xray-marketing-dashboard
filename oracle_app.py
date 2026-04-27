@@ -29,7 +29,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-27-cw-deterministic-scope-lock"
+DASHBOARD_BUILD = "2026-04-27-cw-stage-text-fallback"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -1449,10 +1449,26 @@ def _mpo_post_qual_closed_won_rows_for_kpis(post_df: pd.DataFrame, df_scope: pd.
     if sl.empty:
         return sl
     w = _ensure_closed_won_from_text_flags(sl.copy())
-    if "closed_won" not in w.columns:
-        return pd.DataFrame()
-    hit = pd.to_numeric(w["closed_won"], errors="coerce").fillna(0) > 0
-    return w.loc[hit].copy()
+    if "closed_won" in w.columns:
+        hit = pd.to_numeric(w["closed_won"], errors="coerce").fillna(0) > 0
+        if bool(hit.any()):
+            return w.loc[hit].copy()
+
+    # Post-lead fallback (same source): derive CW+Approved from stage-like text columns if mapped flag is missing/zero.
+    stage_hits = pd.Series(False, index=w.index)
+    for c in w.columns:
+        s = w[c]
+        if pd.api.types.is_object_dtype(s) or pd.api.types.is_string_dtype(s):
+            nk = _norm_header_key(c)
+            if nk in {"stage", "stagename", "stage_name", "opportunity_stage", "deal_stage"} or "stage" in nk:
+                stage_hits = stage_hits | s.map(_is_closed_won_stage_text).fillna(False)
+    if "closed_won" in w.columns:
+        stage_hits = stage_hits | (pd.to_numeric(w["closed_won"], errors="coerce").fillna(0) > 0)
+    if bool(stage_hits.any()):
+        out = w.loc[stage_hits].copy()
+        out["closed_won"] = 1
+        return out
+    return pd.DataFrame()
 
 
 def _mpo_first_month_lf_sum_same_deals_as_post_qual_cw_rows(cw_only: pd.DataFrame, cw_kpi: pd.DataFrame) -> float:
