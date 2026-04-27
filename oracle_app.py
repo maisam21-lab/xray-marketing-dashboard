@@ -29,7 +29,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-27-cw-stage-text-fallback"
+DASHBOARD_BUILD = "2026-04-27-qualified-breakdown-stage-fallback"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -6467,13 +6467,36 @@ def _mpo_pipeline_month_totals(post_sub: pd.DataFrame) -> dict[str, int]:
     pitch = _si("pitching")
     nego = _si("negotiation")
     commit = _si("commitment")
+    closed_lost = _si("closed_lost")
+    if post_sub.empty:
+        return {
+            "total_live": 0,
+            "qualifying": 0,
+            "pitching": 0,
+            "negotiation": 0,
+            "commitment": 0,
+            "closed_lost": 0,
+            "cw": 0,
+        }
+
+    # Fallback for exports where stage buckets are not mapped into numeric one-hot columns.
+    # Keep these cards populated from the same post-lead rows using stage text.
+    if (qual + pitch + nego + commit + closed_lost) <= 0:
+        st_col = _resolve_post_lead_stage_column(post_sub)
+        if st_col is not None and st_col in post_sub.columns:
+            s = post_sub[st_col].astype(str).str.strip().str.lower()
+            qual = int(s.str.contains(r"qualif", na=False, regex=True).sum())
+            pitch = int(s.str.contains(r"pitch", na=False, regex=True).sum())
+            nego = int(s.str.contains(r"negotiat", na=False, regex=True).sum())
+            commit = int(s.str.contains(r"commit", na=False, regex=True).sum())
+            closed_lost = int(s.str.contains(r"closed\s*lost|not\s*approved", na=False, regex=True).sum())
     return {
         "total_live": qual + pitch + nego + commit,
         "qualifying": qual,
         "pitching": pitch,
         "negotiation": nego,
         "commitment": commit,
-        "closed_lost": _si("closed_lost"),
+        "closed_lost": closed_lost,
         "cw": _sum_closed_won_unique_opportunities(_dedupe_post_lead_rows(post_sub)),
     }
 
