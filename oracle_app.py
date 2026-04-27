@@ -29,7 +29,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-27-main-cache-loader-and-cost-guard"
+DASHBOARD_BUILD = "2026-04-27-restore-full-tab1-sections"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -10577,13 +10577,23 @@ def render_page_marketing_performance(
             table_mode="full",
         )
     except Exception:
-        st.warning("Master view failed to render in this pass. Try refresh; core KPIs remain available.")
+        st.warning("Master view renderer fallback is active.")
+        _master_performance_table(
+            master_df,
+            key_suffix=f"{key_suffix}_master_fallback",
+            section_title="Master view (fallback)",
+            spend_grid=_spend_for_master_ui,
+        )
 
     st.markdown("### T3B3")
     try:
         _render_t3b3_quarter_sections(gm_mpo, key_suffix=f"{key_suffix}_t3b3")
     except Exception:
-        st.warning("T3B3 section failed to render in this pass.")
+        st.warning("T3B3 renderer fallback is active.")
+        if not gm_mpo.empty:
+            _t3_cols = [c for c in ("month", "country", "cost", "leads", "qualified", "closed_won", "tcv", "first_month_lf") if c in gm_mpo.columns]
+            if _t3_cols:
+                st.dataframe(gm_mpo[_t3_cols], width="stretch", hide_index=True, key=f"{key_suffix}_t3b3_fallback_df")
 
     st.markdown("### Trends")
     try:
@@ -10600,7 +10610,13 @@ def render_page_marketing_performance(
             df_ref_for_scope=df,
         )
     except Exception:
-        st.warning("Trend charts failed to render in this pass.")
+        st.warning("Trend charts renderer fallback is active.")
+        _trend_cols = [c for c in ("month", "country", "cost", "leads", "qualified", "closed_won", "tcv") if c in master_df.columns]
+        if _trend_cols:
+            _trend_fb = master_df[_trend_cols].copy()
+            if "month" in _trend_fb.columns:
+                _trend_fb = _trend_fb.sort_values("month")
+            st.dataframe(_trend_fb, width="stretch", hide_index=True, key=f"{key_suffix}_trend_fallback_df")
 
 
 def _mom_monthly_series(df: pd.DataFrame, spend_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
