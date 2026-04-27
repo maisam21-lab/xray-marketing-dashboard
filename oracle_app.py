@@ -29,7 +29,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-27-qualified-leads-fallback-chain"
+DASHBOARD_BUILD = "2026-04-27-lock-cw-approved-postlead-only"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -9978,7 +9978,8 @@ def render_page_marketing_performance(
         if not _pq_cw.empty:
             post_df_cpcw_analysis = _ensure_closed_won_from_text_flags(_pq_cw)
 
-    # CW (inc. approved) — primary source is post-qual/post-lead rows in the same Market × Month scope.
+    # CW (inc. approved) — LOCKED source:
+    # post-qual/post-lead rows in the same Market × Month scope only.
     total_cw = _mpo_cw_kpi_post_lead_record_count(post_df_cpcw_analysis, df)
 
     # Pipeline / “Qualified leads” cards: same **Market × Month** scope as the spend table.
@@ -10010,18 +10011,6 @@ def render_page_marketing_performance(
     )
     # Closed-won KPI should stay deduped to avoid cross-tab opportunity duplication.
     post_df = _dedupe_post_lead_rows(post_df_pipe_scoped)
-    if int(total_cw) <= 0:
-        # Fallback chain so Closed Won does not vanish when one source tab is sparse/missing in scope.
-        _cw_from_pipe = (
-            int(pd.to_numeric(post_df_pipe_scoped["closed_won"], errors="coerce").fillna(0).sum())
-            if (not post_df_pipe_scoped.empty and "closed_won" in post_df_pipe_scoped.columns)
-            else 0
-        )
-        _cw_from_truth = 0
-        if not truth_df.empty and "closed_won" in truth_df.columns:
-            _truth_scoped = _mpo_slice_by_dashboard_ref(truth_df, df) if not df.empty else truth_df.copy()
-            _cw_from_truth = int(pd.to_numeric(_truth_scoped["closed_won"], errors="coerce").fillna(0).sum())
-        total_cw = int(max(int(total_cw), _cw_from_pipe, _cw_from_truth))
 
     cw_truth_gid = _optional_cw_source_truth_gid_from_secrets()
     raw_cw_gid = _optional_raw_cw_gid_from_secrets()
