@@ -29,7 +29,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-27-tab1-hard-fallbacks-and-safe-render"
+DASHBOARD_BUILD = "2026-04-27-main-cache-loader-and-cost-guard"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -12673,6 +12673,131 @@ def _extras_skip_tabs_already_loaded(df_loaded: pd.DataFrame, extras: list[pd.Da
     return out
 
 
+@st.cache_data(ttl=300, show_spinner=False)
+def _load_dashboard_frame_cached(
+    sheet_id: str,
+    truth_gid: int,
+    ads_id: str,
+    include_ads_workbook: bool,
+    nav_section: str,
+    _secret_fp: str,
+) -> tuple[pd.DataFrame, float]:
+    """Load + normalize dashboard frames once per cache window to avoid repeated network calls on reruns."""
+    df_loaded = pd.DataFrame()
+    gid0_sum = 0.0
+    try:
+        df_loaded = load_source_of_truth_tab(sheet_id, int(truth_gid), _secret_fp)
+    except Exception:
+        df_loaded = pd.DataFrame()
+    if df_loaded.empty:
+        df_loaded = load_all_worksheets_combined(sheet_id, _secret_fp)
+    if not df_loaded.empty and "worksheet_gid" in df_loaded.columns:
+        _core_gids: list[int] = [_default_leads_gid_from_secrets()]
+        for _g in (
+            _optional_post_qual_gid_from_secrets(),
+            _optional_raw_cw_gid_from_secrets(),
+            _optional_cw_source_truth_gid_from_secrets(),
+        ):
+            if _g is not None:
+                _core_gids.append(int(_g))
+        _core_gids = list(dict.fromkeys([int(x) for x in _core_gids if x is not None]))
+        _wg = pd.to_numeric(df_loaded["worksheet_gid"], errors="coerce")
+        _missing_gids = [g for g in _core_gids if not bool((_wg == int(g)).any())]
+        if _missing_gids:
+            _parts: list[pd.DataFrame] = []
+            for _gid in _missing_gids:
+                try:
+                    _sub = load_worksheet_by_gid_preprocessed(sheet_id, int(_gid), _secret_fp)
+                except Exception:
+                    _sub = pd.DataFrame()
+                if not _sub.empty:
+                    _parts.append(_sub)
+            if _parts:
+                df_loaded = pd.concat([df_loaded] + _parts, ignore_index=True)
+    needs_spend_inject = True
+    if not df_loaded.empty and "source_tab" in df_loaded.columns and "cost" in df_loaded.columns:
+        sl = df_loaded["source_tab"].astype(str).str.strip().str.lower()
+        spend_like = sl.str.contains(r"^(?:raw\s*)?spend$|raw\s*spend|sum\s*spend|media\s*spend", na=False, regex=True)
+        spend_rows = df_loaded.loc[spend_like]
+        if not spend_rows.empty and float(pd.to_numeric(spend_rows["cost"], errors="coerce").fillna(0).sum()) > 0:
+            needs_spend_inject = False
+    if needs_spend_inject:
+        spend_norm = pd.DataFrame()
+        try:
+            spend_norm = load_named_worksheet_normalized(sheet_id, "Spend", _secret_fp)
+        except Exception:
+            spend_norm = pd.DataFrame()
+        if spend_norm.empty:
+            spend_norm = load_spend_worksheet_fallback(sheet_id, _secret_fp)
+        if not spend_norm.empty:
+            if df_loaded.empty:
+                df_loaded = spend_norm
+            else:
+                df_loaded = pd.concat([df_loaded, spend_norm], ignore_index=True)
+    if nav_section == "Marketing performance":
+        spend_gid0 = load_spend_gid0_normalized(sheet_id, _secret_fp)
+        gid0_sum = float(load_spend_gid0_raw_sum(sheet_id, _secret_fp))
+        if not spend_gid0.empty:
+            if not df_loaded.empty and "source_tab" in df_loaded.columns:
+                _rm_syn = df_loaded["source_tab"].astype(str).str.match(r"^gid:\d+_spend$", na=False)
+                df_loaded = df_loaded.loc[~_rm_syn].copy()
+            if df_loaded.empty:
+                df_loaded = spend_gid0
+            else:
+                df_loaded = pd.concat([df_loaded, spend_gid0], ignore_index=True)
+
+    # Heavy title-scan fallback disabled by default (slow on Cloud). Enable only for diagnostics.
+    _enable_title_scan = (os.environ.get("XRAY_ENABLE_TITLE_SCAN_LOAD") or "").strip().lower() in ("1", "true", "yes", "on")
+    if _enable_title_scan:
+        _ws_meta = list_worksheet_meta(sheet_id, _secret_fp)
+        spend_named = _load_first_matching_worksheet_from_meta(
+            sheet_id, (r"^spend$", r"raw\s*spend", r"sum\s*spend"), _secret_fp, _ws_meta
+        )
+        leads_named = _load_first_matching_worksheet_from_meta(
+            sheet_id, (r"^leads?$", r"raw\s*leads?"), _secret_fp, _ws_meta
+        )
+        post_named = _load_first_matching_worksheet_from_meta(
+            sheet_id,
+            (r"post\s*leads?", r"raw.*post.*qual", r"post\s+qual", r"post.*qualif"),
+            _secret_fp,
+            _ws_meta,
+        )
+        cw_named = _load_first_matching_worksheet_from_meta(
+            sheet_id,
+            tuple(_RAW_CW_TAB_PATTERNS),
+            _secret_fp,
+            _ws_meta,
+        )
+        extras = [x for x in (spend_named, leads_named, post_named, cw_named) if not x.empty]
+        extras = _extras_skip_tabs_already_loaded(df_loaded, extras)
+        if extras:
+            if df_loaded.empty:
+                df_loaded = pd.concat(extras, ignore_index=True)
+            else:
+                df_loaded = pd.concat([df_loaded] + extras, ignore_index=True)
+    if not df_loaded.empty:
+        df_loaded = _dataframe_with_spreadsheet_id(df_loaded, sheet_id)
+    if include_ads_workbook and ads_id and ads_id != sheet_id:
+        df_ads = load_all_worksheets_combined(ads_id, _secret_fp)
+        df_ads_gid = _load_paid_media_platform_tabs_by_gid(ads_id, _secret_fp)
+        if not df_ads_gid.empty:
+            if df_ads.empty:
+                df_ads = df_ads_gid
+            elif "worksheet_gid" in df_ads.columns:
+                wg_ads = pd.to_numeric(df_ads["worksheet_gid"], errors="coerce")
+                keep = ~wg_ads.isin(list(DEFAULT_PAID_MEDIA_PLATFORM_GIDS))
+                df_ads = pd.concat([df_ads.loc[keep].copy(), df_ads_gid], ignore_index=True)
+            else:
+                df_ads = pd.concat([df_ads, df_ads_gid], ignore_index=True)
+        df_ads = _dataframe_with_spreadsheet_id(df_ads, ads_id)
+        if not df_ads.empty:
+            if df_loaded.empty:
+                df_loaded = df_ads
+            else:
+                df_loaded = pd.concat([df_loaded, df_ads], ignore_index=True)
+    return df_loaded, gid0_sum
+
+
 _DASH_NAV_OPTIONS = [
     "Marketing performance",
     "Market MoM",
@@ -12704,114 +12829,14 @@ def render_main_dashboard(
     df_loaded = pd.DataFrame()
     gid0_sum = 0.0
     try:
-        try:
-            df_loaded = load_source_of_truth_tab(sheet_id, int(truth_gid), _fp)
-        except Exception:
-            df_loaded = pd.DataFrame()
-        if df_loaded.empty:
-            df_loaded = load_all_worksheets_combined(sheet_id, _fp)
-        # If truth tab loaded first, still ensure core tabs are present for accurate leads/pipeline cards.
-        if not df_loaded.empty and "worksheet_gid" in df_loaded.columns:
-            _core_gids: list[int] = [_default_leads_gid_from_secrets()]
-            for _g in (_optional_post_qual_gid_from_secrets(), _optional_raw_cw_gid_from_secrets(), _optional_cw_source_truth_gid_from_secrets()):
-                if _g is not None:
-                    _core_gids.append(int(_g))
-            _core_gids = list(dict.fromkeys([int(x) for x in _core_gids if x is not None]))
-            _wg = pd.to_numeric(df_loaded["worksheet_gid"], errors="coerce")
-            _missing_gids = [g for g in _core_gids if not bool((_wg == int(g)).any())]
-            if _missing_gids:
-                _parts: list[pd.DataFrame] = []
-                for _gid in _missing_gids:
-                    try:
-                        _sub = load_worksheet_by_gid_preprocessed(sheet_id, int(_gid), _fp)
-                    except Exception:
-                        _sub = pd.DataFrame()
-                    if not _sub.empty:
-                        _parts.append(_sub)
-                if _parts:
-                    df_loaded = pd.concat([df_loaded] + _parts, ignore_index=True)
-        needs_spend_inject = True
-        if not df_loaded.empty and "source_tab" in df_loaded.columns and "cost" in df_loaded.columns:
-            sl = df_loaded["source_tab"].astype(str).str.strip().str.lower()
-            spend_like = sl.str.contains(
-                r"^(?:raw\s*)?spend$|raw\s*spend|sum\s*spend|media\s*spend", na=False, regex=True
-            )
-            spend_rows = df_loaded.loc[spend_like]
-            if not spend_rows.empty and float(pd.to_numeric(spend_rows["cost"], errors="coerce").fillna(0).sum()) > 0:
-                needs_spend_inject = False
-        if needs_spend_inject:
-            spend_norm = pd.DataFrame()
-            try:
-                spend_norm = load_named_worksheet_normalized(sheet_id, "Spend", _fp)
-            except Exception:
-                spend_norm = pd.DataFrame()
-            if spend_norm.empty:
-                spend_norm = load_spend_worksheet_fallback(sheet_id, _fp)
-            if not spend_norm.empty:
-                if df_loaded.empty:
-                    df_loaded = spend_norm
-                else:
-                    df_loaded = pd.concat([df_loaded, spend_norm], ignore_index=True)
-        spend_gid0 = load_spend_gid0_normalized(sheet_id, _fp)
-        gid0_sum = float(load_spend_gid0_raw_sum(sheet_id, _fp))
-        if not spend_gid0.empty:
-            if not df_loaded.empty and "source_tab" in df_loaded.columns:
-                _rm_syn = df_loaded["source_tab"].astype(str).str.match(r"^gid:\d+_spend$", na=False)
-                df_loaded = df_loaded.loc[~_rm_syn].copy()
-            if df_loaded.empty:
-                df_loaded = spend_gid0
-            else:
-                df_loaded = pd.concat([df_loaded, spend_gid0], ignore_index=True)
-
-        # Heavy title-scan fallback disabled by default (slow on Cloud). Enable only for diagnostics.
-        _enable_title_scan = (os.environ.get("XRAY_ENABLE_TITLE_SCAN_LOAD") or "").strip().lower() in ("1", "true", "yes", "on")
-        if _enable_title_scan:
-            _ws_meta = list_worksheet_meta(sheet_id, _fp)
-            spend_named = _load_first_matching_worksheet_from_meta(
-                sheet_id, (r"^spend$", r"raw\s*spend", r"sum\s*spend"), _fp, _ws_meta
-            )
-            leads_named = _load_first_matching_worksheet_from_meta(
-                sheet_id, (r"^leads?$", r"raw\s*leads?"), _fp, _ws_meta
-            )
-            post_named = _load_first_matching_worksheet_from_meta(
-                sheet_id,
-                (r"post\s*leads?", r"raw.*post.*qual", r"post\s+qual", r"post.*qualif"),
-                _fp,
-                _ws_meta,
-            )
-            cw_named = _load_first_matching_worksheet_from_meta(
-                sheet_id,
-                tuple(_RAW_CW_TAB_PATTERNS),
-                _fp,
-                _ws_meta,
-            )
-            extras = [x for x in (spend_named, leads_named, post_named, cw_named) if not x.empty]
-            extras = _extras_skip_tabs_already_loaded(df_loaded, extras)
-            if extras:
-                if df_loaded.empty:
-                    df_loaded = pd.concat(extras, ignore_index=True)
-                else:
-                    df_loaded = pd.concat([df_loaded] + extras, ignore_index=True)
-        if not df_loaded.empty:
-            df_loaded = _dataframe_with_spreadsheet_id(df_loaded, sheet_id)
-        if include_ads_workbook and ads_id and ads_id != sheet_id:
-            df_ads = load_all_worksheets_combined(ads_id, _fp)
-            df_ads_gid = _load_paid_media_platform_tabs_by_gid(ads_id, _fp)
-            if not df_ads_gid.empty:
-                if df_ads.empty:
-                    df_ads = df_ads_gid
-                elif "worksheet_gid" in df_ads.columns:
-                    wg_ads = pd.to_numeric(df_ads["worksheet_gid"], errors="coerce")
-                    keep = ~wg_ads.isin(list(DEFAULT_PAID_MEDIA_PLATFORM_GIDS))
-                    df_ads = pd.concat([df_ads.loc[keep].copy(), df_ads_gid], ignore_index=True)
-                else:
-                    df_ads = pd.concat([df_ads, df_ads_gid], ignore_index=True)
-            df_ads = _dataframe_with_spreadsheet_id(df_ads, ads_id)
-            if not df_ads.empty:
-                if df_loaded.empty:
-                    df_loaded = df_ads
-                else:
-                    df_loaded = pd.concat([df_loaded, df_ads], ignore_index=True)
+        df_loaded, gid0_sum = _load_dashboard_frame_cached(
+            sheet_id=sheet_id,
+            truth_gid=int(truth_gid),
+            ads_id=ads_id,
+            include_ads_workbook=include_ads_workbook,
+            nav_section=_nav,
+            _secret_fp=_fp,
+        )
     except Exception as exc:
         load_error = str(exc)
     finally:
