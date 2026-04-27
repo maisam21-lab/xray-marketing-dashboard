@@ -29,7 +29,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-27-cw-month-scope-fallback"
+DASHBOARD_BUILD = "2026-04-27-cw-deterministic-scope-lock"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -1425,14 +1425,27 @@ def _mpo_post_qual_closed_won_rows_for_kpis(post_df: pd.DataFrame, df_scope: pd.
     """
     if post_df.empty or df_scope.empty:
         return pd.DataFrame()
-    sl = _mpo_slice_by_dashboard_ref(post_df, df_scope)
-    if sl.empty and "month" in post_df.columns and "month" in df_scope.columns:
-        # Keep CW logic source unchanged (post-lead stage rows), but avoid hard zero when
-        # country keys differ across tabs. Fall back to dashboard month window only.
+    # Deterministic CW scope lock:
+    # 1) Apply month window from dashboard scope.
+    # 2) Apply country only if it keeps non-empty rows (avoid rerun flips due key mismatch).
+    sl = post_df.copy()
+    if "month" in sl.columns and "month" in df_scope.columns:
         allow_m = {x for x in df_scope["month"].map(_month_norm_key).unique().tolist() if x}
         if allow_m:
-            km = post_df["month"].map(_month_norm_key)
-            sl = post_df.loc[km.isin(allow_m) | (km == "")].copy()
+            km = sl["month"].map(_month_norm_key)
+            sl = sl.loc[km.isin(allow_m) | (km == "")].copy()
+    if sl.empty:
+        return sl
+    if "country" in sl.columns and "country" in df_scope.columns:
+        allow_c = {
+            x
+            for x in df_scope["country"].map(_country_join_key).unique().tolist()
+            if x and x not in ("unknown", "nan", "")
+        }
+        if allow_c:
+            c_mask = sl["country"].map(_country_join_key).isin(allow_c)
+            if bool(c_mask.any()):
+                sl = sl.loc[c_mask].copy()
     if sl.empty:
         return sl
     w = _ensure_closed_won_from_text_flags(sl.copy())
