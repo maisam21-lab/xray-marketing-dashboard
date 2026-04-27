@@ -12519,10 +12519,19 @@ def render_main_dashboard(
     end_date: date,
 ) -> None:
     """Load Google Sheets workbook (all tabs), then route to report pages."""
+    # Keep the old top-tab UX while preserving lazy execution (only one page branch runs).
+    _nav = st.radio(
+        "Dashboard section",
+        _DASH_NAV_OPTIONS,
+        horizontal=True,
+        key="dash_main_nav",
+        label_visibility="collapsed",
+    )
     sheet_id, _ = _workbook_id_resolution()
     _fp = _secret_fingerprint(_service_account_from_streamlit_secrets())
     truth_gid = _default_truth_gid_from_secrets()
     ads_id = _optional_paid_media_sheet_id_from_secrets()
+    include_ads_workbook = _nav == "Spend by channel"
     _load_banner = st.empty()
     _load_banner.info("**Loading…**")
     load_error: Optional[str] = None
@@ -12596,7 +12605,7 @@ def render_main_dashboard(
                 df_loaded = pd.concat([df_loaded] + extras, ignore_index=True)
         if not df_loaded.empty:
             df_loaded = _dataframe_with_spreadsheet_id(df_loaded, sheet_id)
-        if ads_id and ads_id != sheet_id:
+        if include_ads_workbook and ads_id and ads_id != sheet_id:
             df_ads = load_all_worksheets_combined(ads_id, _fp)
             df_ads_gid = _load_paid_media_platform_tabs_by_gid(ads_id, _fp)
             if not df_ads_gid.empty:
@@ -12641,15 +12650,6 @@ def render_main_dashboard(
         st.warning(_no_data_msg)
         return
 
-    # Horizontal radio (not ``st.tabs``): Streamlit runs **every** ``with tab:`` block on each rerun —
-    # lazy branch here cuts ~2/3 of dashboard Python work when users stay on one section.
-    _nav = st.radio(
-        "Dashboard section",
-        _DASH_NAV_OPTIONS,
-        horizontal=True,
-        key="dash_main_nav",
-        label_visibility="collapsed",
-    )
     if _nav == "Marketing performance":
         render_page_marketing_performance(df_loaded, start_date, end_date)
     elif _nav == "Market MoM":
@@ -13670,6 +13670,19 @@ def main() -> None:
         letter-spacing: -0.01em;
         border: 1px solid transparent !important;
         cursor: pointer;
+    }
+    .st-key-dash_main_nav label > div:first-child {
+        display: none !important;  /* hide radio circle so it looks like old tabs */
+    }
+    .st-key-dash_main_nav label > div:last-child {
+        margin-left: 0 !important;
+    }
+    .st-key-dash_main_nav [data-testid="stMarkdownContainer"] p {
+        margin: 0 !important;
+        line-height: 1.15 !important;
+    }
+    .st-key-dash_main_nav label:hover {
+        background: rgba(148, 163, 184, 0.14) !important;
     }
     .st-key-dash_main_nav label:has(input:checked) {
         background: linear-gradient(135deg, #0d9488 0%, #0f766e 100%) !important;
