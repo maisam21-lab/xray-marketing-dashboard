@@ -29,7 +29,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-27-pin-cw-gid-stability"
+DASHBOARD_BUILD = "2026-04-27-cw-never-empty-tcv-colw-hard"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -181,9 +181,7 @@ def _apply_tcv_col_w_fallback_if_needed(out: pd.DataFrame, raw: pd.DataFrame, wo
         return out
     if raw.shape[1] <= _CW_SOURCE_TRUTH_TCV_COL_INDEX:
         return out
-    cur = pd.to_numeric(out.get("tcv", 0), errors="coerce").fillna(0)
-    if float(cur.abs().sum()) > 1e-9:
-        return out
+    # Hard rule requested: for this gid, use sheet column W as TCV source-of-truth.
     w_col = _to_number_series(raw.iloc[:, _CW_SOURCE_TRUTH_TCV_COL_INDEX]).reset_index(drop=True)
     out2 = out.copy()
     out2["tcv"] = 0.0
@@ -1461,6 +1459,9 @@ def _mpo_post_qual_closed_won_rows_for_kpis(post_df: pd.DataFrame, df_scope: pd.
         if allow_m:
             km = sl["month"].map(_month_norm_key)
             sl = sl.loc[km.isin(allow_m) | (km == "")].copy()
+    if sl.empty:
+        # Last-resort stability: preserve source logic (post-lead stage rows) even if scope keys mismatch.
+        sl = post_df.copy()
     if sl.empty:
         return sl
     if "country" in sl.columns and "country" in df_scope.columns:
