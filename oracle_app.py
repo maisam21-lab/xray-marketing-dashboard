@@ -29,7 +29,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-27-restore-full-tab1-sections"
+DASHBOARD_BUILD = "2026-04-27-tab1-hard-simple-render"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -10442,21 +10442,8 @@ def render_page_marketing_performance(
     post_df_cpcw_headline = _mpo_slice_by_dashboard_ref(post_df_cpcw_analysis, df)
 
     # Headline KPIs: **sum** across months in scope — same **Data scope** as the multiselects (``spend_df``, ``cw_kpi``).
-    _hm = (
-        _mpo_scorecard_headline_totals_for_months(
-            _headline_keys,
-            spend_df=spend_df,
-            leads_df=leads_df,
-            post_df_kpi=(
-                post_df_cpcw_headline
-                if not post_df_cpcw_headline.empty
-                else (post_df_pipe_scoped if not post_df_pipe_scoped.empty else post_df_cpcw_analysis)
-            ),
-            cw_kpi=cw_kpi,
-        )
-        if _headline_keys
-        else None
-    )
+    # Stability-first: keep KPI cards on direct scoped totals (avoid month-key headline override drift).
+    _hm = None
     if _hm:
         total_spend = float(_hm["total_spend"])
         total_impr = int(_hm["total_impr"])
@@ -10558,24 +10545,36 @@ def render_page_marketing_performance(
             prior=_kpi_prior,
         )
 
-    gm_mpo = _master_build_gm_with_metrics(master_df, _spend_for_master_ui, pivot_dimension="market")
-    gm_mpo = _overlay_gm_leads_qualified_from_raw_leads(gm_mpo, leads_df)
+    gm_mpo = pd.DataFrame()
+    try:
+        gm_mpo = _master_build_gm_with_metrics(master_df, _spend_for_master_ui, pivot_dimension="market")
+        gm_mpo = _overlay_gm_leads_qualified_from_raw_leads(gm_mpo, leads_df)
+    except Exception:
+        st.warning("Advanced master builder failed; using direct fallback tables.")
 
     st.markdown("### Master view")
     try:
-        _render_master_view_pivot_from_gm(
-            gm_mpo,
-            key_suffix=key_suffix,
-            section_title="Master view",
-            detail_sources={
-                "spend": spend_sheet_for_kpis,
-                "leads": leads_df,
-                "post": post_df_pipe_scoped,
-                "cw": cw_kpi,
-            },
-            pivot_dimension="market",
-            table_mode="full",
-        )
+        if not gm_mpo.empty:
+            _render_master_view_pivot_from_gm(
+                gm_mpo,
+                key_suffix=key_suffix,
+                section_title="Master view",
+                detail_sources={
+                    "spend": spend_sheet_for_kpis,
+                    "leads": leads_df,
+                    "post": post_df_pipe_scoped,
+                    "cw": cw_kpi,
+                },
+                pivot_dimension="market",
+                table_mode="full",
+            )
+        else:
+            _master_performance_table(
+                master_df,
+                key_suffix=f"{key_suffix}_master_fallback",
+                section_title="Master view (fallback)",
+                spend_grid=_spend_for_master_ui,
+            )
     except Exception:
         st.warning("Master view renderer fallback is active.")
         _master_performance_table(
