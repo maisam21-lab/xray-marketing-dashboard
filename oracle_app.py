@@ -10208,6 +10208,8 @@ def render_page_marketing_performance(
     master_df = master_df.merge(cw_g, on=["month", "country"], how="outer")
     master_df = master_df.fillna(0)
     master_df = _master_df_coalesce_month_country(master_df)
+    if "cost" not in master_df.columns:
+        master_df["cost"] = 0.0
     if "cw_tab_cost" in master_df.columns:
         _c_sp = pd.to_numeric(master_df["cost"], errors="coerce").fillna(0)
         _c_cw = pd.to_numeric(master_df["cw_tab_cost"], errors="coerce").fillna(0)
