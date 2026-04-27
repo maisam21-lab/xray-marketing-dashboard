@@ -1185,9 +1185,9 @@ def _master_df_coalesce_month_country(master_df: pd.DataFrame) -> pd.DataFrame:
 # General month keys (CRM, merges): allow full history in loaded sheets.
 _MIN_DASHBOARD_PERIOD = pd.Period("1990-01", freq="M")
 _MAX_DASHBOARD_PERIOD = pd.Period(date.today(), freq="M")
-# **All fetched sheets except Leads / Post lead–Post qual**: Sep 2025 onward on ``month`` / ``date`` (applied after load).
-_MIN_FETCHED_SHEET_PERIOD = pd.Period("2025-09", freq="M")
-_MIN_FETCHED_SHEET_TS = pd.Timestamp("2025-09-01", tz=None)
+# **All fetched sheets except Leads / Post lead–Post qual**: Jan 2025 onward on ``month`` / ``date`` (applied after load).
+_MIN_FETCHED_SHEET_PERIOD = pd.Period("2025-01", freq="M")
+_MIN_FETCHED_SHEET_TS = pd.Timestamp("2025-01-01", tz=None)
 
 
 def _yyyymm_calendar_to_key(ni: int) -> str:
@@ -3568,7 +3568,7 @@ def _filter_spend_for_dashboard(df: pd.DataFrame, start: date, end: date) -> pd.
 
 
 def _apply_sep2025_month_date_floor(df: pd.DataFrame) -> pd.DataFrame:
-    """Sep 2025 onward by ``month`` and/or ``date`` (undated rows kept)."""
+    """Jan 2025 onward by ``month`` and/or ``date`` (undated rows kept)."""
     if df.empty:
         return df
     out = df.copy()
@@ -3590,7 +3590,7 @@ def _apply_sep2025_month_date_floor(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _apply_sep2025_all_sheets_except_leads_postlead(df: pd.DataFrame) -> pd.DataFrame:
-    """After workbook merge: **Sep 2025+** on every tab’s rows except **Leads** and **Post lead / Post qual** sheets."""
+    """After workbook merge: **Jan 2025+** on every tab’s rows except **Leads** and **Post lead / Post qual** sheets."""
     if df.empty or "source_tab" not in df.columns:
         return df
     out = df.copy()
