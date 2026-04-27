@@ -29,7 +29,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-27-fast-kpi-mode-no-precard-heavy-blocks"
+DASHBOARD_BUILD = "2026-04-27-restore-full-dashboard-fix-leads-sources"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -10134,9 +10134,8 @@ def render_page_marketing_performance(
     cpc = (total_spend / total_clicks) if total_clicks else 0.0
     cpl = (total_spend / total_leads) if total_leads else 0.0
     cpsql = (total_spend / total_qualified) if total_qualified else 0.0
-    # Fast KPI mode (default ON): render cards immediately from truth/loaded sheets and skip
-    # expensive master pivot + trend computations that can stall first paint on Cloud.
-    _fast_kpi_mode = str(os.environ.get("XRAY_FAST_KPI_MODE", "1")).strip().lower() not in ("0", "false", "off", "no")
+    # Optional emergency mode: only cards (skip master/trends). Default OFF to keep full dashboard visible.
+    _fast_kpi_mode = str(os.environ.get("XRAY_FAST_KPI_MODE", "0")).strip().lower() not in ("0", "false", "off", "no")
     if _fast_kpi_mode and use_truth_for_nonspend:
         _kpi_block(
             total_spend=total_spend,
@@ -12562,6 +12561,26 @@ def render_main_dashboard(
             df_loaded = pd.DataFrame()
         if df_loaded.empty:
             df_loaded = load_all_worksheets_combined(sheet_id, _fp)
+        # If truth tab loaded first, still ensure core tabs are present for accurate leads/pipeline cards.
+        if not df_loaded.empty and "worksheet_gid" in df_loaded.columns:
+            _core_gids: list[int] = [_default_leads_gid_from_secrets()]
+            for _g in (_optional_post_qual_gid_from_secrets(), _optional_raw_cw_gid_from_secrets(), _optional_cw_source_truth_gid_from_secrets()):
+                if _g is not None:
+                    _core_gids.append(int(_g))
+            _core_gids = list(dict.fromkeys([int(x) for x in _core_gids if x is not None]))
+            _wg = pd.to_numeric(df_loaded["worksheet_gid"], errors="coerce")
+            _missing_gids = [g for g in _core_gids if not bool((_wg == int(g)).any())]
+            if _missing_gids:
+                _parts: list[pd.DataFrame] = []
+                for _gid in _missing_gids:
+                    try:
+                        _sub = load_worksheet_by_gid_preprocessed(sheet_id, int(_gid), _fp)
+                    except Exception:
+                        _sub = pd.DataFrame()
+                    if not _sub.empty:
+                        _parts.append(_sub)
+                if _parts:
+                    df_loaded = pd.concat([df_loaded] + _parts, ignore_index=True)
         needs_spend_inject = True
         if not df_loaded.empty and "source_tab" in df_loaded.columns and "cost" in df_loaded.columns:
             sl = df_loaded["source_tab"].astype(str).str.strip().str.lower()
