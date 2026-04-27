@@ -29,7 +29,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-27-disable-cards-only-fastmode"
+DASHBOARD_BUILD = "2026-04-27-tab1-hard-fallbacks-and-safe-render"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -10175,6 +10175,12 @@ def render_page_marketing_performance(
     if _post_for_breakdown.empty and not post_df_kpi_scoped.empty:
         _post_for_breakdown = post_df_kpi_scoped.copy()
     _pipe_totals = _mpo_pipeline_month_totals(_post_for_breakdown)
+    if int(total_cw) <= 0 and not _post_for_breakdown.empty:
+        _pf = _ensure_closed_won_from_text_flags(_post_for_breakdown.copy())
+        if "closed_won" in _pf.columns:
+            _cw_fb = int(_sum_closed_won_unique_opportunities(_pf))
+            if _cw_fb > 0:
+                total_cw = _cw_fb
     total_pitching = int(_pipe_totals.get("pitching", 0))
     total_new = int(post_df["new"].sum()) if "new" in post_df.columns else 0
     total_working = int(post_df["working"].sum()) if "working" in post_df.columns else 0
@@ -10537,33 +10543,42 @@ def render_page_marketing_performance(
 
     gm_mpo = _master_build_gm_with_metrics(master_df, _spend_for_master_ui, pivot_dimension="market")
     gm_mpo = _overlay_gm_leads_qualified_from_raw_leads(gm_mpo, leads_df)
-    _render_master_view_pivot_from_gm(
-        gm_mpo,
-        key_suffix=key_suffix,
-        section_title="Master view",
-        detail_sources={
-            "spend": spend_sheet_for_kpis,
-            "leads": leads_df,
-            "post": post_df_pipe_scoped,
-            "cw": cw_kpi,
-        },
-        pivot_dimension="market",
-        table_mode="full",
-    )
-    _render_t3b3_quarter_sections(gm_mpo, key_suffix=f"{key_suffix}_t3b3")
+    try:
+        _render_master_view_pivot_from_gm(
+            gm_mpo,
+            key_suffix=key_suffix,
+            section_title="Master view",
+            detail_sources={
+                "spend": spend_sheet_for_kpis,
+                "leads": leads_df,
+                "post": post_df_pipe_scoped,
+                "cw": cw_kpi,
+            },
+            pivot_dimension="market",
+            table_mode="full",
+        )
+    except Exception:
+        st.warning("Master view failed to render in this pass. Try refresh; core KPIs remain available.")
+    try:
+        _render_t3b3_quarter_sections(gm_mpo, key_suffix=f"{key_suffix}_t3b3")
+    except Exception:
+        st.warning("T3B3 section failed to render in this pass.")
 
-    _render_mpo_trend_charts(
-        start_date=_rng_lo,
-        end_date=_rng_hi,
-        master_df=master_df,
-        key_suffix=key_suffix,
-        spend_for_charts=spend_df,
-        df_loaded=df_loaded,
-        sheet_id=sheet_id,
-        leads_df=leads_df,
-        post_df_kpi=post_df_pipe_scoped,
-        df_ref_for_scope=df,
-    )
+    try:
+        _render_mpo_trend_charts(
+            start_date=_rng_lo,
+            end_date=_rng_hi,
+            master_df=master_df,
+            key_suffix=key_suffix,
+            spend_for_charts=spend_df,
+            df_loaded=df_loaded,
+            sheet_id=sheet_id,
+            leads_df=leads_df,
+            post_df_kpi=post_df_pipe_scoped,
+            df_ref_for_scope=df,
+        )
+    except Exception:
+        st.warning("Trend charts failed to render in this pass.")
 
 
 def _mom_monthly_series(df: pd.DataFrame, spend_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
