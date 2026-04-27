@@ -4077,7 +4077,7 @@ def _load_one_tab_row_for_combined_workbook(
     raw = _coerce_two_row_sheet_headers(raw)
     raw = _preprocess_excel_sheet(raw, title)
     df = _normalize(raw)
-        df = _apply_tcv_col_w_fallback_if_needed(df, raw, int(ws_gid))
+    df = _apply_tcv_col_w_fallback_if_needed(df, raw, int(ws_gid))
     if not df.empty and int(ws_gid) in DEFAULT_PAID_MEDIA_PLATFORM_GIDS:
         df = df.copy()
         df["cost"] = _sum_cost_columns_raw(raw, len(df)).values
