@@ -29,7 +29,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-27-force-postlead-source-for-cw"
+DASHBOARD_BUILD = "2026-04-27-pin-cw-gid-stability"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -305,7 +305,14 @@ def _optional_spend_gid_from_secrets() -> Optional[int]:
 
 
 def _optional_cw_source_truth_gid_from_secrets() -> Optional[int]:
-    """Optional Streamlit secret XRAY_CW_GID: worksheet id for CW source-of-truth."""
+    """Pinned CW source-of-truth worksheet id.
+
+    Stability-first default: always use ``DEFAULT_CW_SOURCE_TRUTH_GID``.
+    To allow secrets override temporarily, set env ``XRAY_ALLOW_CW_GID_OVERRIDE=1``.
+    """
+    allow_override = (os.environ.get("XRAY_ALLOW_CW_GID_OVERRIDE") or "").strip().lower() in ("1", "true", "yes", "on")
+    if not allow_override:
+        return DEFAULT_CW_SOURCE_TRUTH_GID
     try:
         s = st.secrets
         v = (s.get("XRAY_CW_GID") or s.get("xray_cw_gid") or "").strip()
