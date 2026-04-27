@@ -10150,6 +10150,20 @@ def render_page_marketing_performance(
             total_spend = _px_s
     total_impr = int(spend_df["impressions"].sum()) if "impressions" in spend_df.columns else 0
     total_clicks = int(spend_df["clicks"].sum()) if "clicks" in spend_df.columns else 0
+    # Traffic source of truth: use the canonical truth worksheet when it has impressions/clicks.
+    truth_gid = _default_truth_gid_from_secrets()
+    truth_rows = _rows_by_worksheet_id(df, int(truth_gid), sheet_id)
+    if truth_rows.empty:
+        truth_rows = _rows_by_worksheet_id(df_loaded, int(truth_gid), sheet_id)
+    if not truth_rows.empty:
+        if "impressions" in truth_rows.columns:
+            _imp_truth = int(pd.to_numeric(truth_rows["impressions"], errors="coerce").fillna(0).sum())
+            if _imp_truth > 0:
+                total_impr = _imp_truth
+        if "clicks" in truth_rows.columns:
+            _clk_truth = int(pd.to_numeric(truth_rows["clicks"], errors="coerce").fillna(0).sum())
+            if _clk_truth > 0:
+                total_clicks = _clk_truth
     total_leads = _lead_rows_count(leads_df)
     total_qualified = _qualified_count_from_leads(leads_df)
     if total_leads == 0:
