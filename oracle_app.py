@@ -29,7 +29,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-27-speed-and-cw-qualified-stability"
+DASHBOARD_BUILD = "2026-04-27-force-leads-postlead-primary-for-master"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -10016,12 +10016,12 @@ def render_page_marketing_performance(
     # - Post-lead pipeline stages: Raw Post Qualification worksheet gid
     # - TCV / 1st Month LF: RAW CW worksheet gid
     leads_gid = _default_leads_gid_from_secrets()
-    if use_truth_for_nonspend:
-        leads_df = truth_df.copy()
-    else:
-        leads_df = _strict_gid_source(leads_gid)
-        if leads_df.empty:
-            leads_df = _tab_subset(df_date, list(_MPO_LEAD_TAB_PATTERNS))
+    # Stability lock: Leads metrics must come from Leads tab first, not truth-tab substitution.
+    leads_df = _strict_gid_source(leads_gid)
+    if leads_df.empty:
+        leads_df = _tab_subset(df_date, list(_MPO_LEAD_TAB_PATTERNS))
+    if leads_df.empty:
+        leads_df = _tab_subset(df_loaded, list(_MPO_LEAD_TAB_PATTERNS))
     leads_df = _ensure_closed_won_from_text_flags(leads_df)
     # Cards, CPL/CPSQL, Q-win, Master overlay — use **Leads worksheet** rows in the same Market × Month scope as ``df``.
     # Prefer rows already in the merged workbook (same tab) to avoid an extra Sheets round-trip per run.
@@ -10033,12 +10033,12 @@ def render_page_marketing_performance(
         leads_df = _ensure_closed_won_from_text_flags(_lw_scoped)
 
     pq_gid = _optional_post_qual_gid_from_secrets()
-    if use_truth_for_nonspend:
-        post_df_kpi = truth_df.copy()
-    else:
-        post_df_kpi = _strict_gid_source(pq_gid)
-        if post_df_kpi.empty:
-            post_df_kpi = _tab_subset(df_date, list(_POST_LEAD_SOURCE_TAB_PATTERNS))
+    # Stability lock: pipeline/qualified breakdown must come from post-lead tab first.
+    post_df_kpi = _strict_gid_source(pq_gid)
+    if post_df_kpi.empty:
+        post_df_kpi = _tab_subset(df_date, list(_POST_LEAD_SOURCE_TAB_PATTERNS))
+    if post_df_kpi.empty:
+        post_df_kpi = _tab_subset(df_loaded, list(_POST_LEAD_SOURCE_TAB_PATTERNS))
     post_df_kpi = _ensure_closed_won_from_text_flags(post_df_kpi)
 
     # **CpCW Analysis** (B2/B3) must read the dedicated Post Qual tab. When ``use_truth_for_nonspend`` maps
