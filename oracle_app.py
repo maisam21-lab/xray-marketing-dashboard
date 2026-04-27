@@ -68,7 +68,9 @@ DEFAULT_LEADS_WORKSHEET_GID = 1359284016
 DEFAULT_POST_QUAL_WORKSHEET_GID = 2124231650
 DEFAULT_RAW_CW_WORKSHEET_GID = 2126759408
 DEFAULT_SPEND_WORKSHEET_GID = 1666828602
-DEFAULT_CW_SOURCE_TRUTH_GID = 1871946442
+DEFAULT_CW_SOURCE_TRUTH_GID = 1268584917
+# CW source-truth tab: TCV fallback column position when headers are inconsistent (Google Sheets col W, 0-based idx 22).
+_CW_SOURCE_TRUTH_TCV_COL_INDEX = 22
 # Default empty on Streamlit Cloud; set `XRAY_EXCEL_PATH` in secrets or `XRAY_EXCEL_PATH_DEFAULT` locally.
 DEFAULT_LOCAL_EXCEL_PATH = (os.environ.get("XRAY_EXCEL_PATH_DEFAULT") or "").strip()
 DEFAULT_LOGO_PATH = (
@@ -171,6 +173,24 @@ def _rows_for_workbook_id(df: pd.DataFrame, spreadsheet_id: str) -> pd.DataFrame
     if not bool(m.any()):
         return df.iloc[0:0].copy()
     return df.loc[m].copy()
+
+
+def _apply_tcv_col_w_fallback_if_needed(out: pd.DataFrame, raw: pd.DataFrame, worksheet_gid: int) -> pd.DataFrame:
+    """For the CW truth tab, backfill ``tcv`` from sheet column W when header mapping misses it."""
+    if out.empty or raw.empty or int(worksheet_gid) != int(DEFAULT_CW_SOURCE_TRUTH_GID):
+        return out
+    if raw.shape[1] <= _CW_SOURCE_TRUTH_TCV_COL_INDEX:
+        return out
+    cur = pd.to_numeric(out.get("tcv", 0), errors="coerce").fillna(0)
+    if float(cur.abs().sum()) > 1e-9:
+        return out
+    w_col = _to_number_series(raw.iloc[:, _CW_SOURCE_TRUTH_TCV_COL_INDEX]).reset_index(drop=True)
+    out2 = out.copy()
+    out2["tcv"] = 0.0
+    take = min(len(out2.index), len(w_col.index))
+    if take > 0:
+        out2.iloc[:take, out2.columns.get_loc("tcv")] = pd.to_numeric(w_col.iloc[:take], errors="coerce").fillna(0).values
+    return out2
 
 
 def _default_truth_gid_from_secrets() -> int:
@@ -4057,6 +4077,7 @@ def _load_one_tab_row_for_combined_workbook(
     raw = _coerce_two_row_sheet_headers(raw)
     raw = _preprocess_excel_sheet(raw, title)
     df = _normalize(raw)
+        df = _apply_tcv_col_w_fallback_if_needed(df, raw, int(ws_gid))
     if not df.empty and int(ws_gid) in DEFAULT_PAID_MEDIA_PLATFORM_GIDS:
         df = df.copy()
         df["cost"] = _sum_cost_columns_raw(raw, len(df)).values
@@ -4159,6 +4180,7 @@ def load_marketing_data(
     raw = _promote_wide_metric_header_row_if_needed(raw)
     raw = _coerce_two_row_sheet_headers(raw)
     out = _normalize(raw)
+    out = _apply_tcv_col_w_fallback_if_needed(out, raw, int(worksheet_gid))
     if not out.empty and int(worksheet_gid) in DEFAULT_PAID_MEDIA_PLATFORM_GIDS:
         out = out.copy()
         out["cost"] = _sum_cost_columns_raw(raw, len(out)).values
@@ -4223,6 +4245,7 @@ def load_worksheet_by_gid_preprocessed(
     title = _tab_title_for_worksheet_gid(sheet_id, worksheet_gid, _secret_fp)
     raw = _preprocess_excel_sheet(raw, title)
     out = _normalize(raw)
+    out = _apply_tcv_col_w_fallback_if_needed(out, raw, int(worksheet_gid))
     if not out.empty and int(worksheet_gid) in DEFAULT_PAID_MEDIA_PLATFORM_GIDS:
         out = out.copy()
         out["cost"] = _sum_cost_columns_raw(raw, len(out)).values
