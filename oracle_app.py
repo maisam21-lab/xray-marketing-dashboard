@@ -29,7 +29,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-27-qualified-breakdown-resilient-pipeline-totals"
+DASHBOARD_BUILD = "2026-04-27-cw-single-frame-lock"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -10058,9 +10058,21 @@ def render_page_marketing_performance(
         if not _pq_cw.empty:
             post_df_cpcw_analysis = _ensure_closed_won_from_text_flags(_pq_cw)
 
-    # CW (inc. approved) — LOCKED source:
-    # post-qual/post-lead rows in the same Market × Month scope only.
-    total_cw = _mpo_cw_kpi_post_lead_record_count(post_df_cpcw_analysis, df)
+    # CW (inc. approved) — single locked frame for this render.
+    cw_locked_rows = _mpo_post_qual_closed_won_rows_for_kpis(post_df_cpcw_analysis, df)
+    if cw_locked_rows.empty and "month" in post_df_cpcw_analysis.columns and "month" in df.columns:
+        _allow_m = {x for x in df["month"].map(_month_norm_key).unique().tolist() if x}
+        if _allow_m:
+            _km = post_df_cpcw_analysis["month"].map(_month_norm_key)
+            _m_slice = post_df_cpcw_analysis.loc[_km.isin(_allow_m) | (_km == "")].copy()
+            _m_slice = _ensure_closed_won_from_text_flags(_m_slice)
+            if "closed_won" in _m_slice.columns:
+                cw_locked_rows = _m_slice.loc[pd.to_numeric(_m_slice["closed_won"], errors="coerce").fillna(0) > 0].copy()
+    if cw_locked_rows.empty:
+        _all_post = _ensure_closed_won_from_text_flags(post_df_cpcw_analysis.copy())
+        if "closed_won" in _all_post.columns:
+            cw_locked_rows = _all_post.loc[pd.to_numeric(_all_post["closed_won"], errors="coerce").fillna(0) > 0].copy()
+    total_cw = int(len(cw_locked_rows.index))
 
     # Pipeline / “Qualified leads” cards: same **Market × Month** scope as the spend table.
     post_df_kpi_scoped = (
@@ -10227,7 +10239,7 @@ def render_page_marketing_performance(
                 _pk = by_pq2
         _pk = _pk if not _pk.empty else df
         total_pitching = int(_pk["pitching"].sum()) if "pitching" in _pk.columns else 0
-        total_cw = _mpo_cw_kpi_post_lead_record_count(post_df_cpcw_analysis, df)
+        total_cw = int(len(cw_locked_rows.index))
         total_new = int(df["new"].sum()) if "new" in df.columns else 0
         total_working = int(df["working"].sum()) if "working" in df.columns else 0
         total_negotiation = int(_pk["negotiation"].sum()) if "negotiation" in _pk.columns else 0
@@ -10474,8 +10486,7 @@ def render_page_marketing_performance(
 
     # Σ LF for CpCW:LF = sum of first-month licence fee / **rent** for the **same deals** as the CW card
     # (post-qual closed won + approved rows in the tab's Market × Month scope); join RAW ``cw_kpi`` when LF is not on post-qual.
-    _cw_only_lf = _mpo_post_qual_closed_won_rows_for_kpis(post_df_cpcw_analysis, df)
-    _lf_same_deals = _mpo_first_month_lf_sum_same_deals_as_post_qual_cw_rows(_cw_only_lf, cw_kpi)
+    _lf_same_deals = _mpo_first_month_lf_sum_same_deals_as_post_qual_cw_rows(cw_locked_rows, cw_kpi)
     if _lf_same_deals > 0:
         total_first_month_lf = float(_lf_same_deals)
 
