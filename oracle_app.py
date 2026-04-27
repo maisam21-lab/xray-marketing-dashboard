@@ -65,9 +65,9 @@ ME_XRAY_SOURCE_OF_TRUTH_URL = (
 # Raw / detail leads tab (all lead rows + qualifying flags for SQL counts):
 # https://docs.google.com/spreadsheets/d/1tcjVk7UD-4LG3DG-73ELTNCfzD2XnwnEYqdS8NoH71I/edit?gid=1359284016
 DEFAULT_LEADS_WORKSHEET_GID = 1359284016
-DEFAULT_POST_QUAL_WORKSHEET_GID = 2124231650
-DEFAULT_RAW_CW_WORKSHEET_GID = 2126759408
-DEFAULT_SPEND_WORKSHEET_GID = 1666828602
+DEFAULT_POST_QUAL_WORKSHEET_GID = 1359284016
+DEFAULT_RAW_CW_WORKSHEET_GID = 1359284016
+DEFAULT_SPEND_WORKSHEET_GID = 404483723
 DEFAULT_CW_SOURCE_TRUTH_GID = 1268584917
 # CW source-truth tab: TCV fallback column position when headers are inconsistent (Google Sheets col W, 0-based idx 22).
 _CW_SOURCE_TRUTH_TCV_COL_INDEX = 22
@@ -10515,70 +10515,78 @@ def render_page_marketing_performance(
             cpl = (total_spend / float(total_leads)) if total_leads else 0.0
             cpsql = (total_spend / float(total_qualified)) if total_qualified else 0.0
 
-    with _kpi_slot.container():
-        _kpi_block(
-            total_spend=total_spend,
-            total_impr=total_impr,
-            total_clicks=total_clicks,
-            ctr=ctr,
-            total_leads=total_leads,
-            total_qualified=total_qualified,
-            total_cw=total_cw,
-            q_win_cw=cw_for_qwin,
-            q_win_qualified=qual_for_qwin,
-            total_tcv=total_tcv,
-            total_first_month_lf=total_first_month_lf,
-            cpc=cpc,
-            cpl=cpl,
-            cpsql=cpsql,
-            total_new_working=total_new_working,
-            total_total_live=total_total_live,
-            total_negotiation=total_negotiation,
-            total_commitment=total_commitment,
-            total_closed_lost=total_closed_lost,
-            total_pitching=total_pitching,
-            total_qualifying=total_qualifying,
-            prior=_kpi_prior,
-        )
+    sec_cards, sec_master, sec_t3b3, sec_trends = st.tabs(["Cards", "Master Sheet", "T3B3", "Trends"])
+
+    with sec_cards:
+        with _kpi_slot.container():
+            _kpi_block(
+                total_spend=total_spend,
+                total_impr=total_impr,
+                total_clicks=total_clicks,
+                ctr=ctr,
+                total_leads=total_leads,
+                total_qualified=total_qualified,
+                total_cw=total_cw,
+                q_win_cw=cw_for_qwin,
+                q_win_qualified=qual_for_qwin,
+                total_tcv=total_tcv,
+                total_first_month_lf=total_first_month_lf,
+                cpc=cpc,
+                cpl=cpl,
+                cpsql=cpsql,
+                total_new_working=total_new_working,
+                total_total_live=total_total_live,
+                total_negotiation=total_negotiation,
+                total_commitment=total_commitment,
+                total_closed_lost=total_closed_lost,
+                total_pitching=total_pitching,
+                total_qualifying=total_qualifying,
+                prior=_kpi_prior,
+            )
 
     gm_mpo = _master_build_gm_with_metrics(master_df, _spend_for_master_ui, pivot_dimension="market")
     gm_mpo = _overlay_gm_leads_qualified_from_raw_leads(gm_mpo, leads_df)
-    try:
-        _render_master_view_pivot_from_gm(
-            gm_mpo,
-            key_suffix=key_suffix,
-            section_title="Master view",
-            detail_sources={
-                "spend": spend_sheet_for_kpis,
-                "leads": leads_df,
-                "post": post_df_pipe_scoped,
-                "cw": cw_kpi,
-            },
-            pivot_dimension="market",
-            table_mode="full",
-        )
-    except Exception:
-        st.warning("Master view failed to render in this pass. Try refresh; core KPIs remain available.")
-    try:
-        _render_t3b3_quarter_sections(gm_mpo, key_suffix=f"{key_suffix}_t3b3")
-    except Exception:
-        st.warning("T3B3 section failed to render in this pass.")
 
-    try:
-        _render_mpo_trend_charts(
-            start_date=_rng_lo,
-            end_date=_rng_hi,
-            master_df=master_df,
-            key_suffix=key_suffix,
-            spend_for_charts=spend_df,
-            df_loaded=df_loaded,
-            sheet_id=sheet_id,
-            leads_df=leads_df,
-            post_df_kpi=post_df_pipe_scoped,
-            df_ref_for_scope=df,
-        )
-    except Exception:
-        st.warning("Trend charts failed to render in this pass.")
+    with sec_master:
+        try:
+            _render_master_view_pivot_from_gm(
+                gm_mpo,
+                key_suffix=key_suffix,
+                section_title="Master view",
+                detail_sources={
+                    "spend": spend_sheet_for_kpis,
+                    "leads": leads_df,
+                    "post": post_df_pipe_scoped,
+                    "cw": cw_kpi,
+                },
+                pivot_dimension="market",
+                table_mode="full",
+            )
+        except Exception:
+            st.warning("Master view failed to render in this pass. Try refresh; core KPIs remain available.")
+
+    with sec_t3b3:
+        try:
+            _render_t3b3_quarter_sections(gm_mpo, key_suffix=f"{key_suffix}_t3b3")
+        except Exception:
+            st.warning("T3B3 section failed to render in this pass.")
+
+    with sec_trends:
+        try:
+            _render_mpo_trend_charts(
+                start_date=_rng_lo,
+                end_date=_rng_hi,
+                master_df=master_df,
+                key_suffix=key_suffix,
+                spend_for_charts=spend_df,
+                df_loaded=df_loaded,
+                sheet_id=sheet_id,
+                leads_df=leads_df,
+                post_df_kpi=post_df_pipe_scoped,
+                df_ref_for_scope=df,
+            )
+        except Exception:
+            st.warning("Trend charts failed to render in this pass.")
 
 
 def _mom_monthly_series(df: pd.DataFrame, spend_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
