@@ -29,7 +29,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-27-closed-won-fallback-chain"
+DASHBOARD_BUILD = "2026-04-27-qualified-leads-fallback-chain"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -10099,6 +10099,25 @@ def render_page_marketing_performance(
         total_tcv = float(_tcv_sum_override)
     total_first_month_lf = float(cw_kpi["first_month_lf"].sum()) if "first_month_lf" in cw_kpi.columns else 0.0
     total_new_working = _new_working_count_from_leads(leads_df)
+    if int(total_qualified) <= 0:
+        _qualified_from_truth = 0
+        if not truth_df.empty and "qualified" in truth_df.columns:
+            _truth_scoped_q = _mpo_slice_by_dashboard_ref(truth_df, df) if not df.empty else truth_df.copy()
+            _qualified_from_truth = int(pd.to_numeric(_truth_scoped_q["qualified"], errors="coerce").fillna(0).sum())
+        _qualified_from_df = int(pd.to_numeric(df.get("qualified", 0), errors="coerce").fillna(0).sum()) if "qualified" in df.columns else 0
+        total_qualified = int(max(int(total_qualified), _qualified_from_truth, _qualified_from_df))
+    if int(total_qualifying) <= 0:
+        _qualifying_from_kpi = (
+            int(pd.to_numeric(post_df_kpi_scoped["qualifying"], errors="coerce").fillna(0).sum())
+            if (not post_df_kpi_scoped.empty and "qualifying" in post_df_kpi_scoped.columns)
+            else 0
+        )
+        _qualifying_from_truth = 0
+        if not truth_df.empty and "qualifying" in truth_df.columns:
+            _truth_scoped_pq = _mpo_slice_by_dashboard_ref(truth_df, df) if not df.empty else truth_df.copy()
+            _qualifying_from_truth = int(pd.to_numeric(_truth_scoped_pq["qualifying"], errors="coerce").fillna(0).sum())
+        total_qualifying = int(max(int(total_qualifying), _qualifying_from_kpi, _qualifying_from_truth))
+        total_total_live = int(total_qualifying + total_pitching + total_negotiation + total_commitment)
 
     # Per-metric safety fallbacks.
     if total_spend == 0.0 and "cost" in df.columns:
