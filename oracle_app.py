@@ -7,7 +7,6 @@ Run (Windows: use ``py -m`` if ``streamlit`` is not on PATH):
 
 from __future__ import annotations
 
-import concurrent.futures
 import hashlib
 import html
 import io
@@ -29,7 +28,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-27-tab1-hard-simple-render"
+DASHBOARD_BUILD = "2026-04-24-remove-tcv-banner-restore-funnel-icons"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -65,12 +64,10 @@ ME_XRAY_SOURCE_OF_TRUTH_URL = (
 # Raw / detail leads tab (all lead rows + qualifying flags for SQL counts):
 # https://docs.google.com/spreadsheets/d/1tcjVk7UD-4LG3DG-73ELTNCfzD2XnwnEYqdS8NoH71I/edit?gid=1359284016
 DEFAULT_LEADS_WORKSHEET_GID = 1359284016
-DEFAULT_POST_QUAL_WORKSHEET_GID = 1359284016
-DEFAULT_RAW_CW_WORKSHEET_GID = 1359284016
-DEFAULT_SPEND_WORKSHEET_GID = 404483723
-DEFAULT_CW_SOURCE_TRUTH_GID = 1268584917
-# CW source-truth tab: TCV fallback column position when headers are inconsistent (Google Sheets col W, 0-based idx 22).
-_CW_SOURCE_TRUTH_TCV_COL_INDEX = 22
+DEFAULT_POST_QUAL_WORKSHEET_GID = 2124231650
+DEFAULT_RAW_CW_WORKSHEET_GID = 2126759408
+DEFAULT_SPEND_WORKSHEET_GID = 1666828602
+DEFAULT_CW_SOURCE_TRUTH_GID = 1871946442
 # Default empty on Streamlit Cloud; set `XRAY_EXCEL_PATH` in secrets or `XRAY_EXCEL_PATH_DEFAULT` locally.
 DEFAULT_LOCAL_EXCEL_PATH = (os.environ.get("XRAY_EXCEL_PATH_DEFAULT") or "").strip()
 DEFAULT_LOGO_PATH = (
@@ -173,22 +170,6 @@ def _rows_for_workbook_id(df: pd.DataFrame, spreadsheet_id: str) -> pd.DataFrame
     if not bool(m.any()):
         return df.iloc[0:0].copy()
     return df.loc[m].copy()
-
-
-def _apply_tcv_col_w_fallback_if_needed(out: pd.DataFrame, raw: pd.DataFrame, worksheet_gid: int) -> pd.DataFrame:
-    """For the CW truth tab, backfill ``tcv`` from sheet column W when header mapping misses it."""
-    if out.empty or raw.empty or int(worksheet_gid) != int(DEFAULT_CW_SOURCE_TRUTH_GID):
-        return out
-    if raw.shape[1] <= _CW_SOURCE_TRUTH_TCV_COL_INDEX:
-        return out
-    # Hard rule requested: for this gid, use sheet column W as TCV source-of-truth.
-    w_col = _to_number_series(raw.iloc[:, _CW_SOURCE_TRUTH_TCV_COL_INDEX]).reset_index(drop=True)
-    out2 = out.copy()
-    out2["tcv"] = 0.0
-    take = min(len(out2.index), len(w_col.index))
-    if take > 0:
-        out2.iloc[:take, out2.columns.get_loc("tcv")] = pd.to_numeric(w_col.iloc[:take], errors="coerce").fillna(0).values
-    return out2
 
 
 def _default_truth_gid_from_secrets() -> int:
@@ -303,14 +284,7 @@ def _optional_spend_gid_from_secrets() -> Optional[int]:
 
 
 def _optional_cw_source_truth_gid_from_secrets() -> Optional[int]:
-    """Pinned CW source-of-truth worksheet id.
-
-    Stability-first default: always use ``DEFAULT_CW_SOURCE_TRUTH_GID``.
-    To allow secrets override temporarily, set env ``XRAY_ALLOW_CW_GID_OVERRIDE=1``.
-    """
-    allow_override = (os.environ.get("XRAY_ALLOW_CW_GID_OVERRIDE") or "").strip().lower() in ("1", "true", "yes", "on")
-    if not allow_override:
-        return DEFAULT_CW_SOURCE_TRUTH_GID
+    """Optional Streamlit secret XRAY_CW_GID: worksheet id for CW source-of-truth."""
     try:
         s = st.secrets
         v = (s.get("XRAY_CW_GID") or s.get("xray_cw_gid") or "").strip()
@@ -1210,9 +1184,9 @@ def _master_df_coalesce_month_country(master_df: pd.DataFrame) -> pd.DataFrame:
 # General month keys (CRM, merges): allow full history in loaded sheets.
 _MIN_DASHBOARD_PERIOD = pd.Period("1990-01", freq="M")
 _MAX_DASHBOARD_PERIOD = pd.Period(date.today(), freq="M")
-# **All fetched sheets except Leads / Post lead–Post qual**: Jan 2025 onward on ``month`` / ``date`` (applied after load).
-_MIN_FETCHED_SHEET_PERIOD = pd.Period("2025-01", freq="M")
-_MIN_FETCHED_SHEET_TS = pd.Timestamp("2025-01-01", tz=None)
+# **All fetched sheets except Leads / Post lead–Post qual**: Sep 2025 onward on ``month`` / ``date`` (applied after load).
+_MIN_FETCHED_SHEET_PERIOD = pd.Period("2025-09", freq="M")
+_MIN_FETCHED_SHEET_TS = pd.Timestamp("2025-09-01", tz=None)
 
 
 def _yyyymm_calendar_to_key(ni: int) -> str:
@@ -1450,53 +1424,14 @@ def _mpo_post_qual_closed_won_rows_for_kpis(post_df: pd.DataFrame, df_scope: pd.
     """
     if post_df.empty or df_scope.empty:
         return pd.DataFrame()
-    # Deterministic CW scope lock:
-    # 1) Apply month window from dashboard scope.
-    # 2) Apply country only if it keeps non-empty rows (avoid rerun flips due key mismatch).
-    sl = post_df.copy()
-    if "month" in sl.columns and "month" in df_scope.columns:
-        allow_m = {x for x in df_scope["month"].map(_month_norm_key).unique().tolist() if x}
-        if allow_m:
-            km = sl["month"].map(_month_norm_key)
-            sl = sl.loc[km.isin(allow_m) | (km == "")].copy()
-    if sl.empty:
-        # Last-resort stability: preserve source logic (post-lead stage rows) even if scope keys mismatch.
-        sl = post_df.copy()
-    if sl.empty:
-        return sl
-    if "country" in sl.columns and "country" in df_scope.columns:
-        allow_c = {
-            x
-            for x in df_scope["country"].map(_country_join_key).unique().tolist()
-            if x and x not in ("unknown", "nan", "")
-        }
-        if allow_c:
-            c_mask = sl["country"].map(_country_join_key).isin(allow_c)
-            if bool(c_mask.any()):
-                sl = sl.loc[c_mask].copy()
+    sl = _mpo_slice_by_dashboard_ref(post_df, df_scope)
     if sl.empty:
         return sl
     w = _ensure_closed_won_from_text_flags(sl.copy())
-    if "closed_won" in w.columns:
-        hit = pd.to_numeric(w["closed_won"], errors="coerce").fillna(0) > 0
-        if bool(hit.any()):
-            return w.loc[hit].copy()
-
-    # Post-lead fallback (same source): derive CW+Approved from stage-like text columns if mapped flag is missing/zero.
-    stage_hits = pd.Series(False, index=w.index)
-    for c in w.columns:
-        s = w[c]
-        if pd.api.types.is_object_dtype(s) or pd.api.types.is_string_dtype(s):
-            nk = _norm_header_key(c)
-            if nk in {"stage", "stagename", "stage_name", "opportunity_stage", "deal_stage"} or "stage" in nk:
-                stage_hits = stage_hits | s.map(_is_closed_won_stage_text).fillna(False)
-    if "closed_won" in w.columns:
-        stage_hits = stage_hits | (pd.to_numeric(w["closed_won"], errors="coerce").fillna(0) > 0)
-    if bool(stage_hits.any()):
-        out = w.loc[stage_hits].copy()
-        out["closed_won"] = 1
-        return out
-    return pd.DataFrame()
+    if "closed_won" not in w.columns:
+        return pd.DataFrame()
+    hit = pd.to_numeric(w["closed_won"], errors="coerce").fillna(0) > 0
+    return w.loc[hit].copy()
 
 
 def _mpo_first_month_lf_sum_same_deals_as_post_qual_cw_rows(cw_only: pd.DataFrame, cw_kpi: pd.DataFrame) -> float:
@@ -3632,7 +3567,7 @@ def _filter_spend_for_dashboard(df: pd.DataFrame, start: date, end: date) -> pd.
 
 
 def _apply_sep2025_month_date_floor(df: pd.DataFrame) -> pd.DataFrame:
-    """Jan 2025 onward by ``month`` and/or ``date`` (undated rows kept)."""
+    """Sep 2025 onward by ``month`` and/or ``date`` (undated rows kept)."""
     if df.empty:
         return df
     out = df.copy()
@@ -3654,7 +3589,7 @@ def _apply_sep2025_month_date_floor(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _apply_sep2025_all_sheets_except_leads_postlead(df: pd.DataFrame) -> pd.DataFrame:
-    """After workbook merge: **Jan 2025+** on every tab’s rows except **Leads** and **Post lead / Post qual** sheets."""
+    """After workbook merge: **Sep 2025+** on every tab’s rows except **Leads** and **Post lead / Post qual** sheets."""
     if df.empty or "source_tab" not in df.columns:
         return df
     out = df.copy()
@@ -4045,67 +3980,6 @@ def list_worksheet_meta(sheet_id: str, _secret_fp: str) -> list[tuple[str, int]]
     return [(w.title, int(w.id)) for w in sh.worksheets()]
 
 
-def _load_one_tab_row_for_combined_workbook(
-    sheet_id: str,
-    secret_creds: dict,
-    title: str,
-    ws_gid: int,
-) -> tuple[Optional[pd.DataFrame], tuple[str, int]]:
-    """Load + normalize one tab for ``load_all_worksheets_combined``. No Streamlit calls — safe for thread pools."""
-    prefer_grid = int(ws_gid) in DEFAULT_PAID_MEDIA_PLATFORM_GIDS or _tab_title_looks_like_ads_data_sheet(
-        title
-    )
-    raw = pd.DataFrame()
-    if prefer_grid:
-        raw = _dataframe_from_grid_best_supermetrics_header(sheet_id, secret_creds, int(ws_gid))
-    try:
-        if raw.empty or len(raw.columns) < 4:
-            raw = _read_sheet_auth(
-                sheet_id,
-                secret_creds,
-                worksheet_name=None,
-                worksheet_gid=int(ws_gid),
-            )
-            if raw.empty or len(raw.columns) == 0:
-                raw = _read_sheet_auth_loose(
-                    sheet_id,
-                    secret_creds,
-                    worksheet_gid=int(ws_gid),
-                )
-    except Exception:
-        try:
-            raw = _read_sheet_auth_loose(
-                sheet_id,
-                secret_creds,
-                worksheet_gid=int(ws_gid),
-            )
-        except Exception:
-            return None, (title, -1)
-    raw = _promote_wide_metric_header_row_if_needed(raw)
-    raw = _coerce_two_row_sheet_headers(raw)
-    raw = _preprocess_excel_sheet(raw, title)
-    df = _normalize(raw)
-    df = _apply_tcv_col_w_fallback_if_needed(df, raw, int(ws_gid))
-    if not df.empty and int(ws_gid) in DEFAULT_PAID_MEDIA_PLATFORM_GIDS:
-        df = df.copy()
-        df["cost"] = _sum_cost_columns_raw(raw, len(df)).values
-        if "country" not in df.columns:
-            df["country"] = "Unknown"
-        ck = df["country"].astype(str).map(_country_join_key).fillna("unknown").astype(str).str.strip().str.lower()
-        bad_country = ck.isin({"", "unknown", "nan", "none", "<na>"})
-        if bool(bad_country.any()):
-            inferred = _infer_country_from_cost_headers_raw(raw, len(df))
-            df.loc[bad_country, "country"] = inferred.loc[bad_country].values
-        df = _apply_equal_split_all_market_engagement(df)
-        df = _canonicalize_spend_month_column(df)
-    if df.empty:
-        return None, (title, 0)
-    df = df.copy()
-    df["source_tab"] = (title.strip() if title.strip() else "Sheet")
-    df["worksheet_gid"] = int(ws_gid)
-    return df, (title, len(df))
-
-
 @st.cache_data(ttl=300)
 def load_all_worksheets_combined(
     sheet_id: str,
@@ -4124,25 +3998,63 @@ def load_all_worksheets_combined(
         )
     frames: list[pd.DataFrame] = []
     tab_stats: list[tuple[str, int]] = []
-    use_parallel = len(meta) >= 3
-    max_workers = min(8, max(1, len(meta)))
-    if use_parallel and max_workers > 1:
-
-        def _job(tpl: tuple[str, int]) -> tuple[Optional[pd.DataFrame], tuple[str, int]]:
-            t, g = tpl
-            return _load_one_tab_row_for_combined_workbook(sheet_id, secret_creds, t, int(g))
-
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
-            for df, stat in pool.map(_job, meta):
-                tab_stats.append(stat)
-                if df is not None:
-                    frames.append(df)
-    else:
-        for title, ws_gid in meta:
-            df, stat = _load_one_tab_row_for_combined_workbook(sheet_id, secret_creds, title, int(ws_gid))
-            tab_stats.append(stat)
-            if df is not None:
-                frames.append(df)
+    for title, ws_gid in meta:
+        prefer_grid = int(ws_gid) in DEFAULT_PAID_MEDIA_PLATFORM_GIDS or _tab_title_looks_like_ads_data_sheet(
+            title
+        )
+        raw = pd.DataFrame()
+        if prefer_grid:
+            raw = _dataframe_from_grid_best_supermetrics_header(sheet_id, secret_creds, int(ws_gid))
+        try:
+            if raw.empty or len(raw.columns) < 4:
+                raw = _read_sheet_auth(
+                    sheet_id,
+                    secret_creds,
+                    worksheet_name=None,
+                    worksheet_gid=int(ws_gid),
+                )
+                if raw.empty or len(raw.columns) == 0:
+                    raw = _read_sheet_auth_loose(
+                        sheet_id,
+                        secret_creds,
+                        worksheet_gid=int(ws_gid),
+                    )
+        except Exception:
+            # If strict read fails, retry with loose grid reader before skipping the tab.
+            try:
+                raw = _read_sheet_auth_loose(
+                    sheet_id,
+                    secret_creds,
+                    worksheet_gid=int(ws_gid),
+                )
+            except Exception:
+                tab_stats.append((title, -1))
+                continue
+        raw = _promote_wide_metric_header_row_if_needed(raw)
+        raw = _coerce_two_row_sheet_headers(raw)
+        raw = _preprocess_excel_sheet(raw, title)
+        df = _normalize(raw)
+        if not df.empty and int(ws_gid) in DEFAULT_PAID_MEDIA_PLATFORM_GIDS:
+            # Paid platform tabs: spend equals SUM(all raw headers containing "cost") per row.
+            df = df.copy()
+            df["cost"] = _sum_cost_columns_raw(raw, len(df)).values
+            if "country" not in df.columns:
+                df["country"] = "Unknown"
+            ck = df["country"].astype(str).map(_country_join_key).fillna("unknown").astype(str).str.strip().str.lower()
+            bad_country = ck.isin({"", "unknown", "nan", "none", "<na>"})
+            if bool(bad_country.any()):
+                inferred = _infer_country_from_cost_headers_raw(raw, len(df))
+                df.loc[bad_country, "country"] = inferred.loc[bad_country].values
+            df = _apply_equal_split_all_market_engagement(df)
+            df = _canonicalize_spend_month_column(df)
+        if df.empty:
+            tab_stats.append((title, 0))
+            continue
+        df = df.copy()
+        df["source_tab"] = (title.strip() if title.strip() else "Sheet")
+        df["worksheet_gid"] = int(ws_gid)
+        frames.append(df)
+        tab_stats.append((title, len(df)))
     if not frames:
         out = pd.DataFrame()
         out.attrs["tab_stats"] = tab_stats
@@ -4188,7 +4100,6 @@ def load_marketing_data(
     raw = _promote_wide_metric_header_row_if_needed(raw)
     raw = _coerce_two_row_sheet_headers(raw)
     out = _normalize(raw)
-    out = _apply_tcv_col_w_fallback_if_needed(out, raw, int(worksheet_gid))
     if not out.empty and int(worksheet_gid) in DEFAULT_PAID_MEDIA_PLATFORM_GIDS:
         out = out.copy()
         out["cost"] = _sum_cost_columns_raw(raw, len(out)).values
@@ -4253,7 +4164,6 @@ def load_worksheet_by_gid_preprocessed(
     title = _tab_title_for_worksheet_gid(sheet_id, worksheet_gid, _secret_fp)
     raw = _preprocess_excel_sheet(raw, title)
     out = _normalize(raw)
-    out = _apply_tcv_col_w_fallback_if_needed(out, raw, int(worksheet_gid))
     if not out.empty and int(worksheet_gid) in DEFAULT_PAID_MEDIA_PLATFORM_GIDS:
         out = out.copy()
         out["cost"] = _sum_cost_columns_raw(raw, len(out)).values
@@ -5649,6 +5559,11 @@ def _mpo_load_spend_sheet_for_kpis(
     truth_rows = _rows_by_worksheet_id(df_date, int(truth_gid), sheet_id)
     if truth_rows.empty:
         truth_rows = _rows_by_worksheet_id(df_loaded, int(truth_gid), sheet_id)
+    if truth_rows.empty:
+        try:
+            truth_rows = load_source_of_truth_tab(sheet_id, int(truth_gid), _fp_mpo)
+        except Exception:
+            truth_rows = pd.DataFrame()
 
     if not truth_rows.empty:
         tr = _normalize_master_merge_frame(truth_rows.copy())
@@ -5661,22 +5576,12 @@ def _mpo_load_spend_sheet_for_kpis(
                 or float(pd.to_numeric(tr["impressions"], errors="coerce").fillna(0).abs().sum()) > 1e-9
             )
         )
-        # Fast path: if the aggregated truth tab already carries spend, render from it immediately.
-        # Do not force connector clicks/impressions merge on every run.
-        if has_cost:
+        if has_cost and has_traffic:
             spend_pool_full = tr.copy()
             spend_sheet_master = _filter_spend_for_dashboard(tr, start_date, end_date)
             if spend_sheet_master.empty:
                 spend_sheet_master = tr.copy()
-            spend_sheet_for_kpis = spend_sheet_master.copy()
-            for col in ("clicks", "impressions"):
-                if col not in spend_sheet_for_kpis.columns:
-                    spend_sheet_for_kpis[col] = 0.0
-                spend_sheet_for_kpis[col] = pd.to_numeric(spend_sheet_for_kpis[col], errors="coerce").fillna(0.0)
-            if has_traffic:
-                return spend_sheet_for_kpis, spend_sheet_master, spend_pool_full, sheet_id, _fp_mpo
-            # Even without traffic columns, keep this cheap path so cards render instead of stalling.
-            return spend_sheet_for_kpis, spend_sheet_master, spend_pool_full, sheet_id, _fp_mpo
+            return spend_sheet_master.copy(), spend_sheet_master, spend_pool_full, sheet_id, _fp_mpo
 
     df_spend_scope_primary = _rows_for_workbook_id(df_date, sheet_id)
     spend_blended_primary = _mpo_blend_paid_media_for_master_df(df_spend_scope_primary)
@@ -6498,36 +6403,13 @@ def _mpo_pipeline_month_totals(post_sub: pd.DataFrame) -> dict[str, int]:
     pitch = _si("pitching")
     nego = _si("negotiation")
     commit = _si("commitment")
-    closed_lost = _si("closed_lost")
-    if post_sub.empty:
-        return {
-            "total_live": 0,
-            "qualifying": 0,
-            "pitching": 0,
-            "negotiation": 0,
-            "commitment": 0,
-            "closed_lost": 0,
-            "cw": 0,
-        }
-
-    # Fallback for exports where stage buckets are not mapped into numeric one-hot columns.
-    # Keep these cards populated from the same post-lead rows using stage text.
-    if (qual + pitch + nego + commit + closed_lost) <= 0:
-        st_col = _resolve_post_lead_stage_column(post_sub)
-        if st_col is not None and st_col in post_sub.columns:
-            s = post_sub[st_col].astype(str).str.strip().str.lower()
-            qual = int(s.str.contains(r"qualif", na=False, regex=True).sum())
-            pitch = int(s.str.contains(r"pitch", na=False, regex=True).sum())
-            nego = int(s.str.contains(r"negotiat", na=False, regex=True).sum())
-            commit = int(s.str.contains(r"commit", na=False, regex=True).sum())
-            closed_lost = int(s.str.contains(r"closed\s*lost|not\s*approved", na=False, regex=True).sum())
     return {
         "total_live": qual + pitch + nego + commit,
         "qualifying": qual,
         "pitching": pitch,
         "negotiation": nego,
         "commitment": commit,
-        "closed_lost": closed_lost,
+        "closed_lost": _si("closed_lost"),
         "cw": _sum_closed_won_unique_opportunities(_dedupe_post_lead_rows(post_sub)),
     }
 
@@ -6658,8 +6540,7 @@ def _mpo_scorecard_headline_totals_for_month(
     cpsql = (sc / total_qualified) if total_qualified else 0.0
     post_c = _dedupe_post_lead_rows(_mpo_rows_for_norm_month(post_df_kpi, cur_k))
     pipe_c = _mpo_pipeline_month_totals(post_c)
-    # LOCKED CW logic: scoped post-lead rows, stage Closed Won + Approved only.
-    total_cw = 0
+    total_cw = int(pipe_c["cw"])
     cw_sub = _mpo_rows_for_norm_month(cw_kpi, cur_k)
     total_tcv = (
         float(pd.to_numeric(cw_sub["tcv"], errors="coerce").fillna(0).sum()) if not cw_sub.empty and "tcv" in cw_sub.columns else 0.0
@@ -6674,7 +6555,8 @@ def _mpo_scorecard_headline_totals_for_month(
     if lf_cw > 0:
         total_first_month_lf = float(lf_cw)
     cw_cw = _post_qual_closed_won_cw_analysis_count(post_norm_cw, month_keys=[cur_k] if cur_k else None)
-    total_cw = int(cw_cw)
+    if cw_cw > 0:
+        total_cw = int(cw_cw)
     cw_q, qual_q = _q_win_rate_inputs(post_c, leads_df)
     return {
         "total_spend": float(sc),
@@ -6751,20 +6633,34 @@ def _mpo_scorecard_headline_totals_for_months(
         else 0.0
     )
     post_norm_cw = _normalized_post_qual_for_cw_analysis(post_df_kpi)
+    d_scoped = _post_qual_cw_analysis_slice(post_norm_cw, month_keys=month_keys)
+    base_has_cw_rows = not post_norm_cw.empty and bool(_post_qual_cw_analysis_mask(post_norm_cw).any())
+
     # Headline B2/B3 must use the **same calendar window** as Total Marketing Spend (``month_keys``).
     # Preferring ``month_keys=None`` first paired **scoped** spend with **all-time** Σ LF and crushed CpCW:LF (e.g. ~0.007 vs ~0.92).
+    cw_full = _post_qual_closed_won_cw_analysis_count(post_norm_cw, month_keys=None)
     cw_scoped = _post_qual_closed_won_cw_analysis_count(post_norm_cw, month_keys=month_keys)
+    lf_full = _post_qual_first_month_lf_cw_analysis_sum(post_norm_cw, month_keys=None)
     lf_scoped = _post_qual_first_month_lf_cw_analysis_sum(post_norm_cw, month_keys=month_keys)
     lf_from_cw_tab = float(total_first_month_lf)
 
-    # LOCKED CW logic: scoped post-lead rows, stage Closed Won + Approved only.
-    total_cw_out = int(cw_scoped)
     lf_pick = 0.0
-    if total_cw_out > 0:
+    if cw_scoped > 0:
+        total_cw_out = int(cw_scoped)
         if lf_scoped > 0:
             lf_pick = float(lf_scoped)
         elif lf_from_cw_tab > 0:
             lf_pick = lf_from_cw_tab
+        elif lf_full > 0:
+            lf_pick = float(lf_full)
+    elif cw_full > 0:
+        total_cw_out = int(cw_full)
+        lf_pick = float(lf_full) if lf_full > 0 else float(lf_scoped)
+    else:
+        total_cw_out = int(pipe_c["cw"])
+        lf_pick = 0.0
+    if d_scoped.empty and base_has_cw_rows and lf_pick <= 0 and lf_full > 0:
+        lf_pick = float(lf_full)
     if lf_pick > 0:
         total_first_month_lf = float(lf_pick)
     cw_q, qual_q = _q_win_rate_inputs(post_all, leads_df)
@@ -9979,7 +9875,7 @@ def render_page_marketing_performance(
         return frame[mask].copy()
 
     def _strict_gid_source(gid: Optional[int], *, prefer_full_rows: bool = False) -> pd.DataFrame:
-        """Resolve one worksheet from merged in-memory data (avoid runtime network calls in the render hot path)."""
+        """Load one worksheet as source of truth for non-spend metrics."""
         if gid is None:
             return pd.DataFrame()
         by_gid_all = _rows_by_worksheet_id(df_loaded, int(gid), sheet_id)
@@ -9990,7 +9886,10 @@ def render_page_marketing_performance(
             return by_gid_date
         if not by_gid_all.empty:
             return by_gid_all
-        return pd.DataFrame()
+        try:
+            return load_worksheet_by_gid_preprocessed(sheet_id, int(gid), _fp_mpo)
+        except Exception:
+            return pd.DataFrame()
 
     # Prefer the canonical truth tab for ALL non-spend marketing metrics when present.
     truth_gid = _default_truth_gid_from_secrets()
@@ -10016,62 +9915,51 @@ def render_page_marketing_performance(
     # - Post-lead pipeline stages: Raw Post Qualification worksheet gid
     # - TCV / 1st Month LF: RAW CW worksheet gid
     leads_gid = _default_leads_gid_from_secrets()
-    # Stability lock: Leads metrics must come from Leads tab first, not truth-tab substitution.
-    leads_df = _strict_gid_source(leads_gid)
-    if leads_df.empty:
-        leads_df = _tab_subset(df_date, list(_MPO_LEAD_TAB_PATTERNS))
-    if leads_df.empty:
-        leads_df = _tab_subset(df_loaded, list(_MPO_LEAD_TAB_PATTERNS))
+    if use_truth_for_nonspend:
+        leads_df = truth_df.copy()
+    else:
+        leads_df = _strict_gid_source(leads_gid)
+        if leads_df.empty:
+            leads_df = _tab_subset(df_date, list(_MPO_LEAD_TAB_PATTERNS))
     leads_df = _ensure_closed_won_from_text_flags(leads_df)
     # Cards, CPL/CPSQL, Q-win, Master overlay — use **Leads worksheet** rows in the same Market × Month scope as ``df``.
     # Prefer rows already in the merged workbook (same tab) to avoid an extra Sheets round-trip per run.
     _lw_tab = _rows_by_worksheet_id(df_date, int(leads_gid), sheet_id)
     if _lw_tab.empty:
         _lw_tab = _rows_by_worksheet_id(df_loaded, int(leads_gid), sheet_id)
+    if _lw_tab.empty:
+        try:
+            _lw_tab = load_worksheet_by_gid_preprocessed(sheet_id, int(leads_gid), _fp_mpo)
+        except Exception:
+            _lw_tab = pd.DataFrame()
     if not _lw_tab.empty:
         _lw_scoped = _mpo_slice_by_dashboard_ref(_lw_tab, df) if not df.empty else _lw_tab.copy()
         leads_df = _ensure_closed_won_from_text_flags(_lw_scoped)
 
     pq_gid = _optional_post_qual_gid_from_secrets()
-    # Stability lock: pipeline/qualified breakdown must come from post-lead tab first.
-    post_df_kpi = _strict_gid_source(pq_gid)
-    if post_df_kpi.empty:
-        post_df_kpi = _tab_subset(df_date, list(_POST_LEAD_SOURCE_TAB_PATTERNS))
-    if post_df_kpi.empty:
-        post_df_kpi = _tab_subset(df_loaded, list(_POST_LEAD_SOURCE_TAB_PATTERNS))
+    if use_truth_for_nonspend:
+        post_df_kpi = truth_df.copy()
+    else:
+        post_df_kpi = _strict_gid_source(pq_gid)
+        if post_df_kpi.empty:
+            post_df_kpi = _tab_subset(df_date, list(_POST_LEAD_SOURCE_TAB_PATTERNS))
     post_df_kpi = _ensure_closed_won_from_text_flags(post_df_kpi)
 
     # **CpCW Analysis** (B2/B3) must read the dedicated Post Qual tab. When ``use_truth_for_nonspend`` maps
     # ``post_df_kpi`` to the truth sheet, LF/close-date columns often do not match ME Post Lead — LF would fall
     # back to RAW ``cw_kpi`` and crush CpCW:LF vs the spreadsheet.
     post_df_cpcw_analysis = post_df_kpi
-    _pq_cw = pd.DataFrame()
-    if pq_gid is not None:
+    if use_truth_for_nonspend and pq_gid is not None:
         _pq_cw = _strict_gid_source(pq_gid, prefer_full_rows=True)
         if _pq_cw.empty:
             _pq_cw = _strict_gid_source(pq_gid)
-    if _pq_cw.empty and "source_tab" in df_date.columns:
-        _pq_cw = _tab_subset(df_date, list(_POST_LEAD_SOURCE_TAB_PATTERNS))
-    if _pq_cw.empty and "source_tab" in df_loaded.columns:
-        _pq_cw = _tab_subset(df_loaded, list(_POST_LEAD_SOURCE_TAB_PATTERNS))
-    if not _pq_cw.empty:
-        post_df_cpcw_analysis = _ensure_closed_won_from_text_flags(_pq_cw)
+        if _pq_cw.empty and "source_tab" in df_date.columns:
+            _pq_cw = _tab_subset(df_date, list(_POST_LEAD_SOURCE_TAB_PATTERNS))
+        if not _pq_cw.empty:
+            post_df_cpcw_analysis = _ensure_closed_won_from_text_flags(_pq_cw)
 
-    # CW (inc. approved) — single locked frame for this render.
-    cw_locked_rows = _mpo_post_qual_closed_won_rows_for_kpis(post_df_cpcw_analysis, df)
-    if cw_locked_rows.empty and "month" in post_df_cpcw_analysis.columns and "month" in df.columns:
-        _allow_m = {x for x in df["month"].map(_month_norm_key).unique().tolist() if x}
-        if _allow_m:
-            _km = post_df_cpcw_analysis["month"].map(_month_norm_key)
-            _m_slice = post_df_cpcw_analysis.loc[_km.isin(_allow_m) | (_km == "")].copy()
-            _m_slice = _ensure_closed_won_from_text_flags(_m_slice)
-            if "closed_won" in _m_slice.columns:
-                cw_locked_rows = _m_slice.loc[pd.to_numeric(_m_slice["closed_won"], errors="coerce").fillna(0) > 0].copy()
-    if cw_locked_rows.empty:
-        _all_post = _ensure_closed_won_from_text_flags(post_df_cpcw_analysis.copy())
-        if "closed_won" in _all_post.columns:
-            cw_locked_rows = _all_post.loc[pd.to_numeric(_all_post["closed_won"], errors="coerce").fillna(0) > 0].copy()
-    total_cw = int(len(cw_locked_rows.index))
+    # CW (inc. approved) — **locked** to post-qual / post-lead sheet: same Market × Month as tab, stage Closed Won + Approved.
+    total_cw = _mpo_cw_kpi_post_lead_record_count(post_df_cpcw_analysis, df)
 
     # Pipeline / “Qualified leads” cards: same **Market × Month** scope as the spend table.
     post_df_kpi_scoped = (
@@ -10150,20 +10038,6 @@ def render_page_marketing_performance(
             total_spend = _px_s
     total_impr = int(spend_df["impressions"].sum()) if "impressions" in spend_df.columns else 0
     total_clicks = int(spend_df["clicks"].sum()) if "clicks" in spend_df.columns else 0
-    # Traffic source of truth: use the canonical truth worksheet when it has impressions/clicks.
-    truth_gid = _default_truth_gid_from_secrets()
-    truth_rows = _rows_by_worksheet_id(df, int(truth_gid), sheet_id)
-    if truth_rows.empty:
-        truth_rows = _rows_by_worksheet_id(df_loaded, int(truth_gid), sheet_id)
-    if not truth_rows.empty:
-        if "impressions" in truth_rows.columns:
-            _imp_truth = int(pd.to_numeric(truth_rows["impressions"], errors="coerce").fillna(0).sum())
-            if _imp_truth > 0:
-                total_impr = _imp_truth
-        if "clicks" in truth_rows.columns:
-            _clk_truth = int(pd.to_numeric(truth_rows["clicks"], errors="coerce").fillna(0).sum())
-            if _clk_truth > 0:
-                total_clicks = _clk_truth
     total_leads = _lead_rows_count(leads_df)
     total_qualified = _qualified_count_from_leads(leads_df)
     if total_leads == 0:
@@ -10179,58 +10053,20 @@ def render_page_marketing_performance(
                 leads_df = exact2
                 total_leads = _lead_rows_count(leads_df)
                 total_qualified = _qualified_count_from_leads(leads_df)
-    _post_for_breakdown = post_df_pipe_scoped.copy()
-    if _post_for_breakdown.empty:
-        _post_for_breakdown = (
-            _mpo_slice_by_dashboard_ref(post_df_cpcw_analysis, df)
-            if (not post_df_cpcw_analysis.empty and not df.empty)
-            else post_df_cpcw_analysis.copy()
-        )
-    if _post_for_breakdown.empty and not post_df_kpi_scoped.empty:
-        _post_for_breakdown = post_df_kpi_scoped.copy()
-    _pipe_totals = _mpo_pipeline_month_totals(_post_for_breakdown)
-    if int(total_cw) <= 0 and not _post_for_breakdown.empty:
-        _pf = _ensure_closed_won_from_text_flags(_post_for_breakdown.copy())
-        if "closed_won" in _pf.columns:
-            _cw_fb = int(_sum_closed_won_unique_opportunities(_pf))
-            if _cw_fb > 0:
-                total_cw = _cw_fb
-    total_pitching = int(_pipe_totals.get("pitching", 0))
+    total_pitching = int(post_df_pipe_scoped["pitching"].sum()) if "pitching" in post_df_pipe_scoped.columns else 0
     total_new = int(post_df["new"].sum()) if "new" in post_df.columns else 0
     total_working = int(post_df["working"].sum()) if "working" in post_df.columns else 0
-    total_negotiation = int(_pipe_totals.get("negotiation", 0))
-    total_commitment = int(_pipe_totals.get("commitment", 0))
-    total_qualifying = int(_pipe_totals.get("qualifying", 0))
+    total_negotiation = int(post_df_pipe_scoped["negotiation"].sum()) if "negotiation" in post_df_pipe_scoped.columns else 0
+    total_commitment = int(post_df_pipe_scoped["commitment"].sum()) if "commitment" in post_df_pipe_scoped.columns else 0
+    total_qualifying = int(post_df_pipe_scoped["qualifying"].sum()) if "qualifying" in post_df_pipe_scoped.columns else 0
     # Total Live (CRM): Qualifying + Pitching + Negotiation + Commitment — not the broader sheet `total_live` flag.
-    total_total_live = int(_pipe_totals.get("total_live", total_qualifying + total_pitching + total_negotiation + total_commitment))
-    total_closed_lost = int(_pipe_totals.get("closed_lost", 0))
+    total_total_live = total_qualifying + total_pitching + total_negotiation + total_commitment
+    total_closed_lost = int(post_df_pipe_scoped["closed_lost"].sum()) if "closed_lost" in post_df_pipe_scoped.columns else 0
     total_tcv = float(cw_kpi["tcv"].sum()) if "tcv" in cw_kpi.columns else 0.0
     if _tcv_sum_override is not None:
         total_tcv = float(_tcv_sum_override)
     total_first_month_lf = float(cw_kpi["first_month_lf"].sum()) if "first_month_lf" in cw_kpi.columns else 0.0
     total_new_working = _new_working_count_from_leads(leads_df)
-    if int(total_qualified) <= 0:
-        _qualified_from_truth = 0
-        if not truth_df.empty and "qualified" in truth_df.columns:
-            _truth_scoped_q = _mpo_slice_by_dashboard_ref(truth_df, df) if not df.empty else truth_df.copy()
-            _qualified_from_truth = int(pd.to_numeric(_truth_scoped_q["qualified"], errors="coerce").fillna(0).sum())
-        _qualified_from_df = int(pd.to_numeric(df.get("qualified", 0), errors="coerce").fillna(0).sum()) if "qualified" in df.columns else 0
-        total_qualified = int(max(int(total_qualified), _qualified_from_truth, _qualified_from_df))
-    if int(total_qualifying) <= 0:
-        _qualifying_from_kpi = (
-            int(pd.to_numeric(post_df_kpi_scoped["qualifying"], errors="coerce").fillna(0).sum())
-            if (not post_df_kpi_scoped.empty and "qualifying" in post_df_kpi_scoped.columns)
-            else 0
-        )
-        _qualifying_from_truth = 0
-        if not truth_df.empty and "qualifying" in truth_df.columns:
-            _truth_scoped_pq = _mpo_slice_by_dashboard_ref(truth_df, df) if not df.empty else truth_df.copy()
-            _qualifying_from_truth = int(pd.to_numeric(_truth_scoped_pq["qualifying"], errors="coerce").fillna(0).sum())
-        total_qualifying = int(max(int(total_qualifying), _qualifying_from_kpi, _qualifying_from_truth))
-        total_total_live = int(total_qualifying + total_pitching + total_negotiation + total_commitment)
-    if int(total_qualified) <= 0 and int(total_qualifying) > 0:
-        # Keep headline qualified from disappearing when Leads status fields are sparse/misaligned.
-        total_qualified = int(total_qualifying)
 
     # Per-metric safety fallbacks.
     if total_spend == 0.0 and "cost" in df.columns:
@@ -10259,9 +10095,18 @@ def render_page_marketing_performance(
             by_pq2 = df_loaded.loc[wg2 == int(_gpq)].copy()
             if not by_pq2.empty:
                 _pk = by_pq2
+        elif _gpq is not None:
+            try:
+                _sid2 = _extract_sheet_id(_default_sheet_id_from_secrets())
+                _fp3 = _secret_fingerprint(_service_account_from_streamlit_secrets())
+                _dir2 = load_worksheet_by_gid_preprocessed(_sid2, int(_gpq), _fp3)
+                if not _dir2.empty:
+                    _pk = _dir2
+            except Exception:
+                pass
         _pk = _pk if not _pk.empty else df
         total_pitching = int(_pk["pitching"].sum()) if "pitching" in _pk.columns else 0
-        total_cw = int(len(cw_locked_rows.index))
+        total_cw = _mpo_cw_kpi_post_lead_record_count(post_df_cpcw_analysis, df)
         total_new = int(df["new"].sum()) if "new" in df.columns else 0
         total_working = int(df["working"].sum()) if "working" in df.columns else 0
         total_negotiation = int(_pk["negotiation"].sum()) if "negotiation" in _pk.columns else 0
@@ -10278,33 +10123,7 @@ def render_page_marketing_performance(
     cpc = (total_spend / total_clicks) if total_clicks else 0.0
     cpl = (total_spend / total_leads) if total_leads else 0.0
     cpsql = (total_spend / total_qualified) if total_qualified else 0.0
-    # Progressive render: paint KPI cards early so the page is not blank while heavy tables/charts build.
-    _kpi_slot = st.empty()
-    with _kpi_slot.container():
-        _kpi_block(
-            total_spend=total_spend,
-            total_impr=total_impr,
-            total_clicks=total_clicks,
-            ctr=ctr,
-            total_leads=total_leads,
-            total_qualified=total_qualified,
-            total_cw=total_cw,
-            q_win_cw=int(total_cw),
-            q_win_qualified=int(total_qualified),
-            total_tcv=total_tcv,
-            total_first_month_lf=total_first_month_lf,
-            cpc=cpc,
-            cpl=cpl,
-            cpsql=cpsql,
-            total_new_working=total_new_working,
-            total_total_live=total_total_live,
-            total_negotiation=total_negotiation,
-            total_commitment=total_commitment,
-            total_closed_lost=total_closed_lost,
-            total_pitching=total_pitching,
-            total_qualifying=total_qualifying,
-            prior={"_comparison_off": True},
-        )
+
     def _agg_for_master(frame: pd.DataFrame, metrics: list[str]) -> pd.DataFrame:
         if frame.empty or "month" not in frame.columns or "country" not in frame.columns:
             return pd.DataFrame(columns=["month", "country"] + metrics)
@@ -10389,9 +10208,6 @@ def render_page_marketing_performance(
     master_df = master_df.merge(cw_g, on=["month", "country"], how="outer")
     master_df = master_df.fillna(0)
     master_df = _master_df_coalesce_month_country(master_df)
-    if "cost" not in master_df.columns:
-        # Cloud-safe guard: when spend pivots are empty/misaligned, keep downstream coalescing code from crashing.
-        master_df["cost"] = 0.0
     if "cw_tab_cost" in master_df.columns:
         _c_sp = pd.to_numeric(master_df["cost"], errors="coerce").fillna(0)
         _c_cw = pd.to_numeric(master_df["cw_tab_cost"], errors="coerce").fillna(0)
@@ -10442,8 +10258,21 @@ def render_page_marketing_performance(
     post_df_cpcw_headline = _mpo_slice_by_dashboard_ref(post_df_cpcw_analysis, df)
 
     # Headline KPIs: **sum** across months in scope — same **Data scope** as the multiselects (``spend_df``, ``cw_kpi``).
-    # Stability-first: keep KPI cards on direct scoped totals (avoid month-key headline override drift).
-    _hm = None
+    _hm = (
+        _mpo_scorecard_headline_totals_for_months(
+            _headline_keys,
+            spend_df=spend_df,
+            leads_df=leads_df,
+            post_df_kpi=(
+                post_df_cpcw_headline
+                if not post_df_cpcw_headline.empty
+                else (post_df_pipe_scoped if not post_df_pipe_scoped.empty else post_df_cpcw_analysis)
+            ),
+            cw_kpi=cw_kpi,
+        )
+        if _headline_keys
+        else None
+    )
     if _hm:
         total_spend = float(_hm["total_spend"])
         total_impr = int(_hm["total_impr"])
@@ -10468,7 +10297,8 @@ def render_page_marketing_performance(
 
     # Σ LF for CpCW:LF = sum of first-month licence fee / **rent** for the **same deals** as the CW card
     # (post-qual closed won + approved rows in the tab's Market × Month scope); join RAW ``cw_kpi`` when LF is not on post-qual.
-    _lf_same_deals = _mpo_first_month_lf_sum_same_deals_as_post_qual_cw_rows(cw_locked_rows, cw_kpi)
+    _cw_only_lf = _mpo_post_qual_closed_won_rows_for_kpis(post_df_cpcw_analysis, df)
+    _lf_same_deals = _mpo_first_month_lf_sum_same_deals_as_post_qual_cw_rows(_cw_only_lf, cw_kpi)
     if _lf_same_deals > 0:
         total_first_month_lf = float(_lf_same_deals)
 
@@ -10502,120 +10332,75 @@ def render_page_marketing_performance(
     cpl = (total_spend / float(total_leads)) if total_leads else 0.0
     cpsql = (total_spend / float(total_qualified)) if total_qualified else 0.0
     cw_for_qwin, qual_for_qwin = _q_win_rate_inputs(_pqw, leads_df)
-    _enable_sm_traffic = str(os.environ.get("XRAY_ENABLE_SM_TRAFFIC_OVERRIDE", "0")).strip().lower() in ("1", "true", "yes", "on")
-    if _enable_sm_traffic:
-        _sm_traffic = _mpo_traffic_totals_from_sm_pool(
-            df_loaded,
-            df,
-            primary_sheet_id=sheet_id,
-            start_date=_rng_lo,
-            end_date=_rng_hi,
-            headline_month_keys=_headline_keys,
-            key_suffix=key_suffix,
-        )
-        if _sm_traffic is not None:
-            total_impr, total_clicks, ctr = _sm_traffic
-            cpc = (total_spend / float(total_clicks)) if total_clicks else 0.0
-            cpl = (total_spend / float(total_leads)) if total_leads else 0.0
-            cpsql = (total_spend / float(total_qualified)) if total_qualified else 0.0
+    _sm_traffic = _mpo_traffic_totals_from_sm_pool(
+        df_loaded,
+        df,
+        primary_sheet_id=sheet_id,
+        start_date=_rng_lo,
+        end_date=_rng_hi,
+        headline_month_keys=_headline_keys,
+        key_suffix=key_suffix,
+    )
+    if _sm_traffic is not None:
+        total_impr, total_clicks, ctr = _sm_traffic
+        cpc = (total_spend / float(total_clicks)) if total_clicks else 0.0
+        cpl = (total_spend / float(total_leads)) if total_leads else 0.0
+        cpsql = (total_spend / float(total_qualified)) if total_qualified else 0.0
 
-    with _kpi_slot.container():
-        _kpi_block(
-            total_spend=total_spend,
-            total_impr=total_impr,
-            total_clicks=total_clicks,
-            ctr=ctr,
-            total_leads=total_leads,
-            total_qualified=total_qualified,
-            total_cw=total_cw,
-            q_win_cw=cw_for_qwin,
-            q_win_qualified=qual_for_qwin,
-            total_tcv=total_tcv,
-            total_first_month_lf=total_first_month_lf,
-            cpc=cpc,
-            cpl=cpl,
-            cpsql=cpsql,
-            total_new_working=total_new_working,
-            total_total_live=total_total_live,
-            total_negotiation=total_negotiation,
-            total_commitment=total_commitment,
-            total_closed_lost=total_closed_lost,
-            total_pitching=total_pitching,
-            total_qualifying=total_qualifying,
-            prior=_kpi_prior,
-        )
+    _kpi_block(
+        total_spend=total_spend,
+        total_impr=total_impr,
+        total_clicks=total_clicks,
+        ctr=ctr,
+        total_leads=total_leads,
+        total_qualified=total_qualified,
+        total_cw=total_cw,
+        q_win_cw=cw_for_qwin,
+        q_win_qualified=qual_for_qwin,
+        total_tcv=total_tcv,
+        total_first_month_lf=total_first_month_lf,
+        cpc=cpc,
+        cpl=cpl,
+        cpsql=cpsql,
+        total_new_working=total_new_working,
+        total_total_live=total_total_live,
+        total_negotiation=total_negotiation,
+        total_commitment=total_commitment,
+        total_closed_lost=total_closed_lost,
+        total_pitching=total_pitching,
+        total_qualifying=total_qualifying,
+        prior=_kpi_prior,
+    )
 
-    gm_mpo = pd.DataFrame()
-    try:
-        gm_mpo = _master_build_gm_with_metrics(master_df, _spend_for_master_ui, pivot_dimension="market")
-        gm_mpo = _overlay_gm_leads_qualified_from_raw_leads(gm_mpo, leads_df)
-    except Exception:
-        st.warning("Advanced master builder failed; using direct fallback tables.")
+    gm_mpo = _master_build_gm_with_metrics(master_df, _spend_for_master_ui, pivot_dimension="market")
+    gm_mpo = _overlay_gm_leads_qualified_from_raw_leads(gm_mpo, leads_df)
+    _render_master_view_pivot_from_gm(
+        gm_mpo,
+        key_suffix=key_suffix,
+        section_title="Master view",
+        detail_sources={
+            "spend": spend_sheet_for_kpis,
+            "leads": leads_df,
+            "post": post_df_pipe_scoped,
+            "cw": cw_kpi,
+        },
+        pivot_dimension="market",
+        table_mode="full",
+    )
+    _render_t3b3_quarter_sections(gm_mpo, key_suffix=f"{key_suffix}_t3b3")
 
-    st.markdown("### Master view")
-    try:
-        if not gm_mpo.empty:
-            _render_master_view_pivot_from_gm(
-                gm_mpo,
-                key_suffix=key_suffix,
-                section_title="Master view",
-                detail_sources={
-                    "spend": spend_sheet_for_kpis,
-                    "leads": leads_df,
-                    "post": post_df_pipe_scoped,
-                    "cw": cw_kpi,
-                },
-                pivot_dimension="market",
-                table_mode="full",
-            )
-        else:
-            _master_performance_table(
-                master_df,
-                key_suffix=f"{key_suffix}_master_fallback",
-                section_title="Master view (fallback)",
-                spend_grid=_spend_for_master_ui,
-            )
-    except Exception:
-        st.warning("Master view renderer fallback is active.")
-        _master_performance_table(
-            master_df,
-            key_suffix=f"{key_suffix}_master_fallback",
-            section_title="Master view (fallback)",
-            spend_grid=_spend_for_master_ui,
-        )
-
-    st.markdown("### T3B3")
-    try:
-        _render_t3b3_quarter_sections(gm_mpo, key_suffix=f"{key_suffix}_t3b3")
-    except Exception:
-        st.warning("T3B3 renderer fallback is active.")
-        if not gm_mpo.empty:
-            _t3_cols = [c for c in ("month", "country", "cost", "leads", "qualified", "closed_won", "tcv", "first_month_lf") if c in gm_mpo.columns]
-            if _t3_cols:
-                st.dataframe(gm_mpo[_t3_cols], width="stretch", hide_index=True, key=f"{key_suffix}_t3b3_fallback_df")
-
-    st.markdown("### Trends")
-    try:
-        _render_mpo_trend_charts(
-            start_date=_rng_lo,
-            end_date=_rng_hi,
-            master_df=master_df,
-            key_suffix=key_suffix,
-            spend_for_charts=spend_df,
-            df_loaded=df_loaded,
-            sheet_id=sheet_id,
-            leads_df=leads_df,
-            post_df_kpi=post_df_pipe_scoped,
-            df_ref_for_scope=df,
-        )
-    except Exception:
-        st.warning("Trend charts renderer fallback is active.")
-        _trend_cols = [c for c in ("month", "country", "cost", "leads", "qualified", "closed_won", "tcv") if c in master_df.columns]
-        if _trend_cols:
-            _trend_fb = master_df[_trend_cols].copy()
-            if "month" in _trend_fb.columns:
-                _trend_fb = _trend_fb.sort_values("month")
-            st.dataframe(_trend_fb, width="stretch", hide_index=True, key=f"{key_suffix}_trend_fallback_df")
+    _render_mpo_trend_charts(
+        start_date=_rng_lo,
+        end_date=_rng_hi,
+        master_df=master_df,
+        key_suffix=key_suffix,
+        spend_for_charts=spend_df,
+        df_loaded=df_loaded,
+        sheet_id=sheet_id,
+        leads_df=leads_df,
+        post_df_kpi=post_df_pipe_scoped,
+        df_ref_for_scope=df,
+    )
 
 
 def _mom_monthly_series(df: pd.DataFrame, spend_df: Optional[pd.DataFrame] = None) -> pd.DataFrame:
@@ -12699,131 +12484,6 @@ def _extras_skip_tabs_already_loaded(df_loaded: pd.DataFrame, extras: list[pd.Da
     return out
 
 
-@st.cache_data(ttl=300, show_spinner=False)
-def _load_dashboard_frame_cached(
-    sheet_id: str,
-    truth_gid: int,
-    ads_id: str,
-    include_ads_workbook: bool,
-    nav_section: str,
-    _secret_fp: str,
-) -> tuple[pd.DataFrame, float]:
-    """Load + normalize dashboard frames once per cache window to avoid repeated network calls on reruns."""
-    df_loaded = pd.DataFrame()
-    gid0_sum = 0.0
-    try:
-        df_loaded = load_source_of_truth_tab(sheet_id, int(truth_gid), _secret_fp)
-    except Exception:
-        df_loaded = pd.DataFrame()
-    if df_loaded.empty:
-        df_loaded = load_all_worksheets_combined(sheet_id, _secret_fp)
-    if not df_loaded.empty and "worksheet_gid" in df_loaded.columns:
-        _core_gids: list[int] = [_default_leads_gid_from_secrets()]
-        for _g in (
-            _optional_post_qual_gid_from_secrets(),
-            _optional_raw_cw_gid_from_secrets(),
-            _optional_cw_source_truth_gid_from_secrets(),
-        ):
-            if _g is not None:
-                _core_gids.append(int(_g))
-        _core_gids = list(dict.fromkeys([int(x) for x in _core_gids if x is not None]))
-        _wg = pd.to_numeric(df_loaded["worksheet_gid"], errors="coerce")
-        _missing_gids = [g for g in _core_gids if not bool((_wg == int(g)).any())]
-        if _missing_gids:
-            _parts: list[pd.DataFrame] = []
-            for _gid in _missing_gids:
-                try:
-                    _sub = load_worksheet_by_gid_preprocessed(sheet_id, int(_gid), _secret_fp)
-                except Exception:
-                    _sub = pd.DataFrame()
-                if not _sub.empty:
-                    _parts.append(_sub)
-            if _parts:
-                df_loaded = pd.concat([df_loaded] + _parts, ignore_index=True)
-    needs_spend_inject = True
-    if not df_loaded.empty and "source_tab" in df_loaded.columns and "cost" in df_loaded.columns:
-        sl = df_loaded["source_tab"].astype(str).str.strip().str.lower()
-        spend_like = sl.str.contains(r"^(?:raw\s*)?spend$|raw\s*spend|sum\s*spend|media\s*spend", na=False, regex=True)
-        spend_rows = df_loaded.loc[spend_like]
-        if not spend_rows.empty and float(pd.to_numeric(spend_rows["cost"], errors="coerce").fillna(0).sum()) > 0:
-            needs_spend_inject = False
-    if needs_spend_inject:
-        spend_norm = pd.DataFrame()
-        try:
-            spend_norm = load_named_worksheet_normalized(sheet_id, "Spend", _secret_fp)
-        except Exception:
-            spend_norm = pd.DataFrame()
-        if spend_norm.empty:
-            spend_norm = load_spend_worksheet_fallback(sheet_id, _secret_fp)
-        if not spend_norm.empty:
-            if df_loaded.empty:
-                df_loaded = spend_norm
-            else:
-                df_loaded = pd.concat([df_loaded, spend_norm], ignore_index=True)
-    if nav_section == "Marketing performance":
-        spend_gid0 = load_spend_gid0_normalized(sheet_id, _secret_fp)
-        gid0_sum = float(load_spend_gid0_raw_sum(sheet_id, _secret_fp))
-        if not spend_gid0.empty:
-            if not df_loaded.empty and "source_tab" in df_loaded.columns:
-                _rm_syn = df_loaded["source_tab"].astype(str).str.match(r"^gid:\d+_spend$", na=False)
-                df_loaded = df_loaded.loc[~_rm_syn].copy()
-            if df_loaded.empty:
-                df_loaded = spend_gid0
-            else:
-                df_loaded = pd.concat([df_loaded, spend_gid0], ignore_index=True)
-
-    # Heavy title-scan fallback disabled by default (slow on Cloud). Enable only for diagnostics.
-    _enable_title_scan = (os.environ.get("XRAY_ENABLE_TITLE_SCAN_LOAD") or "").strip().lower() in ("1", "true", "yes", "on")
-    if _enable_title_scan:
-        _ws_meta = list_worksheet_meta(sheet_id, _secret_fp)
-        spend_named = _load_first_matching_worksheet_from_meta(
-            sheet_id, (r"^spend$", r"raw\s*spend", r"sum\s*spend"), _secret_fp, _ws_meta
-        )
-        leads_named = _load_first_matching_worksheet_from_meta(
-            sheet_id, (r"^leads?$", r"raw\s*leads?"), _secret_fp, _ws_meta
-        )
-        post_named = _load_first_matching_worksheet_from_meta(
-            sheet_id,
-            (r"post\s*leads?", r"raw.*post.*qual", r"post\s+qual", r"post.*qualif"),
-            _secret_fp,
-            _ws_meta,
-        )
-        cw_named = _load_first_matching_worksheet_from_meta(
-            sheet_id,
-            tuple(_RAW_CW_TAB_PATTERNS),
-            _secret_fp,
-            _ws_meta,
-        )
-        extras = [x for x in (spend_named, leads_named, post_named, cw_named) if not x.empty]
-        extras = _extras_skip_tabs_already_loaded(df_loaded, extras)
-        if extras:
-            if df_loaded.empty:
-                df_loaded = pd.concat(extras, ignore_index=True)
-            else:
-                df_loaded = pd.concat([df_loaded] + extras, ignore_index=True)
-    if not df_loaded.empty:
-        df_loaded = _dataframe_with_spreadsheet_id(df_loaded, sheet_id)
-    if include_ads_workbook and ads_id and ads_id != sheet_id:
-        df_ads = load_all_worksheets_combined(ads_id, _secret_fp)
-        df_ads_gid = _load_paid_media_platform_tabs_by_gid(ads_id, _secret_fp)
-        if not df_ads_gid.empty:
-            if df_ads.empty:
-                df_ads = df_ads_gid
-            elif "worksheet_gid" in df_ads.columns:
-                wg_ads = pd.to_numeric(df_ads["worksheet_gid"], errors="coerce")
-                keep = ~wg_ads.isin(list(DEFAULT_PAID_MEDIA_PLATFORM_GIDS))
-                df_ads = pd.concat([df_ads.loc[keep].copy(), df_ads_gid], ignore_index=True)
-            else:
-                df_ads = pd.concat([df_ads, df_ads_gid], ignore_index=True)
-        df_ads = _dataframe_with_spreadsheet_id(df_ads, ads_id)
-        if not df_ads.empty:
-            if df_loaded.empty:
-                df_loaded = df_ads
-            else:
-                df_loaded = pd.concat([df_loaded, df_ads], ignore_index=True)
-    return df_loaded, gid0_sum
-
-
 _DASH_NAV_OPTIONS = [
     "Marketing performance",
     "Market MoM",
@@ -12836,33 +12496,109 @@ def render_main_dashboard(
     end_date: date,
 ) -> None:
     """Load Google Sheets workbook (all tabs), then route to report pages."""
-    # Keep the old top-tab UX while preserving lazy execution (only one page branch runs).
-    _nav = st.radio(
-        "Dashboard section",
-        _DASH_NAV_OPTIONS,
-        horizontal=True,
-        key="dash_main_nav",
-        label_visibility="collapsed",
-    )
-    sheet_id, _ = _workbook_id_resolution()
-    _fp = _secret_fingerprint(_service_account_from_streamlit_secrets())
-    truth_gid = _default_truth_gid_from_secrets()
-    ads_id = _optional_paid_media_sheet_id_from_secrets()
-    include_ads_workbook = _nav == "Spend by channel"
-    _load_banner = st.empty()
-    _load_banner.info("**Loading…**")
     load_error: Optional[str] = None
     df_loaded = pd.DataFrame()
-    gid0_sum = 0.0
+    sheet_id, _ = _workbook_id_resolution()
+    _fp = _secret_fingerprint(_service_account_from_streamlit_secrets())
+    _load_banner = st.empty()
+    _load_banner.info("**Loading…**")
     try:
-        df_loaded, gid0_sum = _load_dashboard_frame_cached(
-            sheet_id=sheet_id,
-            truth_gid=int(truth_gid),
-            ads_id=ads_id,
-            include_ads_workbook=include_ads_workbook,
-            nav_section=_nav,
-            _secret_fp=_fp,
+        # Source of truth: preferred canonical worksheet gid, with full-workbook fallback.
+        truth_gid = _default_truth_gid_from_secrets()
+        try:
+            df_loaded = load_source_of_truth_tab(sheet_id, int(truth_gid), _fp)
+        except Exception:
+            df_loaded = pd.DataFrame()
+        if df_loaded.empty:
+            df_loaded = load_all_worksheets_combined(sheet_id, _fp)
+        # Prefer a spend-like tab injection if spend rows are missing from the combined load.
+        needs_spend_inject = True
+        if not df_loaded.empty and "source_tab" in df_loaded.columns and "cost" in df_loaded.columns:
+            sl = df_loaded["source_tab"].astype(str).str.strip().str.lower()
+            spend_like = sl.str.contains(
+                r"^(?:raw\s*)?spend$|raw\s*spend|sum\s*spend|media\s*spend", na=False, regex=True
+            )
+            spend_rows = df_loaded.loc[spend_like]
+            if not spend_rows.empty and float(pd.to_numeric(spend_rows["cost"], errors="coerce").fillna(0).sum()) > 0:
+                needs_spend_inject = False
+        if needs_spend_inject:
+            spend_norm = pd.DataFrame()
+            try:
+                # Legacy path: exact worksheet title "Spend" (older workbooks).
+                spend_norm = load_named_worksheet_normalized(sheet_id, "Spend", _fp)
+            except Exception:
+                # Newer Supermetrics workbooks may not have a tab literally named "Spend".
+                spend_norm = pd.DataFrame()
+            if spend_norm.empty:
+                spend_norm = load_spend_worksheet_fallback(sheet_id, _fp)
+            if not spend_norm.empty:
+                if df_loaded.empty:
+                    df_loaded = spend_norm
+                else:
+                    df_loaded = pd.concat([df_loaded, spend_norm], ignore_index=True)
+        # Hardwired spend source from gid=0 (requested source tab).
+        spend_gid0 = load_spend_gid0_normalized(sheet_id, _fp)
+        st.session_state["_gid0_spend_sum"] = load_spend_gid0_raw_sum(sheet_id, _fp)
+        if not spend_gid0.empty:
+            if not df_loaded.empty and "source_tab" in df_loaded.columns:
+                _rm_syn = df_loaded["source_tab"].astype(str).str.match(r"^gid:\d+_spend$", na=False)
+                df_loaded = df_loaded.loc[~_rm_syn].copy()
+            if df_loaded.empty:
+                df_loaded = spend_gid0
+            else:
+                df_loaded = pd.concat([df_loaded, spend_gid0], ignore_index=True)
+
+        # Explicitly ensure core business tabs are loaded by title-match (one worksheet list + four reads).
+        _ws_meta = list_worksheet_meta(sheet_id, _fp)
+        spend_named = _load_first_matching_worksheet_from_meta(
+            sheet_id, (r"^spend$", r"raw\s*spend", r"sum\s*spend"), _fp, _ws_meta
         )
+        leads_named = _load_first_matching_worksheet_from_meta(
+            sheet_id, (r"^leads?$", r"raw\s*leads?"), _fp, _ws_meta
+        )
+        post_named = _load_first_matching_worksheet_from_meta(
+            sheet_id,
+            (r"post\s*leads?", r"raw.*post.*qual", r"post\s+qual", r"post.*qualif"),
+            _fp,
+            _ws_meta,
+        )
+        cw_named = _load_first_matching_worksheet_from_meta(
+            sheet_id,
+            tuple(_RAW_CW_TAB_PATTERNS),
+            _fp,
+            _ws_meta,
+        )
+        extras = [x for x in (spend_named, leads_named, post_named, cw_named) if not x.empty]
+        extras = _extras_skip_tabs_already_loaded(df_loaded, extras)
+        if extras:
+            if df_loaded.empty:
+                df_loaded = pd.concat(extras, ignore_index=True)
+            else:
+                df_loaded = pd.concat([df_loaded] + extras, ignore_index=True)
+        # Primary workbook rows only (ME X-Ray / ``XRAY_SHEET_ID``).
+        if not df_loaded.empty:
+            df_loaded = _dataframe_with_spreadsheet_id(df_loaded, sheet_id)
+        # Optional second workbook: Supermetrics / per-platform ads tabs (``PAID_MEDIA_SHEET_ID``).
+        ads_id = _optional_paid_media_sheet_id_from_secrets()
+        if ads_id and ads_id != sheet_id:
+            df_ads = load_all_worksheets_combined(ads_id, _fp)
+            # Explicitly re-load the 4 platform gids so these critical tabs are always present.
+            df_ads_gid = _load_paid_media_platform_tabs_by_gid(ads_id, _fp)
+            if not df_ads_gid.empty:
+                if df_ads.empty:
+                    df_ads = df_ads_gid
+                elif "worksheet_gid" in df_ads.columns:
+                    wg_ads = pd.to_numeric(df_ads["worksheet_gid"], errors="coerce")
+                    keep = ~wg_ads.isin(list(DEFAULT_PAID_MEDIA_PLATFORM_GIDS))
+                    df_ads = pd.concat([df_ads.loc[keep].copy(), df_ads_gid], ignore_index=True)
+                else:
+                    df_ads = pd.concat([df_ads, df_ads_gid], ignore_index=True)
+            df_ads = _dataframe_with_spreadsheet_id(df_ads, ads_id)
+            if not df_ads.empty:
+                if df_loaded.empty:
+                    df_loaded = df_ads
+                else:
+                    df_loaded = pd.concat([df_loaded, df_ads], ignore_index=True)
     except Exception as exc:
         load_error = str(exc)
     finally:
@@ -12870,8 +12606,6 @@ def render_main_dashboard(
             _load_banner.empty()
         except Exception:
             pass
-
-    st.session_state["_gid0_spend_sum"] = float(gid0_sum or 0.0)
 
     if not load_error and not df_loaded.empty:
         df_loaded = _enforce_global_reporting_floor(df_loaded)
@@ -12890,11 +12624,12 @@ def render_main_dashboard(
         st.warning(_no_data_msg)
         return
 
-    if _nav == "Marketing performance":
+    tab_mpo, tab_mom, tab_channels = st.tabs(_DASH_NAV_OPTIONS)
+    with tab_mpo:
         render_page_marketing_performance(df_loaded, start_date, end_date)
-    elif _nav == "Market MoM":
+    with tab_mom:
         render_page_market_mom(df_loaded, start_date, end_date)
-    else:
+    with tab_channels:
         render_page_channels(df_loaded, start_date, end_date, inbound=False)
 
     # AI widget temporarily disabled per request.
@@ -13887,57 +13622,6 @@ def main() -> None:
         color: #64748b !important;
     }
     .stTabs [aria-selected="true"] span { color: white !important; }
-    /* Main section nav (replaces ``st.tabs``): pill strip aligned with tab styling above */
-    .st-key-dash_main_nav [role="radiogroup"] {
-        gap: 6px;
-        background: rgba(255, 255, 255, 0.72);
-        backdrop-filter: blur(10px);
-        -webkit-backdrop-filter: blur(10px);
-        padding: 8px 10px;
-        border-radius: 999px;
-        border: 1px solid rgba(15, 23, 42, 0.06);
-        box-shadow: 0 2px 12px rgba(15, 23, 42, 0.04);
-        flex-wrap: nowrap !important;
-        overflow-x: auto !important;
-        overflow-y: hidden !important;
-        width: 100%;
-        margin: 4px 0 12px 0;
-    }
-    .st-key-dash_main_nav label {
-        margin: 0 !important;
-        padding: 11px 22px !important;
-        border-radius: 999px !important;
-        font-weight: 600 !important;
-        font-size: 0.86rem !important;
-        color: #64748b !important;
-        letter-spacing: -0.01em;
-        border: 1px solid transparent !important;
-        cursor: pointer;
-        min-height: 42px;
-    }
-    .st-key-dash_main_nav label > div:first-child {
-        display: none !important;  /* hide radio circle so it looks like old tabs */
-    }
-    .st-key-dash_main_nav label > div:last-child {
-        margin-left: 0 !important;
-    }
-    .st-key-dash_main_nav [data-testid="stMarkdownContainer"] p {
-        margin: 0 !important;
-        line-height: 1.15 !important;
-    }
-    .st-key-dash_main_nav label:hover {
-        background: rgba(148, 163, 184, 0.14) !important;
-    }
-    .st-key-dash_main_nav label:has(input:checked) {
-        background: linear-gradient(135deg, #0d9488 0%, #0f766e 100%) !important;
-        color: #ffffff !important;
-        box-shadow: 0 2px 10px rgba(13, 148, 136, 0.35);
-        border-color: rgba(13, 148, 136, 0.35) !important;
-    }
-    .st-key-dash_main_nav label:has(input:checked) p,
-    .st-key-dash_main_nav label:has(input:checked) span {
-        color: #ffffff !important;
-    }
     .streamlit-expanderHeader { background: #F8FAFC; border-radius: 8px; border-left: 4px solid #4f8483; }
     .stTextInput input, .stSelectbox > div, .stDateInput input {
         border-radius: 10px !important;
