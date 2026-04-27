@@ -29,7 +29,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-27-cw-single-frame-lock"
+DASHBOARD_BUILD = "2026-04-27-speed-and-cw-qualified-stability"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -10045,18 +10045,17 @@ def render_page_marketing_performance(
     # ``post_df_kpi`` to the truth sheet, LF/close-date columns often do not match ME Post Lead — LF would fall
     # back to RAW ``cw_kpi`` and crush CpCW:LF vs the spreadsheet.
     post_df_cpcw_analysis = post_df_kpi
-    if use_truth_for_nonspend:
-        _pq_cw = pd.DataFrame()
-        if pq_gid is not None:
-            _pq_cw = _strict_gid_source(pq_gid, prefer_full_rows=True)
-            if _pq_cw.empty:
-                _pq_cw = _strict_gid_source(pq_gid)
-        if _pq_cw.empty and "source_tab" in df_date.columns:
-            _pq_cw = _tab_subset(df_date, list(_POST_LEAD_SOURCE_TAB_PATTERNS))
-        if _pq_cw.empty and "source_tab" in df_loaded.columns:
-            _pq_cw = _tab_subset(df_loaded, list(_POST_LEAD_SOURCE_TAB_PATTERNS))
-        if not _pq_cw.empty:
-            post_df_cpcw_analysis = _ensure_closed_won_from_text_flags(_pq_cw)
+    _pq_cw = pd.DataFrame()
+    if pq_gid is not None:
+        _pq_cw = _strict_gid_source(pq_gid, prefer_full_rows=True)
+        if _pq_cw.empty:
+            _pq_cw = _strict_gid_source(pq_gid)
+    if _pq_cw.empty and "source_tab" in df_date.columns:
+        _pq_cw = _tab_subset(df_date, list(_POST_LEAD_SOURCE_TAB_PATTERNS))
+    if _pq_cw.empty and "source_tab" in df_loaded.columns:
+        _pq_cw = _tab_subset(df_loaded, list(_POST_LEAD_SOURCE_TAB_PATTERNS))
+    if not _pq_cw.empty:
+        post_df_cpcw_analysis = _ensure_closed_won_from_text_flags(_pq_cw)
 
     # CW (inc. approved) — single locked frame for this render.
     cw_locked_rows = _mpo_post_qual_closed_won_rows_for_kpis(post_df_cpcw_analysis, df)
@@ -12765,32 +12764,35 @@ def render_main_dashboard(
             else:
                 df_loaded = pd.concat([df_loaded, spend_gid0], ignore_index=True)
 
-        _ws_meta = list_worksheet_meta(sheet_id, _fp)
-        spend_named = _load_first_matching_worksheet_from_meta(
-            sheet_id, (r"^spend$", r"raw\s*spend", r"sum\s*spend"), _fp, _ws_meta
-        )
-        leads_named = _load_first_matching_worksheet_from_meta(
-            sheet_id, (r"^leads?$", r"raw\s*leads?"), _fp, _ws_meta
-        )
-        post_named = _load_first_matching_worksheet_from_meta(
-            sheet_id,
-            (r"post\s*leads?", r"raw.*post.*qual", r"post\s+qual", r"post.*qualif"),
-            _fp,
-            _ws_meta,
-        )
-        cw_named = _load_first_matching_worksheet_from_meta(
-            sheet_id,
-            tuple(_RAW_CW_TAB_PATTERNS),
-            _fp,
-            _ws_meta,
-        )
-        extras = [x for x in (spend_named, leads_named, post_named, cw_named) if not x.empty]
-        extras = _extras_skip_tabs_already_loaded(df_loaded, extras)
-        if extras:
-            if df_loaded.empty:
-                df_loaded = pd.concat(extras, ignore_index=True)
-            else:
-                df_loaded = pd.concat([df_loaded] + extras, ignore_index=True)
+        # Heavy title-scan fallback disabled by default (slow on Cloud). Enable only for diagnostics.
+        _enable_title_scan = (os.environ.get("XRAY_ENABLE_TITLE_SCAN_LOAD") or "").strip().lower() in ("1", "true", "yes", "on")
+        if _enable_title_scan:
+            _ws_meta = list_worksheet_meta(sheet_id, _fp)
+            spend_named = _load_first_matching_worksheet_from_meta(
+                sheet_id, (r"^spend$", r"raw\s*spend", r"sum\s*spend"), _fp, _ws_meta
+            )
+            leads_named = _load_first_matching_worksheet_from_meta(
+                sheet_id, (r"^leads?$", r"raw\s*leads?"), _fp, _ws_meta
+            )
+            post_named = _load_first_matching_worksheet_from_meta(
+                sheet_id,
+                (r"post\s*leads?", r"raw.*post.*qual", r"post\s+qual", r"post.*qualif"),
+                _fp,
+                _ws_meta,
+            )
+            cw_named = _load_first_matching_worksheet_from_meta(
+                sheet_id,
+                tuple(_RAW_CW_TAB_PATTERNS),
+                _fp,
+                _ws_meta,
+            )
+            extras = [x for x in (spend_named, leads_named, post_named, cw_named) if not x.empty]
+            extras = _extras_skip_tabs_already_loaded(df_loaded, extras)
+            if extras:
+                if df_loaded.empty:
+                    df_loaded = pd.concat(extras, ignore_index=True)
+                else:
+                    df_loaded = pd.concat([df_loaded] + extras, ignore_index=True)
         if not df_loaded.empty:
             df_loaded = _dataframe_with_spreadsheet_id(df_loaded, sheet_id)
         if include_ads_workbook and ads_id and ads_id != sheet_id:
