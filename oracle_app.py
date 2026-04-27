@@ -29,7 +29,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-26-parallel-tabs-no-merged-pickle-cache"
+DASHBOARD_BUILD = "2026-04-27-hotpath-no-live-gid-fetches"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -5582,11 +5582,6 @@ def _mpo_load_spend_sheet_for_kpis(
     truth_rows = _rows_by_worksheet_id(df_date, int(truth_gid), sheet_id)
     if truth_rows.empty:
         truth_rows = _rows_by_worksheet_id(df_loaded, int(truth_gid), sheet_id)
-    if truth_rows.empty:
-        try:
-            truth_rows = load_source_of_truth_tab(sheet_id, int(truth_gid), _fp_mpo)
-        except Exception:
-            truth_rows = pd.DataFrame()
 
     if not truth_rows.empty:
         tr = _normalize_master_merge_frame(truth_rows.copy())
@@ -9898,7 +9893,7 @@ def render_page_marketing_performance(
         return frame[mask].copy()
 
     def _strict_gid_source(gid: Optional[int], *, prefer_full_rows: bool = False) -> pd.DataFrame:
-        """Load one worksheet as source of truth for non-spend metrics."""
+        """Resolve one worksheet from merged in-memory data (avoid runtime network calls in the render hot path)."""
         if gid is None:
             return pd.DataFrame()
         by_gid_all = _rows_by_worksheet_id(df_loaded, int(gid), sheet_id)
@@ -9909,10 +9904,7 @@ def render_page_marketing_performance(
             return by_gid_date
         if not by_gid_all.empty:
             return by_gid_all
-        try:
-            return load_worksheet_by_gid_preprocessed(sheet_id, int(gid), _fp_mpo)
-        except Exception:
-            return pd.DataFrame()
+        return pd.DataFrame()
 
     # Prefer the canonical truth tab for ALL non-spend marketing metrics when present.
     truth_gid = _default_truth_gid_from_secrets()
@@ -13653,23 +13645,27 @@ def main() -> None:
         background: rgba(255, 255, 255, 0.72);
         backdrop-filter: blur(10px);
         -webkit-backdrop-filter: blur(10px);
-        padding: 6px;
+        padding: 8px 10px;
         border-radius: 999px;
         border: 1px solid rgba(15, 23, 42, 0.06);
         box-shadow: 0 2px 12px rgba(15, 23, 42, 0.04);
-        flex-wrap: wrap !important;
-        margin: 2px 0 8px 0;
+        flex-wrap: nowrap !important;
+        overflow-x: auto !important;
+        overflow-y: hidden !important;
+        width: 100%;
+        margin: 4px 0 12px 0;
     }
     .st-key-dash_main_nav label {
         margin: 0 !important;
-        padding: 9px 18px !important;
+        padding: 11px 22px !important;
         border-radius: 999px !important;
         font-weight: 600 !important;
-        font-size: 0.8125rem !important;
+        font-size: 0.86rem !important;
         color: #64748b !important;
         letter-spacing: -0.01em;
         border: 1px solid transparent !important;
         cursor: pointer;
+        min-height: 42px;
     }
     .st-key-dash_main_nav label > div:first-child {
         display: none !important;  /* hide radio circle so it looks like old tabs */
