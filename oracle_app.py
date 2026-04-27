@@ -29,7 +29,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-27-truth-sheet-cost-first-fast-path"
+DASHBOARD_BUILD = "2026-04-27-fast-kpi-mode-no-precard-heavy-blocks"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -9952,11 +9952,6 @@ def render_page_marketing_performance(
     _lw_tab = _rows_by_worksheet_id(df_date, int(leads_gid), sheet_id)
     if _lw_tab.empty:
         _lw_tab = _rows_by_worksheet_id(df_loaded, int(leads_gid), sheet_id)
-    if _lw_tab.empty:
-        try:
-            _lw_tab = load_worksheet_by_gid_preprocessed(sheet_id, int(leads_gid), _fp_mpo)
-        except Exception:
-            _lw_tab = pd.DataFrame()
     if not _lw_tab.empty:
         _lw_scoped = _mpo_slice_by_dashboard_ref(_lw_tab, df) if not df.empty else _lw_tab.copy()
         leads_df = _ensure_closed_won_from_text_flags(_lw_scoped)
@@ -10120,15 +10115,6 @@ def render_page_marketing_performance(
             by_pq2 = df_loaded.loc[wg2 == int(_gpq)].copy()
             if not by_pq2.empty:
                 _pk = by_pq2
-        elif _gpq is not None:
-            try:
-                _sid2 = _extract_sheet_id(_default_sheet_id_from_secrets())
-                _fp3 = _secret_fingerprint(_service_account_from_streamlit_secrets())
-                _dir2 = load_worksheet_by_gid_preprocessed(_sid2, int(_gpq), _fp3)
-                if not _dir2.empty:
-                    _pk = _dir2
-            except Exception:
-                pass
         _pk = _pk if not _pk.empty else df
         total_pitching = int(_pk["pitching"].sum()) if "pitching" in _pk.columns else 0
         total_cw = _mpo_cw_kpi_post_lead_record_count(post_df_cpcw_analysis, df)
@@ -10148,6 +10134,36 @@ def render_page_marketing_performance(
     cpc = (total_spend / total_clicks) if total_clicks else 0.0
     cpl = (total_spend / total_leads) if total_leads else 0.0
     cpsql = (total_spend / total_qualified) if total_qualified else 0.0
+    # Fast KPI mode (default ON): render cards immediately from truth/loaded sheets and skip
+    # expensive master pivot + trend computations that can stall first paint on Cloud.
+    _fast_kpi_mode = str(os.environ.get("XRAY_FAST_KPI_MODE", "1")).strip().lower() not in ("0", "false", "off", "no")
+    if _fast_kpi_mode and use_truth_for_nonspend:
+        _kpi_block(
+            total_spend=total_spend,
+            total_impr=total_impr,
+            total_clicks=total_clicks,
+            ctr=ctr,
+            total_leads=total_leads,
+            total_qualified=total_qualified,
+            total_cw=total_cw,
+            q_win_cw=int(total_cw),
+            q_win_qualified=int(total_qualified),
+            total_tcv=total_tcv,
+            total_first_month_lf=total_first_month_lf,
+            cpc=cpc,
+            cpl=cpl,
+            cpsql=cpsql,
+            total_new_working=total_new_working,
+            total_total_live=total_total_live,
+            total_negotiation=total_negotiation,
+            total_commitment=total_commitment,
+            total_closed_lost=total_closed_lost,
+            total_pitching=total_pitching,
+            total_qualifying=total_qualifying,
+            prior={"_comparison_off": True},
+        )
+        st.caption("Fast mode active: detailed master/trend blocks are skipped to keep dashboard rendering responsive.")
+        return
 
     def _agg_for_master(frame: pd.DataFrame, metrics: list[str]) -> pd.DataFrame:
         if frame.empty or "month" not in frame.columns or "country" not in frame.columns:
