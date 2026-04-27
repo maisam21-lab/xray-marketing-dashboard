@@ -29,7 +29,7 @@ import streamlit as st
 
 # Bump when you ship UI/logic changes — used for cache keys and the header “Build:” pill.
 # If the hosted app shows an older string, Streamlit Cloud has not deployed the latest GitHub ``main`` yet (check branch + reboot).
-DASHBOARD_BUILD = "2026-04-27-cw-never-empty-tcv-colw-hard"
+DASHBOARD_BUILD = "2026-04-27-qualified-breakdown-resilient-pipeline-totals"
 
 # T3B3: optional CPCW:LF goal-scope table (UAE · Saudi · Kuwait + Bahrain). Set True to show again.
 _SHOW_T3B3_CPCW_LF_GOALS_TABLE = False
@@ -10154,15 +10154,25 @@ def render_page_marketing_performance(
                 leads_df = exact2
                 total_leads = _lead_rows_count(leads_df)
                 total_qualified = _qualified_count_from_leads(leads_df)
-    total_pitching = int(post_df_pipe_scoped["pitching"].sum()) if "pitching" in post_df_pipe_scoped.columns else 0
+    _post_for_breakdown = post_df_pipe_scoped.copy()
+    if _post_for_breakdown.empty:
+        _post_for_breakdown = (
+            _mpo_slice_by_dashboard_ref(post_df_cpcw_analysis, df)
+            if (not post_df_cpcw_analysis.empty and not df.empty)
+            else post_df_cpcw_analysis.copy()
+        )
+    if _post_for_breakdown.empty and not post_df_kpi_scoped.empty:
+        _post_for_breakdown = post_df_kpi_scoped.copy()
+    _pipe_totals = _mpo_pipeline_month_totals(_post_for_breakdown)
+    total_pitching = int(_pipe_totals.get("pitching", 0))
     total_new = int(post_df["new"].sum()) if "new" in post_df.columns else 0
     total_working = int(post_df["working"].sum()) if "working" in post_df.columns else 0
-    total_negotiation = int(post_df_pipe_scoped["negotiation"].sum()) if "negotiation" in post_df_pipe_scoped.columns else 0
-    total_commitment = int(post_df_pipe_scoped["commitment"].sum()) if "commitment" in post_df_pipe_scoped.columns else 0
-    total_qualifying = int(post_df_pipe_scoped["qualifying"].sum()) if "qualifying" in post_df_pipe_scoped.columns else 0
+    total_negotiation = int(_pipe_totals.get("negotiation", 0))
+    total_commitment = int(_pipe_totals.get("commitment", 0))
+    total_qualifying = int(_pipe_totals.get("qualifying", 0))
     # Total Live (CRM): Qualifying + Pitching + Negotiation + Commitment — not the broader sheet `total_live` flag.
-    total_total_live = total_qualifying + total_pitching + total_negotiation + total_commitment
-    total_closed_lost = int(post_df_pipe_scoped["closed_lost"].sum()) if "closed_lost" in post_df_pipe_scoped.columns else 0
+    total_total_live = int(_pipe_totals.get("total_live", total_qualifying + total_pitching + total_negotiation + total_commitment))
+    total_closed_lost = int(_pipe_totals.get("closed_lost", 0))
     total_tcv = float(cw_kpi["tcv"].sum()) if "tcv" in cw_kpi.columns else 0.0
     if _tcv_sum_override is not None:
         total_tcv = float(_tcv_sum_override)
